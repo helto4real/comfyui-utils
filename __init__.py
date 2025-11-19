@@ -33,16 +33,35 @@ class HeltoVideoParams:
                         "label": "Shortest Side Length",
                     },
                 ),
+                "motion_amplitude": (
+                    "FLOAT",
+                    {
+                        "default": 1.15,
+                        "min": 1.0,
+                        "max": 1.5,
+                        "step": 0.05,
+                        "label": "Motion amplitude",
+                    },
+                ),
             },
         }
 
     # Outputs: Vi skickar fortfarande ut width/height separat så att andra noder kan använda dem
-    RETURN_TYPES = ("FLOAT", "INT", "INT", "INT", "INT")
-    RETURN_NAMES = ("fps", "duration", "width", "height", "nr_frames")
+    RETURN_TYPES = ("FLOAT", "INT", "INT", "INT", "INT", "FLOAT")
+    RETURN_NAMES = (
+        "fps",
+        "duration",
+        "width",
+        "height",
+        "nr_frames",
+        "motion_amplitude",
+    )
     FUNCTION = "calculate_params"
     CATEGORY = "HELTO/Video"
 
-    def calculate_params(self, fps, duration, aspect_ratio, short_side):
+    def calculate_params(
+        self, fps, duration, aspect_ratio, short_side, motion_amplitude
+    ):
         # Parsa bildförhållandet från strängen (t.ex. "16:9" -> 16 och 9)
         w_str, h_str = aspect_ratio.split(":")
         w_ratio = int(w_str)
@@ -76,7 +95,7 @@ class HeltoVideoParams:
         # Beräkna antalet frames: (fps * duration) + 1
         nr_frames = int((fps * duration) + 1)
 
-        return (fps, duration, final_width, final_height, nr_frames)
+        return (fps, duration, final_width, final_height, nr_frames, motion_amplitude)
 
 
 # Mappning för ComfyUI
