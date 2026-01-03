@@ -22,7 +22,8 @@ class HeltoVideoParams:
                     {"default": 24.0, "min": 1.0, "max": 120.0, "step": 0.01},
                 ),
                 "duration": ("INT", {"default": 5, "min": 1, "max": 10000, "step": 1}),
-                "aspect_ratio": (["16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "1:1"],),
+                "aspect_ratio": (["16:9", "4:3", "3:2", "1:1"],),
+                "orientation": (["landscape", "portrait"], {"default": "landscape"}),
                 "use_max_side": ("BOOLEAN", {"default": False}),
                 "use_nfsw": ("BOOLEAN", {"default": False}),
                 "side_length": (
@@ -71,6 +72,7 @@ class HeltoVideoParams:
         fps,
         duration,
         aspect_ratio,
+        orientation,
         side_length,
         use_max_side,
         steps,
@@ -82,35 +84,27 @@ class HeltoVideoParams:
         w_str, h_str = aspect_ratio.split(":")
         w_ratio = int(w_str)
         h_ratio = int(h_str)
+        ratio = w_ratio / h_ratio
 
         target_width = 0
         target_height = 0
 
-        # Logik för att bestämma vilken sida som ska styra
-        # Vi kollar först om bredden är större än höjden (landskap)
-        is_landscape = w_ratio > h_ratio
-        is_portrait = h_ratio > w_ratio
-
-        if use_max_side:
-            # Om vi vill att side_length ska vara den LÅNGA sidan
-            if is_landscape:
+        if orientation == "landscape":
+            # width > height
+            if use_max_side:
                 target_width = side_length
-                target_height = side_length * (h_ratio / w_ratio)
-            elif is_portrait:
+                target_height = side_length / ratio
+            else:
                 target_height = side_length
-                target_width = side_length * (w_ratio / h_ratio)
-            else:  # Kvadrat
-                target_width = target_height = side_length
-        else:
-            # Om vi vill att side_length ska vara den KORTA sidan (som tidigare)
-            if is_landscape:
+                target_width = side_length * ratio
+        else:  # portrait
+            # height > width
+            if use_max_side:
                 target_height = side_length
-                target_width = side_length * (w_ratio / h_ratio)
-            elif is_portrait:
+                target_width = side_length / ratio
+            else:
                 target_width = side_length
-                target_height = side_length * (h_ratio / w_ratio)
-            else:  # Kvadrat
-                target_width = target_height = side_length
+                target_height = side_length * ratio
 
         # Avrunda till närmaste multipel av 8 (viktigt för videocodecs/AI-modeller)
         final_width = int(round(target_width / 8) * 8)
@@ -144,7 +138,7 @@ class AspectRatioCalculator:
                     "INT",
                     {"default": 512, "min": 64, "max": 8192, "step": 8},
                 ),
-                "aspect_ratio": (["1:1", "3:2", "4:3", "16:9", "21:9"],),
+                "aspect_ratio": (["1:1", "3:2", "4:3", "16:9"],),
                 "orientation": (["landscape", "portrait"],),
                 "use_max_side": ("BOOLEAN", {"default": False}),
             },
