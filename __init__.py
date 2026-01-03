@@ -24,6 +24,7 @@ class HeltoVideoParams:
                 "duration": ("INT", {"default": 5, "min": 1, "max": 10000, "step": 1}),
                 "aspect_ratio": (["16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "1:1"],),
                 "use_max_side": ("BOOLEAN", {"default": False}),
+                "use_nfsw": ("BOOLEAN", {"default": False}),
                 "side_length": (
                     "INT",
                     {"default": 480, "min": 64, "max": 8192, "step": 8},
@@ -40,7 +41,17 @@ class HeltoVideoParams:
             },
         }
 
-    RETURN_TYPES = ("FLOAT", "INT", "INT", "INT", "INT", "INT", "FLOAT", "FLOAT")
+    RETURN_TYPES = (
+        "FLOAT",
+        "INT",
+        "INT",
+        "INT",
+        "INT",
+        "INT",
+        "FLOAT",
+        "FLOAT",
+        "BOOLEAN",
+    )
     RETURN_NAMES = (
         "fps",
         "duration",
@@ -50,6 +61,7 @@ class HeltoVideoParams:
         "steps",
         "shift_value",
         "motion_amplitude",
+        "use_nfsw",
     )
     FUNCTION = "calculate_params"
     CATEGORY = "HELTO/Video"
@@ -64,6 +76,7 @@ class HeltoVideoParams:
         steps,
         shift_value,
         motion_amplitude,
+        use_nfsw,
     ):
         # Parsa bildförhållandet
         w_str, h_str = aspect_ratio.split(":")
@@ -115,6 +128,7 @@ class HeltoVideoParams:
             steps,
             shift_value,
             motion_amplitude,
+            use_nfsw,
         )
 
 
