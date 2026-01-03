@@ -26,10 +26,7 @@ class HeltoVideoParams:
                 "orientation": (["landscape", "portrait"], {"default": "landscape"}),
                 "use_max_side": ("BOOLEAN", {"default": False}),
                 "use_nfsw": ("BOOLEAN", {"default": False}),
-                "side_length": (
-                    "INT",
-                    {"default": 480, "min": 64, "max": 8192, "step": 8},
-                ),
+                "resolution": (["720p", "544p", "480p", "320p"], {"default": "480p"}),
                 "motion_amplitude": (
                     "FLOAT",
                     {"default": 1.15, "min": 1.0, "max": 1.5, "step": 0.05},
@@ -73,13 +70,15 @@ class HeltoVideoParams:
         duration,
         aspect_ratio,
         orientation,
-        side_length,
+        resolution,
         use_max_side,
         steps,
         shift_value,
         motion_amplitude,
         use_nfsw,
     ):
+        # Parse side_length from resolution string
+        side_length = int(resolution[:-1])
         # Parsa bildförhållandet
         w_str, h_str = aspect_ratio.split(":")
         w_ratio = int(w_str)
