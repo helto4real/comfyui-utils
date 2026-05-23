@@ -76,6 +76,10 @@ function isAdvancedSaveNode(node) {
     return getNodeClass(node) !== null;
 }
 
+function isSaveImageAdvancedNode(node) {
+    return getNodeClass(node) === "HeltoSaveImageAdvanced";
+}
+
 function isSaveVideoAdvancedNode(node) {
     return getNodeClass(node) === VIDEO_NODE_CLASS;
 }
@@ -174,6 +178,47 @@ function getPlaceholderImages(node) {
 
 function isPlaceholderImages(images) {
     return placeholderImages && images === placeholderImages;
+}
+
+function applyImagePreviewVisibility(node, shouldHide) {
+    if (shouldHide) {
+        if (Array.isArray(node.imgs) && node.imgs.length > 0 && !isPlaceholderImages(node.imgs)) {
+            node[HIDDEN_IMAGES] = node.imgs;
+            node[HIDDEN_IMAGE_INDEX] = node.imageIndex ?? null;
+        }
+
+        if (Array.isArray(node[HIDDEN_IMAGES]) && node[HIDDEN_IMAGES].length > 0) {
+            getPlaceholderImages(node);
+            node.imgs = [];
+            node.imageIndex = null;
+        }
+
+        return;
+    }
+
+    if (
+        (!Array.isArray(node.imgs) || node.imgs.length === 0 || isPlaceholderImages(node.imgs)) &&
+        Array.isArray(node[HIDDEN_IMAGES])
+    ) {
+        node.imgs = node[HIDDEN_IMAGES];
+        node.imageIndex = node[HIDDEN_IMAGE_INDEX] ?? null;
+    }
+}
+
+function syncImageHideOutputImages(node) {
+    if (!(ORIGINAL_HIDE_STATE in node)) {
+        node[ORIGINAL_HIDE_STATE] = Boolean(node.hideOutputImages);
+    }
+
+    const shouldHide = isHideModeEnabled(node) && !node[HOVER_STATE];
+    const nextValue = shouldHide || node[ORIGINAL_HIDE_STATE];
+
+    applyImagePreviewVisibility(node, shouldHide);
+
+    if (node.hideOutputImages !== nextValue) {
+        node.hideOutputImages = nextValue;
+        setCanvasDirty(node);
+    }
 }
 
 function hasHiddenPreviewContent(node) {
@@ -500,7 +545,7 @@ function applyDomPreviewVisibility(node, shouldHide) {
     applyExternalMediaVisibility(node, shouldHide);
 }
 
-function applyPreviewVisibility(node, shouldHide) {
+function applyVideoPreviewVisibility(node, shouldHide) {
     if (shouldHide) {
         if (Array.isArray(node.imgs) && node.imgs.length > 0 && !isPlaceholderImages(node.imgs)) {
             node[HIDDEN_IMAGES] = node.imgs;
@@ -518,7 +563,9 @@ function applyPreviewVisibility(node, shouldHide) {
             node.imageIndex = null;
         }
 
-        applyDomPreviewVisibility(node, true);
+        if (isSaveVideoAdvancedNode(node)) {
+            applyDomPreviewVisibility(node, true);
+        }
         return;
     }
 
@@ -537,23 +584,37 @@ function applyPreviewVisibility(node, shouldHide) {
         node.images = node[HIDDEN_NODE_IMAGES];
     }
 
-    applyDomPreviewVisibility(node, false);
+    if (isSaveVideoAdvancedNode(node)) {
+        applyDomPreviewVisibility(node, false);
+    }
 }
 
-function syncHideOutputImages(node, { force = false } = {}) {
+function syncHideOutputImages(node, options = {}) {
+    if (isSaveImageAdvancedNode(node)) {
+        syncImageHideOutputImages(node);
+        return;
+    }
+
+    syncVideoHideOutputImages(node, options);
+}
+
+function syncVideoHideOutputImages(node, { force = false } = {}) {
     if (!(ORIGINAL_HIDE_STATE in node)) {
         node[ORIGINAL_HIDE_STATE] = Boolean(node.hideOutputImages);
     }
 
     const shouldHide = isHideModeEnabled(node) && !node[HOVER_STATE];
     const nextValue = shouldHide || node[ORIGINAL_HIDE_STATE];
+    const isVideoNode = isSaveVideoAdvancedNode(node);
+    const shouldApplyPreviewVisibility = force || !isVideoNode || node[PREVIEW_HIDDEN_STATE] !== shouldHide;
 
-    if (force || node[PREVIEW_HIDDEN_STATE] !== shouldHide) {
-        applyPreviewVisibility(node, shouldHide);
+    if (shouldApplyPreviewVisibility) {
+        applyVideoPreviewVisibility(node, shouldHide);
         node[PREVIEW_HIDDEN_STATE] = shouldHide;
-        if (shouldHide) {
+
+        if (isVideoNode && shouldHide) {
             startPreviewWatcher(node);
-        } else {
+        } else if (isVideoNode) {
             stopPreviewWatcher(node);
         }
         setCanvasDirty(node);
@@ -674,6 +735,28 @@ function drawHiddenPlaceholder(node, ctx) {
     ctx.restore();
 }
 
+function drawImageHiddenPlaceholder(node, ctx) {
+    if (!ctx || !isHideModeEnabled(node) || node[HOVER_STATE] || !Array.isArray(node[HIDDEN_IMAGES]) || node[HIDDEN_IMAGES].length === 0) {
+        return;
+    }
+
+    const placeholder = getPlaceholderImages(node)?.[0];
+
+    if (!placeholder) {
+        return;
+    }
+
+    const area = getPreviewArea(node);
+
+    if (area.width <= 0 || area.height <= 0) {
+        return;
+    }
+
+    ctx.save();
+    ctx.drawImage(placeholder, area.x, area.y, area.width, area.height);
+    ctx.restore();
+}
+
 function isInPreviewArea(node, event, localPos) {
     const pos = getLocalPos(node, event, localPos);
 
@@ -686,6 +769,16 @@ function isInPreviewArea(node, event, localPos) {
     const previewTop = getPreviewAreaTop(node);
 
     return x >= 0 && x <= width && y >= previewTop && y <= height;
+}
+
+function updateImagePreviewHover(node, isHovering) {
+    if (node[HOVER_STATE] === isHovering) {
+        return;
+    }
+
+    node[HOVER_STATE] = isHovering;
+    syncImageHideOutputImages(node);
+    setCanvasDirty(node);
 }
 
 function clearHoverClearTimer(node) {
@@ -733,7 +826,7 @@ function scheduleManagedHoverRefresh() {
 
 function refreshManagedHoverStates() {
     for (const node of managedHideModeNodes) {
-        if (!isAdvancedSaveNode(node)) {
+        if (!isSaveVideoAdvancedNode(node)) {
             managedHideModeNodes.delete(node);
             continue;
         }
@@ -754,7 +847,76 @@ function scheduleHideModeSync(node) {
     setTimeout(() => syncHideOutputImages(node, { force: true }), 500);
 }
 
-function setupHideMode(node) {
+function setupImageHideMode(node) {
+    ensureHideModeProperty(node);
+    ensureHideModeWidget(node);
+    node[HOVER_STATE] = false;
+
+    const originalOnConfigure = node.onConfigure;
+    node.onConfigure = function (...args) {
+        const result = originalOnConfigure?.apply(this, args);
+        ensureHideModeProperty(this);
+        ensureHideModeWidget(this);
+        setHideModeValue(this, this.properties?.[PROPERTY_NAME]);
+        syncImageHideOutputImages(this);
+        return result;
+    };
+
+    const originalOnSerialize = node.onSerialize;
+    node.onSerialize = function (info) {
+        const result = originalOnSerialize?.apply(this, arguments);
+        syncHideModePropertyFromWidget(this);
+
+        if (info) {
+            info.properties ??= {};
+            info.properties[PROPERTY_NAME] = this.properties[PROPERTY_NAME];
+        }
+
+        return result;
+    };
+
+    const originalOnDrawBackground = node.onDrawBackground;
+    node.onDrawBackground = function (...args) {
+        const result = originalOnDrawBackground?.apply(this, args);
+        syncImageHideOutputImages(this);
+        return result;
+    };
+
+    const originalOnDrawForeground = node.onDrawForeground;
+    node.onDrawForeground = function (ctx, ...args) {
+        syncImageHideOutputImages(this);
+        const result = originalOnDrawForeground?.call(this, ctx, ...args);
+        drawImageHiddenPlaceholder(this, ctx);
+        return result;
+    };
+
+    const originalOnMouseMove = node.onMouseMove;
+    node.onMouseMove = function (event, localPos, graphCanvas) {
+        updateImagePreviewHover(this, isInPreviewArea(this, event, localPos));
+        return originalOnMouseMove?.call(this, event, localPos, graphCanvas);
+    };
+
+    const originalOnMouseLeave = node.onMouseLeave;
+    node.onMouseLeave = function (...args) {
+        updateImagePreviewHover(this, false);
+        return originalOnMouseLeave?.apply(this, args);
+    };
+
+    const originalOnRemoved = node.onRemoved;
+    node.onRemoved = function (...args) {
+        applyImagePreviewVisibility(this, false);
+
+        if (ORIGINAL_HIDE_STATE in this) {
+            this.hideOutputImages = this[ORIGINAL_HIDE_STATE];
+        }
+
+        return originalOnRemoved?.apply(this, args);
+    };
+
+    syncImageHideOutputImages(node);
+}
+
+function setupVideoHideMode(node) {
     ensureHideModeProperty(node);
     ensureHideModeWidget(node);
     node[HOVER_STATE] = false;
@@ -821,7 +983,7 @@ function setupHideMode(node) {
     node.onRemoved = function (...args) {
         managedHideModeNodes.delete(this);
         clearHoverClearTimer(this);
-        applyPreviewVisibility(this, false);
+        applyVideoPreviewVisibility(this, false);
         disconnectPreviewObserver(this);
 
         if (ORIGINAL_HIDE_STATE in this) {
@@ -957,9 +1119,13 @@ app.registerExtension({
             return;
         }
 
-        setupHideMode(node);
+        if (isSaveImageAdvancedNode(node)) {
+            setupImageHideMode(node);
+            return;
+        }
 
         if (isSaveVideoAdvancedNode(node)) {
+            setupVideoHideMode(node);
             setupFormatWidgets(node);
         }
     },
