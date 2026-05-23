@@ -174,10 +174,8 @@ function drawSplitImage(ctx, originalImage, newImage, x, y, width, height, split
     ctx.beginPath();
     ctx.moveTo(clampedSplitX, dividerTop);
     ctx.lineTo(clampedSplitX, dividerBottom);
-    ctx.lineWidth = 1;
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.95)";
-    ctx.shadowColor = "rgba(0, 0, 0, 0.65)";
-    ctx.shadowBlur = 2;
+    ctx.lineWidth = 0.5;
+    ctx.strokeStyle = "rgba(160, 160, 160, 0.75)";
     ctx.stroke();
     ctx.restore();
 }
