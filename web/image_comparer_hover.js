@@ -6,8 +6,24 @@ const DISPLAY_NAME = "Image Comparer";
 const PROPERTY_NAME = "hide mode";
 const HIDE_MODE_WIDGET = "__heltoImageComparerHideModeWidget";
 const PREVIEW_WIDGET = "__heltoImageComparerPreviewWidget";
-const HOVER_STATE = "__heltoImageComparerHover";
 const POINTER_X = "__heltoImageComparerPointerX";
+const REVEAL_STATE = "__heltoImageComparerRevealState";
+const PLACEHOLDER_SRC = new URL("./hidden_preview_placeholder.png", import.meta.url).href;
+
+let lastPointerClientPos = null;
+let placeholderImage = null;
+let placeholderLoadStarted = false;
+
+function trackPointerPosition(event) {
+    lastPointerClientPos = [event.clientX, event.clientY];
+}
+
+document.addEventListener("pointermove", trackPointerPosition, { capture: true, passive: true });
+document.addEventListener("pointerover", trackPointerPosition, { capture: true, passive: true });
+document.addEventListener("pointerdown", trackPointerPosition, { capture: true, passive: true });
+document.addEventListener("pointerleave", () => {
+    lastPointerClientPos = null;
+}, { capture: true, passive: true });
 
 function getNodeClass(node) {
     const candidates = [
@@ -119,6 +135,21 @@ function createPreviewImage(node, record) {
     return image;
 }
 
+function getPlaceholderImage(node) {
+    if (placeholderImage?.complete && placeholderImage.naturalWidth > 0) {
+        return placeholderImage;
+    }
+
+    if (!placeholderLoadStarted) {
+        placeholderLoadStarted = true;
+        placeholderImage = new Image();
+        placeholderImage.onload = () => setCanvasDirty(node);
+        placeholderImage.src = PLACEHOLDER_SRC;
+    }
+
+    return null;
+}
+
 function getFittedRect(image, x, y, width, height) {
     const imageAspect = image.naturalWidth / image.naturalHeight;
     const areaAspect = width / height;
@@ -137,6 +168,68 @@ function getFittedRect(image, x, y, width, height) {
         width: drawWidth,
         height: drawHeight,
     };
+}
+
+function getPreviewClientRects(node, bounds) {
+    const canvas = app.canvas;
+    const canvasElement = canvas?.canvas;
+    const scale = canvas?.ds?.scale ?? 1;
+    const offset = canvas?.ds?.offset ?? [0, 0];
+
+    if (!canvasElement || !Array.isArray(node?.pos) || !bounds) {
+        return [];
+    }
+
+    const canvasRect = canvasElement.getBoundingClientRect();
+    const graphX = node.pos[0] + bounds.x;
+    const graphY = node.pos[1] + bounds.y;
+    const width = bounds.width * scale;
+    const height = bounds.height * scale;
+    const candidates = [
+        [
+            canvasRect.left + (graphX + offset[0]) * scale,
+            canvasRect.top + (graphY + offset[1]) * scale,
+        ],
+        [
+            canvasRect.left + graphX * scale + offset[0],
+            canvasRect.top + graphY * scale + offset[1],
+        ],
+    ];
+
+    return candidates.map(([left, top]) => ({
+        left,
+        top,
+        right: left + width,
+        bottom: top + height,
+        width,
+        height,
+    }));
+}
+
+function getPointerPreviewPos(node, bounds) {
+    if (!lastPointerClientPos) {
+        return null;
+    }
+
+    const [clientX, clientY] = lastPointerClientPos;
+
+    for (const rect of getPreviewClientRects(node, bounds)) {
+        if (
+            clientX >= rect.left &&
+            clientX <= rect.right &&
+            clientY >= rect.top &&
+            clientY <= rect.bottom &&
+            rect.width > 0 &&
+            rect.height > 0
+        ) {
+            return [
+                ((clientX - rect.left) / rect.width) * bounds.width,
+                ((clientY - rect.top) / rect.height) * bounds.height,
+            ];
+        }
+    }
+
+    return null;
 }
 
 function drawContainedImage(ctx, image, x, y, width, height) {
@@ -187,6 +280,7 @@ class ImageComparerPreviewWidget {
         this.node = node;
         this.originalImage = null;
         this.newImage = null;
+        this.bounds = null;
     }
 
     setImages(originalRecord, newRecord) {
@@ -207,7 +301,19 @@ class ImageComparerPreviewWidget {
 
         const nodeWidth = node.size?.[0] ?? width;
         const height = Math.max(0, node.size[1] - y);
-        const shouldSplit = !isHideModeEnabled(node) || Boolean(node[HOVER_STATE]);
+        this.bounds = {
+            x: 0,
+            y,
+            width: nodeWidth,
+            height,
+        };
+        const pointerPos = getPointerPreviewPos(node, this.bounds);
+        const isOverPreview = Boolean(pointerPos) || Boolean(node[REVEAL_STATE]);
+        if (pointerPos) {
+            node[POINTER_X] = Math.min(Math.max(pointerPos[0], 0), nodeWidth);
+        }
+        const hideModeEnabled = isHideModeEnabled(node);
+        const shouldSplit = !hideModeEnabled || isOverPreview;
         const splitX = Number.isFinite(node[POINTER_X]) ? node[POINTER_X] : nodeWidth / 2;
 
         ctx.save();
@@ -219,6 +325,11 @@ class ImageComparerPreviewWidget {
 
         if (shouldSplit && this.originalImage && this.newImage) {
             drawSplitImage(ctx, this.originalImage, this.newImage, 0, y, nodeWidth, height, splitX);
+        } else if (hideModeEnabled && !isOverPreview) {
+            const placeholder = getPlaceholderImage(node);
+            if (placeholder) {
+                ctx.drawImage(placeholder, 0, y, nodeWidth, height);
+            }
         } else if (this.originalImage) {
             drawContainedImage(ctx, this.originalImage, 0, y, nodeWidth, height);
         }
@@ -258,52 +369,79 @@ function ensurePreviewWidget(node) {
     node[PREVIEW_WIDGET] = widget;
 }
 
-function updatePreviewHover(node, isHovering) {
-    if (node[HOVER_STATE] === isHovering) {
-        return;
-    }
-
-    node[HOVER_STATE] = isHovering;
-    setCanvasDirty(node);
-}
-
-function getLocalMouseX(node, event, localPos) {
-    if (Array.isArray(localPos) && Number.isFinite(localPos[0])) {
-        return localPos[0];
+function getLocalMousePos(node, event, localPos) {
+    if (Array.isArray(localPos) && Number.isFinite(localPos[0]) && Number.isFinite(localPos[1])) {
+        return localPos;
     }
 
     const canvas = app.canvas;
     const graphPos = canvas?.graph_mouse ?? canvas?.last_mouse;
 
-    if (Array.isArray(graphPos) && Array.isArray(node.pos) && Number.isFinite(graphPos[0])) {
-        return graphPos[0] - node.pos[0];
+    if (
+        Array.isArray(graphPos) &&
+        Array.isArray(node.pos) &&
+        Number.isFinite(graphPos[0]) &&
+        Number.isFinite(graphPos[1])
+    ) {
+        return [graphPos[0] - node.pos[0], graphPos[1] - node.pos[1]];
     }
 
-    if (event && Number.isFinite(event.canvasX) && Array.isArray(node.pos)) {
-        return event.canvasX - node.pos[0];
+    if (event && Number.isFinite(event.canvasX) && Number.isFinite(event.canvasY) && Array.isArray(node.pos)) {
+        return [event.canvasX - node.pos[0], event.canvasY - node.pos[1]];
+    }
+
+    return null;
+}
+
+function getPreviewBounds(node) {
+    const widget = node[PREVIEW_WIDGET];
+
+    if (widget?.bounds) {
+        return widget.bounds;
+    }
+
+    if (Number.isFinite(widget?.last_y) && Array.isArray(node.size)) {
+        return {
+            x: 0,
+            y: widget.last_y,
+            width: node.size[0],
+            height: Math.max(0, node.size[1] - widget.last_y),
+        };
     }
 
     return null;
 }
 
 function updatePointerPosition(node, event, localPos) {
-    const localX = getLocalMouseX(node, event, localPos);
+    const pos = getLocalMousePos(node, event, localPos);
+    const bounds = getPreviewBounds(node);
 
-    if (!Number.isFinite(localX)) {
-        return;
+    if (!pos || !bounds) {
+        return false;
     }
 
-    const nodeWidth = node.size?.[0] ?? localX;
-    node[POINTER_X] = Math.min(Math.max(localX, 0), nodeWidth);
-    setCanvasDirty(node);
+    const [localX, localY] = pos;
+    const isOverPreview = (
+        localX >= bounds.x &&
+        localX <= bounds.x + bounds.width &&
+        localY >= bounds.y &&
+        localY <= bounds.y + bounds.height
+    );
+
+    if (!isOverPreview) {
+        return false;
+    }
+
+    node[POINTER_X] = Math.min(Math.max(localX - bounds.x, 0), bounds.width);
+    return true;
 }
 
 function setupImageComparer(node) {
     ensureHideModeProperty(node);
     ensureHideModeWidget(node);
     ensurePreviewWidget(node);
-    node[HOVER_STATE] = false;
     node[POINTER_X] = (node.size?.[0] ?? 0) / 2;
+    node[REVEAL_STATE] = false;
 
     const originalOnConfigure = node.onConfigure;
     node.onConfigure = function (...args) {
@@ -342,21 +480,23 @@ function setupImageComparer(node) {
     };
 
     const originalOnMouseEnter = node.onMouseEnter;
-    node.onMouseEnter = function (...args) {
-        updatePreviewHover(this, true);
-        return originalOnMouseEnter?.apply(this, args);
+    node.onMouseEnter = function (event, localPos, ...args) {
+        this[REVEAL_STATE] = updatePointerPosition(this, event, localPos);
+        setCanvasDirty(this);
+        return originalOnMouseEnter?.call(this, event, localPos, ...args);
     };
 
     const originalOnMouseMove = node.onMouseMove;
     node.onMouseMove = function (event, localPos, ...args) {
-        updatePointerPosition(this, event, localPos);
-        updatePreviewHover(this, true);
+        this[REVEAL_STATE] = updatePointerPosition(this, event, localPos);
+        setCanvasDirty(this);
         return originalOnMouseMove?.call(this, event, localPos, ...args);
     };
 
     const originalOnMouseLeave = node.onMouseLeave;
     node.onMouseLeave = function (...args) {
-        updatePreviewHover(this, false);
+        this[REVEAL_STATE] = false;
+        setCanvasDirty(this);
         return originalOnMouseLeave?.apply(this, args);
     };
 
