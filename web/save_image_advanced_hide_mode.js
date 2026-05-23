@@ -5,7 +5,14 @@ const PROPERTY_NAME = "hide mode";
 const HOVER_STATE = "__heltoHideModePreviewHover";
 const ORIGINAL_HIDE_STATE = "__heltoHideModeOriginalHideOutputImages";
 const HIDDEN_IMAGES = "__heltoHideModeHiddenImages";
+const HIDDEN_IMAGE_INDEX = "__heltoHideModeHiddenImageIndex";
 const HIDE_MODE_WIDGET = "__heltoHideModeWidget";
+const CANVAS_IMAGE_PREVIEW_WIDGET = "$$canvas-image-preview";
+const PLACEHOLDER_SRC = new URL("./hidden_preview_placeholder.png", import.meta.url).href;
+
+let placeholderImage = null;
+let placeholderImages = null;
+let placeholderLoadStarted = false;
 
 function isSaveImageAdvancedNode(node) {
     return (
@@ -95,18 +102,47 @@ function isHideModeEnabled(node) {
     return Boolean(node.properties?.[PROPERTY_NAME]);
 }
 
+function getPlaceholderImages(node) {
+    if (placeholderImage?.complete && placeholderImage.naturalWidth > 0) {
+        placeholderImages ??= [placeholderImage];
+        return placeholderImages;
+    }
+
+    if (!placeholderLoadStarted) {
+        placeholderLoadStarted = true;
+        placeholderImage = new Image();
+        placeholderImage.onload = () => setCanvasDirty(node);
+        placeholderImage.src = PLACEHOLDER_SRC;
+    }
+
+    return null;
+}
+
+function isPlaceholderImages(images) {
+    return placeholderImages && images === placeholderImages;
+}
+
 function applyPreviewVisibility(node, shouldHide) {
     if (shouldHide) {
-        if (Array.isArray(node.imgs) && node.imgs.length > 0) {
+        if (Array.isArray(node.imgs) && node.imgs.length > 0 && !isPlaceholderImages(node.imgs)) {
             node[HIDDEN_IMAGES] = node.imgs;
-            node.imgs = [];
+            node[HIDDEN_IMAGE_INDEX] = node.imageIndex ?? null;
+        }
+
+        if (Array.isArray(node[HIDDEN_IMAGES]) && node[HIDDEN_IMAGES].length > 0) {
+            node.imgs = getPlaceholderImages(node) ?? [];
+            node.imageIndex = null;
         }
 
         return;
     }
 
-    if ((!Array.isArray(node.imgs) || node.imgs.length === 0) && Array.isArray(node[HIDDEN_IMAGES])) {
+    if (
+        (!Array.isArray(node.imgs) || node.imgs.length === 0 || isPlaceholderImages(node.imgs)) &&
+        Array.isArray(node[HIDDEN_IMAGES])
+    ) {
         node.imgs = node[HIDDEN_IMAGES];
+        node.imageIndex = node[HIDDEN_IMAGE_INDEX] ?? null;
     }
 }
 
@@ -143,6 +179,10 @@ function getLocalPos(node, event, localPos) {
         : null;
 }
 
+function isPreviewWidget(widget) {
+    return widget?.name === CANVAS_IMAGE_PREVIEW_WIDGET || widget?.type === "IMAGE_PREVIEW";
+}
+
 function getWidgetBottom(node) {
     const widgets = node.widgets ?? [];
     const width = node.size?.[0] ?? 0;
@@ -150,7 +190,7 @@ function getWidgetBottom(node) {
     let bottom = 0;
 
     for (const widget of widgets) {
-        if (widget.hidden || widget.options?.hidden) {
+        if (widget.hidden || widget.options?.hidden || isPreviewWidget(widget)) {
             continue;
         }
 
@@ -168,6 +208,12 @@ function getWidgetBottom(node) {
 }
 
 function getPreviewAreaTop(node) {
+    const previewWidget = node.widgets?.find(isPreviewWidget);
+
+    if (previewWidget && Number.isFinite(previewWidget.last_y)) {
+        return previewWidget.last_y;
+    }
+
     if (Number.isFinite(node.imageOffset)) {
         return node.imageOffset;
     }
