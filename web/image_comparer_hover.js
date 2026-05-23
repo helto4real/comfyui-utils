@@ -286,7 +286,6 @@ class ImageComparerPreviewWidget {
     setImages(originalRecord, newRecord) {
         this.originalImage = createPreviewImage(this.node, originalRecord);
         this.newImage = createPreviewImage(this.node, newRecord);
-        this.node.setSize?.(this.node.computeSize?.() ?? this.node.size);
         setCanvasDirty(this.node);
     }
 
