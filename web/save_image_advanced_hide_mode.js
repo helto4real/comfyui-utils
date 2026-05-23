@@ -28,14 +28,23 @@ let placeholderImage = null;
 let placeholderImages = null;
 let placeholderLoadStarted = false;
 let lastPointerClientPos = null;
+let managedHoverRefreshQueued = false;
 
-document.addEventListener("pointermove", (event) => {
+const managedHideModeNodes = new Set();
+
+function trackPointerPosition(event) {
     lastPointerClientPos = [event.clientX, event.clientY];
-}, { passive: true });
+    scheduleManagedHoverRefresh();
+}
+
+document.addEventListener("pointermove", trackPointerPosition, { capture: true, passive: true });
+document.addEventListener("pointerover", trackPointerPosition, { capture: true, passive: true });
+document.addEventListener("pointerdown", trackPointerPosition, { capture: true, passive: true });
 
 document.addEventListener("pointerleave", () => {
     lastPointerClientPos = null;
-}, { passive: true });
+    scheduleManagedHoverRefresh();
+}, { capture: true, passive: true });
 
 function getNodeClass(node) {
     const candidates = [
@@ -688,6 +697,34 @@ function updatePreviewHover(node, isHovering) {
     setCanvasDirty(node);
 }
 
+function scheduleManagedHoverRefresh() {
+    if (managedHoverRefreshQueued) {
+        return;
+    }
+
+    managedHoverRefreshQueued = true;
+    requestAnimationFrame(() => {
+        managedHoverRefreshQueued = false;
+        refreshManagedHoverStates();
+    });
+}
+
+function refreshManagedHoverStates() {
+    for (const node of managedHideModeNodes) {
+        if (!isAdvancedSaveNode(node)) {
+            managedHideModeNodes.delete(node);
+            continue;
+        }
+
+        if (!isHideModeEnabled(node)) {
+            updatePreviewHover(node, false);
+            continue;
+        }
+
+        updatePreviewHover(node, isPointerOverPreviewRect(node));
+    }
+}
+
 function scheduleHideModeSync(node) {
     syncHideOutputImages(node, { force: true });
     requestAnimationFrame(() => syncHideOutputImages(node, { force: true }));
@@ -699,6 +736,7 @@ function setupHideMode(node) {
     ensureHideModeProperty(node);
     ensureHideModeWidget(node);
     node[HOVER_STATE] = false;
+    managedHideModeNodes.add(node);
 
     const originalOnConfigure = node.onConfigure;
     node.onConfigure = function (...args) {
@@ -759,6 +797,7 @@ function setupHideMode(node) {
 
     const originalOnRemoved = node.onRemoved;
     node.onRemoved = function (...args) {
+        managedHideModeNodes.delete(this);
         applyPreviewVisibility(this, false);
         disconnectPreviewObserver(this);
 
