@@ -9,6 +9,9 @@ from .nodes.save_image_advanced import SaveImageAdvanced
 from .nodes.wan_video_params import HeltoVideoParams
 
 
+WEB_DIRECTORY = "./web"
+
+
 class HeltoUtilsExtension(ComfyExtension):
     @override
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
