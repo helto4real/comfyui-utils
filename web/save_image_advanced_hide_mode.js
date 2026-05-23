@@ -9,17 +9,33 @@ const PROPERTY_NAME = "hide mode";
 const HOVER_STATE = "__heltoHideModePreviewHover";
 const ORIGINAL_HIDE_STATE = "__heltoHideModeOriginalHideOutputImages";
 const HIDDEN_IMAGES = "__heltoHideModeHiddenImages";
+const HIDDEN_NODE_IMAGES = "__heltoHideModeHiddenNodeImages";
 const HIDDEN_IMAGE_INDEX = "__heltoHideModeHiddenImageIndex";
 const HIDE_MODE_WIDGET = "__heltoHideModeWidget";
+const PREVIEW_HIDDEN_STATE = "__heltoHideModePreviewHiddenState";
+const PREVIEW_WIDGET_STYLES = "__heltoHideModePreviewWidgetStyles";
+const PREVIEW_MEDIA_STYLES = "__heltoHideModePreviewMediaStyles";
+const PREVIEW_WATCHER = "__heltoHideModePreviewWatcher";
+const PREVIEW_OBSERVER = "__heltoHideModePreviewObserver";
 const FORMAT_WIDGETS = "__heltoVideoFormatWidgets";
 const FORMAT_WIDGET_COUNT = "__heltoVideoFormatWidgetCount";
 const FORMAT_WIDGET_CALLBACK = "__heltoVideoFormatWidgetCallback";
 const CANVAS_IMAGE_PREVIEW_WIDGET = "$$canvas-image-preview";
+const VIDEO_PREVIEW_WIDGET = "videopreview";
 const PLACEHOLDER_SRC = new URL("./hidden_preview_placeholder.png", import.meta.url).href;
 
 let placeholderImage = null;
 let placeholderImages = null;
 let placeholderLoadStarted = false;
+let lastPointerClientPos = null;
+
+document.addEventListener("pointermove", (event) => {
+    lastPointerClientPos = [event.clientX, event.clientY];
+}, { passive: true });
+
+document.addEventListener("pointerleave", () => {
+    lastPointerClientPos = null;
+}, { passive: true });
 
 function getNodeClass(node) {
     const candidates = [
@@ -150,6 +166,330 @@ function isPlaceholderImages(images) {
     return placeholderImages && images === placeholderImages;
 }
 
+function hasHiddenPreviewContent(node) {
+    return (
+        (Array.isArray(node[HIDDEN_IMAGES]) && node[HIDDEN_IMAGES].length > 0) ||
+        (Array.isArray(node[HIDDEN_NODE_IMAGES]) && node[HIDDEN_NODE_IMAGES].length > 0)
+    );
+}
+
+function getHiddenPreviewRecords(node) {
+    return [
+        ...(Array.isArray(node[HIDDEN_IMAGES]) ? node[HIDDEN_IMAGES] : []),
+        ...(Array.isArray(node[HIDDEN_NODE_IMAGES]) ? node[HIDDEN_NODE_IMAGES] : []),
+    ].filter((item) => item && typeof item === "object");
+}
+
+function getVideoPreviewWidgets(node) {
+    return node.widgets?.filter((widget) => widget.name === VIDEO_PREVIEW_WIDGET) ?? [];
+}
+
+function getDomPreviewWidgets(node) {
+    return node.widgets?.filter(isPreviewWidget) ?? [];
+}
+
+function getWidgetElements(widget) {
+    const candidates = [
+        widget.element,
+        widget.el,
+        widget.inputEl,
+        widget.parentEl,
+        widget.domElement,
+        widget.container,
+        widget.value instanceof HTMLElement ? widget.value : null,
+    ];
+
+    return candidates.filter((element, index) => {
+        return element instanceof HTMLElement && candidates.indexOf(element) === index;
+    });
+}
+
+function pauseWidgetVideos(widget) {
+    const videos = [
+        widget.videoEl instanceof HTMLVideoElement ? widget.videoEl : null,
+        ...getWidgetElements(widget).flatMap((element) => Array.from(element.querySelectorAll("video"))),
+    ].filter((video, index, values) => video instanceof HTMLVideoElement && values.indexOf(video) === index);
+
+    for (const video of videos) {
+        video.pause();
+        video.autoplay = false;
+    }
+}
+
+function mediaMatchesPreviewRecords(media, records) {
+    const src = media?.currentSrc || media?.src || "";
+
+    if (!src || records.length === 0) {
+        return false;
+    }
+
+    const decodedSrc = decodeURIComponent(src);
+
+    return records.some((record) => {
+        if (!record.filename) {
+            return false;
+        }
+
+        const filename = String(record.filename);
+        const subfolder = record.subfolder ? String(record.subfolder) : "";
+        return decodedSrc.includes(filename) && (!subfolder || decodedSrc.includes(subfolder));
+    });
+}
+
+function getNodePreviewClientRects(node) {
+    const canvas = app.canvas;
+    const canvasElement = canvas?.canvas;
+    const scale = canvas?.ds?.scale ?? 1;
+    const offset = canvas?.ds?.offset ?? [0, 0];
+
+    if (!canvasElement || !Array.isArray(node?.pos) || !Array.isArray(node?.size)) {
+        return [];
+    }
+
+    const area = getPreviewArea(node);
+    const canvasRect = canvasElement.getBoundingClientRect();
+    const graphX = node.pos[0] + area.x;
+    const graphY = node.pos[1] + area.y;
+    const size = {
+        width: area.width * scale,
+        height: area.height * scale,
+    };
+
+    const candidates = [
+        [
+            canvasRect.left + (graphX + offset[0]) * scale,
+            canvasRect.top + (graphY + offset[1]) * scale,
+        ],
+        [
+            canvasRect.left + graphX * scale + offset[0],
+            canvasRect.top + graphY * scale + offset[1],
+        ],
+    ];
+
+    return candidates.map(([left, top]) => ({
+        left,
+        top,
+        right: left + size.width,
+        bottom: top + size.height,
+        ...size,
+    }));
+}
+
+function rectOverlapArea(a, b) {
+    const width = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left));
+    const height = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+    return width * height;
+}
+
+function mediaOverlapsNodePreview(media, nodeRects) {
+    if (!nodeRects.length) {
+        return false;
+    }
+
+    const mediaRect = media.getBoundingClientRect();
+    if (mediaRect.width < 20 || mediaRect.height < 20) {
+        return false;
+    }
+
+    const mediaArea = mediaRect.width * mediaRect.height;
+    return nodeRects.some((nodeRect) => {
+        const overlap = rectOverlapArea(mediaRect, nodeRect);
+        const nodeArea = nodeRect.width * nodeRect.height;
+        return overlap > Math.min(mediaArea, nodeArea) * 0.25;
+    });
+}
+
+function getManagedMediaElements(media, nodeRects) {
+    const elements = [media];
+    let parent = media.parentElement;
+
+    while (parent && parent !== document.body) {
+        const parentRect = parent.getBoundingClientRect();
+        const overlapsPreview = nodeRects.some((nodeRect) => {
+            const overlap = rectOverlapArea(parentRect, nodeRect);
+            const parentArea = parentRect.width * parentRect.height;
+            const nodeArea = nodeRect.width * nodeRect.height;
+            return parentArea > 0 && overlap > Math.min(parentArea, nodeArea) * 0.25;
+        });
+
+        if (!overlapsPreview) {
+            break;
+        }
+
+        elements.push(parent);
+        parent = parent.parentElement;
+    }
+
+    return elements;
+}
+
+function isPointerOverPreviewRect(node) {
+    if (!lastPointerClientPos) {
+        return false;
+    }
+
+    const [x, y] = lastPointerClientPos;
+    const isOverNodeRect = getNodePreviewClientRects(node).some((rect) => {
+        return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+    });
+
+    if (isOverNodeRect) {
+        return true;
+    }
+
+    for (const element of node[PREVIEW_MEDIA_STYLES]?.keys?.() ?? []) {
+        if (!(element instanceof HTMLElement)) {
+            continue;
+        }
+
+        const rect = element.getBoundingClientRect();
+        if (rect.width < 20 || rect.height < 20) {
+            continue;
+        }
+
+        if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function applyExternalMediaVisibility(node, shouldHide) {
+    const records = getHiddenPreviewRecords(node);
+    const nodeRects = getNodePreviewClientRects(node);
+    node[PREVIEW_MEDIA_STYLES] ??= new Map();
+
+    for (const media of document.querySelectorAll("video, img")) {
+        const shouldAffectMedia = mediaMatchesPreviewRecords(media, records) || mediaOverlapsNodePreview(media, nodeRects);
+
+        const managedElements = shouldAffectMedia ? getManagedMediaElements(media, nodeRects) : [media];
+
+        if (!shouldAffectMedia) {
+            if (!shouldHide) {
+                for (const element of managedElements) {
+                    if (!node[PREVIEW_MEDIA_STYLES].has(element)) {
+                        continue;
+                    }
+
+                    const original = node[PREVIEW_MEDIA_STYLES].get(element);
+                    element.style.visibility = original.visibility;
+                    element.style.pointerEvents = original.pointerEvents;
+                    node[PREVIEW_MEDIA_STYLES].delete(element);
+                }
+            }
+            continue;
+        }
+
+        for (const element of managedElements) {
+            if (!node[PREVIEW_MEDIA_STYLES].has(element)) {
+                node[PREVIEW_MEDIA_STYLES].set(element, {
+                    visibility: element.style.visibility,
+                    pointerEvents: element.style.pointerEvents,
+                });
+            }
+
+            const original = node[PREVIEW_MEDIA_STYLES].get(element);
+            element.style.visibility = element === media && shouldHide ? "hidden" : original.visibility;
+            element.style.pointerEvents = shouldHide ? "none" : original.pointerEvents;
+        }
+
+        if (shouldHide && media instanceof HTMLVideoElement) {
+            media.pause();
+            media.autoplay = false;
+        }
+    }
+}
+
+function applyLivePreviewVisibility(node) {
+    const shouldHide = isHideModeEnabled(node) && !node[HOVER_STATE];
+    applyDomPreviewVisibility(node, shouldHide);
+}
+
+function startPreviewWatcher(node) {
+    if (node[PREVIEW_WATCHER]) {
+        return;
+    }
+
+    node[PREVIEW_WATCHER] = setInterval(() => {
+        if (!isHideModeEnabled(node) || node[HOVER_STATE]) {
+            stopPreviewWatcher(node);
+            return;
+        }
+
+        applyLivePreviewVisibility(node);
+    }, 150);
+
+    if (!node[PREVIEW_OBSERVER]) {
+        node[PREVIEW_OBSERVER] = new MutationObserver(() => {
+            if (isHideModeEnabled(node) && !node[HOVER_STATE]) {
+                requestAnimationFrame(() => applyLivePreviewVisibility(node));
+            }
+        });
+        node[PREVIEW_OBSERVER].observe(document.body, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ["src", "style", "class"],
+        });
+    }
+}
+
+function stopPreviewWatcher(node) {
+    if (node[PREVIEW_WATCHER]) {
+        clearInterval(node[PREVIEW_WATCHER]);
+        node[PREVIEW_WATCHER] = null;
+    }
+}
+
+function disconnectPreviewObserver(node) {
+    stopPreviewWatcher(node);
+
+    if (node[PREVIEW_OBSERVER]) {
+        node[PREVIEW_OBSERVER].disconnect();
+        node[PREVIEW_OBSERVER] = null;
+    }
+}
+
+function applyDomPreviewVisibility(node, shouldHide) {
+    for (const widget of getDomPreviewWidgets(node)) {
+        widget.value ??= {};
+        if (widget.name === VIDEO_PREVIEW_WIDGET) {
+            widget.value.hidden = shouldHide;
+        }
+
+        widget[PREVIEW_WIDGET_STYLES] ??= new Map();
+
+        for (const element of getWidgetElements(widget)) {
+            if (!widget[PREVIEW_WIDGET_STYLES].has(element)) {
+                widget[PREVIEW_WIDGET_STYLES].set(element, {
+                    visibility: element.style.visibility,
+                    pointerEvents: element.style.pointerEvents,
+                });
+            }
+
+            const original = widget[PREVIEW_WIDGET_STYLES].get(element);
+            element.style.visibility = shouldHide ? "hidden" : original.visibility;
+            element.style.pointerEvents = shouldHide ? "none" : original.pointerEvents;
+        }
+
+        if (widget.parentEl) {
+            widget.parentEl.hidden = false;
+        }
+
+        if (shouldHide) {
+            pauseWidgetVideos(widget);
+            continue;
+        }
+
+        if (widget.videoEl && !widget.value.paused && widget.videoEl.hidden === false) {
+            widget.videoEl.play?.();
+        }
+    }
+
+    applyExternalMediaVisibility(node, shouldHide);
+}
+
 function applyPreviewVisibility(node, shouldHide) {
     if (shouldHide) {
         if (Array.isArray(node.imgs) && node.imgs.length > 0 && !isPlaceholderImages(node.imgs)) {
@@ -157,12 +497,18 @@ function applyPreviewVisibility(node, shouldHide) {
             node[HIDDEN_IMAGE_INDEX] = node.imageIndex ?? null;
         }
 
-        if (Array.isArray(node[HIDDEN_IMAGES]) && node[HIDDEN_IMAGES].length > 0) {
+        if (Array.isArray(node.images) && node.images.length > 0) {
+            node[HIDDEN_NODE_IMAGES] = node.images;
+        }
+
+        if (hasHiddenPreviewContent(node)) {
             getPlaceholderImages(node);
             node.imgs = [];
+            node.images = [];
             node.imageIndex = null;
         }
 
+        applyDomPreviewVisibility(node, true);
         return;
     }
 
@@ -173,9 +519,18 @@ function applyPreviewVisibility(node, shouldHide) {
         node.imgs = node[HIDDEN_IMAGES];
         node.imageIndex = node[HIDDEN_IMAGE_INDEX] ?? null;
     }
+
+    if (
+        (!Array.isArray(node.images) || node.images.length === 0) &&
+        Array.isArray(node[HIDDEN_NODE_IMAGES])
+    ) {
+        node.images = node[HIDDEN_NODE_IMAGES];
+    }
+
+    applyDomPreviewVisibility(node, false);
 }
 
-function syncHideOutputImages(node) {
+function syncHideOutputImages(node, { force = false } = {}) {
     if (!(ORIGINAL_HIDE_STATE in node)) {
         node[ORIGINAL_HIDE_STATE] = Boolean(node.hideOutputImages);
     }
@@ -183,7 +538,16 @@ function syncHideOutputImages(node) {
     const shouldHide = isHideModeEnabled(node) && !node[HOVER_STATE];
     const nextValue = shouldHide || node[ORIGINAL_HIDE_STATE];
 
-    applyPreviewVisibility(node, shouldHide);
+    if (force || node[PREVIEW_HIDDEN_STATE] !== shouldHide) {
+        applyPreviewVisibility(node, shouldHide);
+        node[PREVIEW_HIDDEN_STATE] = shouldHide;
+        if (shouldHide) {
+            startPreviewWatcher(node);
+        } else {
+            stopPreviewWatcher(node);
+        }
+        setCanvasDirty(node);
+    }
 
     if (node.hideOutputImages !== nextValue) {
         node.hideOutputImages = nextValue;
@@ -209,7 +573,9 @@ function getLocalPos(node, event, localPos) {
 }
 
 function isPreviewWidget(widget) {
-    return widget?.name === CANVAS_IMAGE_PREVIEW_WIDGET || widget?.type === "IMAGE_PREVIEW";
+    return widget?.name === CANVAS_IMAGE_PREVIEW_WIDGET ||
+        widget?.name === VIDEO_PREVIEW_WIDGET ||
+        widget?.type === "IMAGE_PREVIEW";
 }
 
 function getWidgetBottom(node) {
@@ -277,7 +643,7 @@ function getPreviewArea(node) {
 }
 
 function drawHiddenPlaceholder(node, ctx) {
-    if (!ctx || !isHideModeEnabled(node) || node[HOVER_STATE] || !Array.isArray(node[HIDDEN_IMAGES]) || node[HIDDEN_IMAGES].length === 0) {
+    if (!ctx || !isHideModeEnabled(node) || node[HOVER_STATE] || !hasHiddenPreviewContent(node)) {
         return;
     }
 
@@ -322,6 +688,13 @@ function updatePreviewHover(node, isHovering) {
     setCanvasDirty(node);
 }
 
+function scheduleHideModeSync(node) {
+    syncHideOutputImages(node, { force: true });
+    requestAnimationFrame(() => syncHideOutputImages(node, { force: true }));
+    setTimeout(() => syncHideOutputImages(node, { force: true }), 100);
+    setTimeout(() => syncHideOutputImages(node, { force: true }), 500);
+}
+
 function setupHideMode(node) {
     ensureHideModeProperty(node);
     ensureHideModeWidget(node);
@@ -353,13 +726,18 @@ function setupHideMode(node) {
     const originalOnDrawBackground = node.onDrawBackground;
     node.onDrawBackground = function (...args) {
         const result = originalOnDrawBackground?.apply(this, args);
-        syncHideOutputImages(this);
+        return result;
+    };
+
+    const originalOnExecuted = node.onExecuted;
+    node.onExecuted = function (...args) {
+        const result = originalOnExecuted?.apply(this, args);
+        scheduleHideModeSync(this);
         return result;
     };
 
     const originalOnDrawForeground = node.onDrawForeground;
     node.onDrawForeground = function (ctx, ...args) {
-        syncHideOutputImages(this);
         const result = originalOnDrawForeground?.call(this, ctx, ...args);
         drawHiddenPlaceholder(this, ctx);
         return result;
@@ -367,19 +745,22 @@ function setupHideMode(node) {
 
     const originalOnMouseMove = node.onMouseMove;
     node.onMouseMove = function (event, localPos, graphCanvas) {
-        updatePreviewHover(this, isInPreviewArea(this, event, localPos));
+        updatePreviewHover(this, isInPreviewArea(this, event, localPos) || isPointerOverPreviewRect(this));
         return originalOnMouseMove?.call(this, event, localPos, graphCanvas);
     };
 
     const originalOnMouseLeave = node.onMouseLeave;
     node.onMouseLeave = function (...args) {
-        updatePreviewHover(this, false);
+        setTimeout(() => {
+            updatePreviewHover(this, isPointerOverPreviewRect(this));
+        }, 80);
         return originalOnMouseLeave?.apply(this, args);
     };
 
     const originalOnRemoved = node.onRemoved;
     node.onRemoved = function (...args) {
         applyPreviewVisibility(this, false);
+        disconnectPreviewObserver(this);
 
         if (ORIGINAL_HIDE_STATE in this) {
             this.hideOutputImages = this[ORIGINAL_HIDE_STATE];
