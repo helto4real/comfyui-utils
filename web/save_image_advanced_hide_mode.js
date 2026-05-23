@@ -17,6 +17,7 @@ const PREVIEW_WIDGET_STYLES = "__heltoHideModePreviewWidgetStyles";
 const PREVIEW_MEDIA_STYLES = "__heltoHideModePreviewMediaStyles";
 const PREVIEW_WATCHER = "__heltoHideModePreviewWatcher";
 const PREVIEW_OBSERVER = "__heltoHideModePreviewObserver";
+const HOVER_CLEAR_TIMER = "__heltoHideModeHoverClearTimer";
 const FORMAT_WIDGETS = "__heltoVideoFormatWidgets";
 const FORMAT_WIDGET_COUNT = "__heltoVideoFormatWidgetCount";
 const FORMAT_WIDGET_CALLBACK = "__heltoVideoFormatWidgetCallback";
@@ -687,7 +688,28 @@ function isInPreviewArea(node, event, localPos) {
     return x >= 0 && x <= width && y >= previewTop && y <= height;
 }
 
-function updatePreviewHover(node, isHovering) {
+function clearHoverClearTimer(node) {
+    if (!node?.[HOVER_CLEAR_TIMER]) {
+        return;
+    }
+
+    clearTimeout(node[HOVER_CLEAR_TIMER]);
+    node[HOVER_CLEAR_TIMER] = null;
+}
+
+function updatePreviewHover(node, isHovering, { deferHide = true } = {}) {
+    if (isHovering) {
+        clearHoverClearTimer(node);
+    } else if (deferHide && node[HOVER_STATE]) {
+        if (!node[HOVER_CLEAR_TIMER]) {
+            node[HOVER_CLEAR_TIMER] = setTimeout(() => {
+                node[HOVER_CLEAR_TIMER] = null;
+                updatePreviewHover(node, isPointerOverPreviewRect(node), { deferHide: false });
+            }, 150);
+        }
+        return;
+    }
+
     if (node[HOVER_STATE] === isHovering) {
         return;
     }
@@ -798,6 +820,7 @@ function setupHideMode(node) {
     const originalOnRemoved = node.onRemoved;
     node.onRemoved = function (...args) {
         managedHideModeNodes.delete(this);
+        clearHoverClearTimer(this);
         applyPreviewVisibility(this, false);
         disconnectPreviewObserver(this);
 
