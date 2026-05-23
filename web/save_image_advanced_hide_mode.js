@@ -130,7 +130,8 @@ function applyPreviewVisibility(node, shouldHide) {
         }
 
         if (Array.isArray(node[HIDDEN_IMAGES]) && node[HIDDEN_IMAGES].length > 0) {
-            node.imgs = getPlaceholderImages(node) ?? [];
+            getPlaceholderImages(node);
+            node.imgs = [];
             node.imageIndex = null;
         }
 
@@ -222,6 +223,53 @@ function getPreviewAreaTop(node) {
     return Math.max(widgetBottom, 0);
 }
 
+function getPreviewArea(node) {
+    const previewWidget = node.widgets?.find(isPreviewWidget);
+    const width = node.size?.[0] ?? 0;
+    const height = node.size?.[1] ?? 0;
+
+    if (previewWidget && Number.isFinite(previewWidget.last_y)) {
+        const top = previewWidget.last_y;
+        const widgetHeight = previewWidget.computedHeight ?? previewWidget.computeSize?.(width)?.[1] ?? height - top;
+        return {
+            x: 0,
+            y: top,
+            width,
+            height: Math.max(0, widgetHeight),
+        };
+    }
+
+    const top = getPreviewAreaTop(node);
+    return {
+        x: 0,
+        y: top,
+        width,
+        height: Math.max(0, height - top),
+    };
+}
+
+function drawHiddenPlaceholder(node, ctx) {
+    if (!ctx || !isHideModeEnabled(node) || node[HOVER_STATE] || !Array.isArray(node[HIDDEN_IMAGES]) || node[HIDDEN_IMAGES].length === 0) {
+        return;
+    }
+
+    const placeholder = getPlaceholderImages(node)?.[0];
+
+    if (!placeholder) {
+        return;
+    }
+
+    const area = getPreviewArea(node);
+
+    if (area.width <= 0 || area.height <= 0) {
+        return;
+    }
+
+    ctx.save();
+    ctx.drawImage(placeholder, area.x, area.y, area.width, area.height);
+    ctx.restore();
+}
+
 function isInPreviewArea(node, event, localPos) {
     const pos = getLocalPos(node, event, localPos);
 
@@ -282,9 +330,11 @@ function setupHideMode(node) {
     };
 
     const originalOnDrawForeground = node.onDrawForeground;
-    node.onDrawForeground = function (...args) {
+    node.onDrawForeground = function (ctx, ...args) {
         syncHideOutputImages(this);
-        return originalOnDrawForeground?.apply(this, args);
+        const result = originalOnDrawForeground?.call(this, ctx, ...args);
+        drawHiddenPlaceholder(this, ctx);
+        return result;
     };
 
     const originalOnMouseMove = node.onMouseMove;
