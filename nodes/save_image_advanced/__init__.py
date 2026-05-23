@@ -42,7 +42,12 @@ class SaveImageAdvanced(io.ComfyNode):
                 io.Hidden.unique_id,
             ],
             is_output_node=True,
+            not_idempotent=True,
         )
+
+    @classmethod
+    def fingerprint_inputs(cls, **kwargs) -> float:
+        return float("NaN")
 
     @classmethod
     def execute(
@@ -70,7 +75,8 @@ class SaveImageAdvanced(io.ComfyNode):
         )
         filename_prefix = cls._normalize_filename_prefix(filename_prefix)
 
-        cls._save_images(images, save_dir, filename_prefix)
+        saved_count = cls._save_images(images, save_dir, filename_prefix)
+        print(f"Save Image Advanced saved {saved_count} image(s) to: {save_dir}")
         preview = ui.SavedImages(
             ui.ImageSaveHelper.save_images(
                 images,
@@ -130,17 +136,21 @@ class SaveImageAdvanced(io.ComfyNode):
         return prefix if prefix not in ("", ".", os.pardir) else "img"
 
     @classmethod
-    def _save_images(cls, images, save_dir: str, filename_prefix: str) -> None:
+    def _save_images(cls, images, save_dir: str, filename_prefix: str) -> int:
         os.makedirs(save_dir, exist_ok=True)
         counter = cls._next_counter(save_dir, filename_prefix)
         metadata = ui.ImageSaveHelper._create_png_metadata(cls)
+        saved_count = 0
 
         for image in images:
             image_file = f"{filename_prefix}_{counter:05}_.png"
             image_path = os.path.join(save_dir, image_file)
             pil_image = ui.ImageSaveHelper._convert_tensor_to_pil(image)
             pil_image.save(image_path, pnginfo=metadata, compress_level=4)
+            saved_count += 1
             counter += 1
+
+        return saved_count
 
     @staticmethod
     def _next_counter(save_dir: str, filename_prefix: str) -> int:
