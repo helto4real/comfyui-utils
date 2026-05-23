@@ -8,7 +8,7 @@ import folder_paths
 from comfy_api.latest import io, ui
 
 
-_COUNTER_RE_TEMPLATE = r"^{prefix}_(?P<counter>\d+)_\.png$"
+_COUNTER_RE_TEMPLATE = r"^{prefix}_(?P<counter>\d+)_?\.png$"
 
 
 class SaveImageAdvanced(io.ComfyNode):
@@ -143,7 +143,7 @@ class SaveImageAdvanced(io.ComfyNode):
         saved_count = 0
 
         for image in images:
-            image_file = f"{filename_prefix}_{counter:05}_.png"
+            image_file = f"{filename_prefix}_{counter:05}.png"
             image_path = os.path.join(save_dir, image_file)
             pil_image = ui.ImageSaveHelper._convert_tensor_to_pil(image)
             pil_image.save(image_path, pnginfo=metadata, compress_level=4)
