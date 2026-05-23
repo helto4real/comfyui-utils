@@ -6,6 +6,7 @@ from .nodes.aspect_ratio_calculator import AspectRatioCalculator
 from .nodes.ltx_video_params import HeltoVideoParamsLTX
 from .nodes.model_auto_router import ModelAutoRouter
 from .nodes.save_image_advanced import SaveImageAdvanced
+from .nodes.save_video_advanced import SaveVideoAdvanced
 from .nodes.wan_video_params import HeltoVideoParams
 
 
@@ -21,6 +22,7 @@ class HeltoUtilsExtension(ComfyExtension):
             AspectRatioCalculator,
             ModelAutoRouter,
             SaveImageAdvanced,
+            SaveVideoAdvanced,
         ]
 
 

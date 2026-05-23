@@ -1,12 +1,19 @@
 import { app } from "/scripts/app.js";
 
-const NODE_CLASS = "HeltoSaveImageAdvanced";
+const NODE_CLASSES = new Map([
+    ["HeltoSaveImageAdvanced", "Save Image Advanced"],
+    ["HeltoSaveVideoAdvanced", "Save Video Advanced"],
+]);
+const VIDEO_NODE_CLASS = "HeltoSaveVideoAdvanced";
 const PROPERTY_NAME = "hide mode";
 const HOVER_STATE = "__heltoHideModePreviewHover";
 const ORIGINAL_HIDE_STATE = "__heltoHideModeOriginalHideOutputImages";
 const HIDDEN_IMAGES = "__heltoHideModeHiddenImages";
 const HIDDEN_IMAGE_INDEX = "__heltoHideModeHiddenImageIndex";
 const HIDE_MODE_WIDGET = "__heltoHideModeWidget";
+const FORMAT_WIDGETS = "__heltoVideoFormatWidgets";
+const FORMAT_WIDGET_COUNT = "__heltoVideoFormatWidgetCount";
+const FORMAT_WIDGET_CALLBACK = "__heltoVideoFormatWidgetCallback";
 const CANVAS_IMAGE_PREVIEW_WIDGET = "$$canvas-image-preview";
 const PLACEHOLDER_SRC = new URL("./hidden_preview_placeholder.png", import.meta.url).href;
 
@@ -14,16 +21,37 @@ let placeholderImage = null;
 let placeholderImages = null;
 let placeholderLoadStarted = false;
 
-function isSaveImageAdvancedNode(node) {
-    return (
-        node?.constructor?.comfyClass === NODE_CLASS ||
-        node?.constructor?.nodeData?.name === NODE_CLASS ||
-        node?.constructor?.type === NODE_CLASS ||
-        node?.constructor?.title === "Save Image Advanced" ||
-        node?.comfyClass === NODE_CLASS ||
-        node?.type === NODE_CLASS ||
-        node?.title === "Save Image Advanced"
-    );
+function getNodeClass(node) {
+    const candidates = [
+        node?.constructor?.comfyClass,
+        node?.constructor?.nodeData?.name,
+        node?.constructor?.type,
+        node?.comfyClass,
+        node?.type,
+    ];
+
+    for (const candidate of candidates) {
+        if (NODE_CLASSES.has(candidate)) {
+            return candidate;
+        }
+    }
+
+    const title = node?.constructor?.title ?? node?.title;
+    for (const [nodeClass, displayName] of NODE_CLASSES) {
+        if (title === displayName) {
+            return nodeClass;
+        }
+    }
+
+    return null;
+}
+
+function isAdvancedSaveNode(node) {
+    return getNodeClass(node) !== null;
+}
+
+function isSaveVideoAdvancedNode(node) {
+    return getNodeClass(node) === VIDEO_NODE_CLASS;
 }
 
 function setCanvasDirty(node) {
@@ -363,13 +391,133 @@ function setupHideMode(node) {
     syncHideOutputImages(node);
 }
 
+function getNodeData(node) {
+    return node?.constructor?.nodeData ?? globalThis.LiteGraph?.registered_node_types?.[node.type]?.nodeData;
+}
+
+function getFormatDefinitions(node) {
+    return getNodeData(node)?.input?.required?.format?.[1]?.formats ?? {};
+}
+
+function getWidgetType(widgetDefinition) {
+    let type = widgetDefinition?.[2]?.widgetType ?? widgetDefinition?.[1];
+
+    if (Array.isArray(type)) {
+        type = "COMBO";
+    }
+
+    return type;
+}
+
+function removeInputByName(node, name) {
+    const slot = node.inputs?.findIndex((input) => input.name === name) ?? -1;
+
+    if (slot >= 0) {
+        node.removeInput(slot);
+    }
+}
+
+function addFormatWidgetInput(node, widget) {
+    if (!widget?.config || !Array.isArray(node.inputs)) {
+        return;
+    }
+
+    const existingInput = node.inputs.find((input) => input.name === widget.name);
+    if (existingInput) {
+        existingInput.type = widget.config[0];
+        existingInput.widget ??= {};
+        existingInput.widget.name = widget.name;
+        return;
+    }
+
+    node.addInput?.(widget.name, widget.config[0], { widget: { name: widget.name } });
+}
+
+function createFormatWidget(node, widgetDefinition) {
+    const type = getWidgetType(widgetDefinition);
+    const factory = app.widgets?.[type];
+
+    if (!factory) {
+        return null;
+    }
+
+    factory(node, widgetDefinition[0], widgetDefinition.slice(1), app);
+    const widget = node.widgets?.pop();
+
+    if (!widget) {
+        return null;
+    }
+
+    widget.config = widgetDefinition.slice(1);
+    return widget;
+}
+
+function refreshFormatWidgets(node, formatValue) {
+    const definitions = getFormatDefinitions(node);
+    const formatWidget = node.widgets?.find((widget) => widget.name === "format");
+    const formatWidgetIndex = node.widgets?.findIndex((widget) => widget === formatWidget) ?? -1;
+
+    if (!formatWidget || formatWidgetIndex < 0) {
+        return;
+    }
+
+    const oldWidgets = node[FORMAT_WIDGETS] ?? [];
+    for (const widget of oldWidgets) {
+        removeInputByName(node, widget.name);
+        widget.onRemove?.();
+    }
+
+    const newWidgets = [];
+    for (const widgetDefinition of definitions?.[formatValue] ?? []) {
+        const widget = createFormatWidget(node, widgetDefinition);
+        if (widget) {
+            newWidgets.push(widget);
+        }
+    }
+
+    node.widgets.splice(formatWidgetIndex + 1, node[FORMAT_WIDGET_COUNT] ?? 0, ...newWidgets);
+    node[FORMAT_WIDGETS] = newWidgets;
+    node[FORMAT_WIDGET_COUNT] = newWidgets.length;
+
+    for (const widget of newWidgets) {
+        addFormatWidgetInput(node, widget);
+    }
+
+    node.setSize?.(node.computeSize?.() ?? node.size);
+    setCanvasDirty(node);
+}
+
+function setupFormatWidgets(node) {
+    if (node[FORMAT_WIDGET_CALLBACK]) {
+        return;
+    }
+
+    const formatWidget = node.widgets?.find((widget) => widget.name === "format");
+    if (!formatWidget) {
+        return;
+    }
+
+    const originalCallback = formatWidget.callback;
+    formatWidget.callback = function (value, ...args) {
+        const result = originalCallback?.call(this, value, ...args);
+        refreshFormatWidgets(node, value);
+        return result;
+    };
+    node[FORMAT_WIDGET_CALLBACK] = true;
+    refreshFormatWidgets(node, formatWidget.value);
+}
+
 app.registerExtension({
-    name: "Helto.SaveImageAdvanced.HideMode",
+    name: "Helto.AdvancedSave.HideMode",
     nodeCreated(node) {
-        if (!isSaveImageAdvancedNode(node)) {
+        if (!isAdvancedSaveNode(node)) {
             return;
         }
 
         setupHideMode(node);
+
+        if (isSaveVideoAdvancedNode(node)) {
+            setupFormatWidgets(node);
+        }
     },
 });
