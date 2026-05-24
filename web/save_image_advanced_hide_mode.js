@@ -138,6 +138,40 @@ function privateRecordToUrl(record) {
     return api.apiURL(`/helto_utils/private_media?${params.toString()}${app.getRandParam?.() ?? ""}`);
 }
 
+function privatePreviewUrls(output) {
+    if (!Array.isArray(output?.images)) {
+        return [];
+    }
+    return output.images.map(privateRecordToUrl).filter(Boolean);
+}
+
+function previewKeysForNode(node) {
+    const keys = [String(node.id)];
+    const graphId = node.graph?.id;
+    if (graphId && !node.graph?.isRootGraph) {
+        keys.push(`${graphId}:${node.id}`);
+    }
+    return keys;
+}
+
+function syncPrivatePreviewUrls(node, output) {
+    const urls = privatePreviewUrls(output);
+    app.nodePreviewImages ??= {};
+
+    if (urls.length) {
+        for (const key of previewKeysForNode(node)) {
+            app.nodePreviewImages[key] = urls;
+        }
+        ensureVideoPreviewMediaType(node);
+        return true;
+    }
+
+    for (const key of previewKeysForNode(node)) {
+        delete app.nodePreviewImages[key];
+    }
+    return false;
+}
+
 function applyPrivateImagePreviews(node, records) {
     if (!Array.isArray(records) || records.length === 0) {
         return false;
@@ -1448,6 +1482,7 @@ function refreshRestoredVueOutput(node, { force = false } = {}) {
         return;
     }
 
+    syncPrivatePreviewUrls(node, output);
     ensureVideoPreviewMediaType(node);
     const refreshedOutput = {
         ...output,
@@ -1588,9 +1623,10 @@ function setupVideoHideMode(node) {
     };
 
     const originalOnExecuted = node.onExecuted;
-    node.onExecuted = function (...args) {
+    node.onExecuted = function (output, ...args) {
+        syncPrivatePreviewUrls(this, output);
         ensureVideoPreviewMediaType(this);
-        const result = originalOnExecuted?.apply(this, args);
+        const result = originalOnExecuted?.call(this, output, ...args);
         scheduleHideModeSync(this);
         return result;
     };
