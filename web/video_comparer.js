@@ -101,7 +101,9 @@ function injectStyles() {
             align-items: center;
             cursor: pointer;
             display: flex;
+            font-size: 0;
             justify-content: center;
+            line-height: 0;
             padding: 0;
         }
         .helto-video-comparer__icon {
@@ -462,7 +464,10 @@ class VideoComparerPreviewWidget {
         this.isPlaying = isPlaying;
         this.playButton.title = isPlaying ? "Pause" : "Play";
         this.playButton.setAttribute("aria-label", this.playButton.title);
-        this.playButton.querySelector(".helto-video-comparer__icon").textContent = isPlaying ? PAUSE_ICON : PLAY_ICON;
+        const icon = this.playButton.querySelector(".helto-video-comparer__icon");
+        if (icon) {
+            icon.textContent = isPlaying ? PAUSE_ICON : PLAY_ICON;
+        }
     }
 
     playBoth(source = this.video1) {

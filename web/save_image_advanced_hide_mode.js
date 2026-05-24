@@ -26,6 +26,7 @@ const FORMAT_WIDGET_CALLBACK = "__heltoVideoFormatWidgetCallback";
 const CANVAS_IMAGE_PREVIEW_WIDGET = "$$canvas-image-preview";
 const VIDEO_PREVIEW_WIDGET = "videopreview";
 const NATIVE_VIDEO_PREVIEW_WIDGET = "video-preview";
+const VUE_PLACEHOLDER_ATTR = "data-helto-hide-mode-placeholder";
 const PLACEHOLDER_SRC = new URL("./hidden_preview_placeholder.png", import.meta.url).href;
 
 let placeholderImage = null;
@@ -85,6 +86,14 @@ function isSaveImageAdvancedNode(node) {
 
 function isSaveVideoAdvancedNode(node) {
     return VIDEO_NODE_CLASSES.has(getNodeClass(node));
+}
+
+function cssEscape(value) {
+    return globalThis.CSS?.escape ? globalThis.CSS.escape(String(value)) : String(value).replace(/["\\]/g, "\\$&");
+}
+
+function getVueNodeElement(node) {
+    return document.querySelector(`[data-node-id="${cssEscape(node.id)}"]`);
 }
 
 function setCanvasDirty(node) {
@@ -399,6 +408,10 @@ function isPointerOverPreviewRect(node) {
         return true;
     }
 
+    if (isPointerOverVuePreview(node, x, y)) {
+        return true;
+    }
+
     for (const element of node[PREVIEW_MEDIA_STYLES]?.keys?.() ?? []) {
         if (isPointInsideElement(element, x, y)) {
             return true;
@@ -431,6 +444,17 @@ function isPointerOverNodeVideoContainer(node, x, y) {
     }
 
     return Array.from(node.videoContainer.querySelectorAll("video, img")).some((element) => {
+        return isPointInsideElement(element, x, y);
+    });
+}
+
+function isPointerOverVuePreview(node, x, y) {
+    const nodeElement = getVueNodeElement(node);
+    if (!(nodeElement instanceof HTMLElement)) {
+        return false;
+    }
+
+    return Array.from(nodeElement.querySelectorAll(`.video-preview, [${VUE_PLACEHOLDER_ATTR}]`)).some((element) => {
         return isPointInsideElement(element, x, y);
     });
 }
@@ -520,6 +544,144 @@ function applyNodeVideoContainerVisibility(node, shouldHide) {
         if (shouldHide && element instanceof HTMLVideoElement) {
             element.pause();
             element.autoplay = false;
+        }
+    }
+}
+
+function elementContainsMatchingMedia(element, records) {
+    if (!(element instanceof HTMLElement)) {
+        return false;
+    }
+
+    const mediaElements = element.matches?.("video, img")
+        ? [element]
+        : Array.from(element.querySelectorAll("video, img"));
+
+    return mediaElements.some((media) => mediaMatchesPreviewRecords(media, records));
+}
+
+function elementOverlapsAnyNodeRect(element, nodeRects) {
+    if (!(element instanceof HTMLElement) || !nodeRects.length) {
+        return false;
+    }
+
+    const rect = element.getBoundingClientRect();
+    if (rect.width < 20 || rect.height < 20) {
+        return false;
+    }
+
+    const elementArea = rect.width * rect.height;
+    return nodeRects.some((nodeRect) => {
+        const overlap = rectOverlapArea(rect, nodeRect);
+        const nodeArea = nodeRect.width * nodeRect.height;
+        return overlap > Math.min(elementArea, nodeArea) * 0.25;
+    });
+}
+
+function ensureVueHiddenPlaceholder(node, previewRoot) {
+    const parent = previewRoot.parentElement;
+    if (!(parent instanceof HTMLElement)) {
+        return null;
+    }
+
+    let placeholder = parent.querySelector(`[${VUE_PLACEHOLDER_ATTR}]`);
+    if (!placeholder) {
+        placeholder = document.createElement("div");
+        placeholder.setAttribute(VUE_PLACEHOLDER_ATTR, "true");
+        placeholder.style.background = "#050505";
+        placeholder.style.borderRadius = "4px";
+        placeholder.style.overflow = "hidden";
+        placeholder.style.width = "100%";
+
+        const image = document.createElement("img");
+        image.alt = "";
+        image.decoding = "async";
+        image.src = PLACEHOLDER_SRC;
+        image.style.display = "block";
+        image.style.height = "100%";
+        image.style.objectFit = "cover";
+        image.style.width = "100%";
+        placeholder.append(image);
+        parent.insertBefore(placeholder, previewRoot);
+    }
+
+    placeholder.style.display = "";
+    const nodeElement = getVueNodeElement(node) ?? previewRoot.closest?.("[data-node-id]");
+    const nodeRect = nodeElement instanceof HTMLElement ? nodeElement.getBoundingClientRect() : null;
+    const placeholderTop = placeholder.getBoundingClientRect().top;
+    const previewHeight = previewRoot.getBoundingClientRect().height || previewRoot.offsetHeight || 352;
+    const availableHeight = nodeRect ? nodeRect.bottom - placeholderTop - 32 : 0;
+    const height = availableHeight > 64 ? availableHeight : previewHeight;
+    placeholder.style.height = `${Math.max(64, Math.round(height))}px`;
+    placeholder.style.pointerEvents = "auto";
+    return placeholder;
+}
+
+function removeVueHiddenPlaceholder(previewRoot) {
+    const parent = previewRoot.parentElement;
+    const placeholder = parent?.querySelector?.(`[${VUE_PLACEHOLDER_ATTR}]`);
+    placeholder?.remove();
+}
+
+function applyVuePreviewRootVisibility(node, previewRoot, shouldHide) {
+    if (!(previewRoot instanceof HTMLElement)) {
+        return;
+    }
+
+    if (shouldHide) {
+        if (previewRoot.dataset.heltoHideModeDisplay === undefined) {
+            previewRoot.dataset.heltoHideModeDisplay = previewRoot.style.display;
+        }
+        if (previewRoot.dataset.heltoHideModePointerEvents === undefined) {
+            previewRoot.dataset.heltoHideModePointerEvents = previewRoot.style.pointerEvents;
+        }
+
+        ensureVueHiddenPlaceholder(node, previewRoot);
+        previewRoot.style.display = "none";
+        previewRoot.style.pointerEvents = "none";
+        return;
+    }
+
+    removeVueHiddenPlaceholder(previewRoot);
+    if (previewRoot.dataset.heltoHideModeDisplay !== undefined) {
+        previewRoot.style.display = previewRoot.dataset.heltoHideModeDisplay;
+        delete previewRoot.dataset.heltoHideModeDisplay;
+    }
+    if (previewRoot.dataset.heltoHideModePointerEvents !== undefined) {
+        previewRoot.style.pointerEvents = previewRoot.dataset.heltoHideModePointerEvents;
+        delete previewRoot.dataset.heltoHideModePointerEvents;
+    }
+}
+
+function applyVueVideoPreviewVisibility(node, shouldHide) {
+    const records = getHiddenPreviewRecords(node);
+    const nodeRects = getNodePreviewClientRects(node);
+    const nodeElement = getVueNodeElement(node);
+    const candidates = nodeElement
+        ? nodeElement.querySelectorAll(".video-preview")
+        : document.querySelectorAll(".video-preview");
+
+    for (const candidate of candidates) {
+        const previewRoot = candidate.closest?.(".video-preview") ?? candidate;
+        const shouldAffectPreview = Boolean(nodeElement) ||
+            elementContainsMatchingMedia(previewRoot, records) ||
+            elementOverlapsAnyNodeRect(previewRoot, nodeRects);
+
+        if (!shouldAffectPreview) {
+            if (!shouldHide) {
+                applyManagedElementVisibility(node, previewRoot, false);
+                applyVuePreviewRootVisibility(node, previewRoot, false);
+            }
+            continue;
+        }
+
+        applyVuePreviewRootVisibility(node, previewRoot, shouldHide);
+
+        for (const video of previewRoot.querySelectorAll?.("video") ?? []) {
+            if (shouldHide && video instanceof HTMLVideoElement) {
+                video.pause();
+                video.autoplay = false;
+            }
         }
     }
 }
@@ -614,6 +776,7 @@ function applyDomPreviewVisibility(node, shouldHide) {
 
     applyNodeVideoContainerVisibility(node, shouldHide);
     applyExternalMediaVisibility(node, shouldHide);
+    applyVueVideoPreviewVisibility(node, shouldHide);
 }
 
 function refreshVideoDomLayerVisibility(node) {
