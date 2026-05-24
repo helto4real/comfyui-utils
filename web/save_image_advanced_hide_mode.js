@@ -25,6 +25,7 @@ const FORMAT_WIDGET_COUNT = "__heltoVideoFormatWidgetCount";
 const FORMAT_WIDGET_CALLBACK = "__heltoVideoFormatWidgetCallback";
 const CANVAS_IMAGE_PREVIEW_WIDGET = "$$canvas-image-preview";
 const VIDEO_PREVIEW_WIDGET = "videopreview";
+const NATIVE_VIDEO_PREVIEW_WIDGET = "video-preview";
 const PLACEHOLDER_SRC = new URL("./hidden_preview_placeholder.png", import.meta.url).href;
 
 let placeholderImage = null;
@@ -238,11 +239,11 @@ function getHiddenPreviewRecords(node) {
 }
 
 function getVideoPreviewWidgets(node) {
-    return node.widgets?.filter((widget) => widget.name === VIDEO_PREVIEW_WIDGET) ?? [];
+    return node.widgets?.filter(isVideoPreviewWidget) ?? [];
 }
 
 function getDomPreviewWidgets(node) {
-    return node.widgets?.filter(isPreviewWidget) ?? [];
+    return node.widgets?.filter(isDomPreviewWidget) ?? [];
 }
 
 function getWidgetElements(widget) {
@@ -458,6 +459,49 @@ function applyExternalMediaVisibility(node, shouldHide) {
     }
 }
 
+function applyManagedElementVisibility(node, element, shouldHide) {
+    if (!(element instanceof HTMLElement)) {
+        return;
+    }
+
+    node[PREVIEW_MEDIA_STYLES] ??= new Map();
+
+    if (!node[PREVIEW_MEDIA_STYLES].has(element)) {
+        node[PREVIEW_MEDIA_STYLES].set(element, {
+            visibility: element.style.visibility,
+            pointerEvents: element.style.pointerEvents,
+        });
+    }
+
+    const original = node[PREVIEW_MEDIA_STYLES].get(element);
+    element.style.visibility = shouldHide ? "hidden" : original.visibility;
+    element.style.pointerEvents = shouldHide ? "none" : original.pointerEvents;
+
+    if (!shouldHide) {
+        node[PREVIEW_MEDIA_STYLES].delete(element);
+    }
+}
+
+function applyNodeVideoContainerVisibility(node, shouldHide) {
+    if (!(node.videoContainer instanceof HTMLElement)) {
+        return;
+    }
+
+    const elements = [
+        node.videoContainer,
+        ...node.videoContainer.querySelectorAll("video, img"),
+    ];
+
+    for (const element of elements) {
+        applyManagedElementVisibility(node, element, shouldHide);
+
+        if (shouldHide && element instanceof HTMLVideoElement) {
+            element.pause();
+            element.autoplay = false;
+        }
+    }
+}
+
 function applyLivePreviewVisibility(node) {
     const shouldHide = isHideModeEnabled(node) && !node[HOVER_STATE];
     applyDomPreviewVisibility(node, shouldHide);
@@ -510,9 +554,11 @@ function disconnectPreviewObserver(node) {
 
 function applyDomPreviewVisibility(node, shouldHide) {
     for (const widget of getDomPreviewWidgets(node)) {
-        widget.value ??= {};
-        if (widget.name === VIDEO_PREVIEW_WIDGET) {
-            widget.value.hidden = shouldHide;
+        const widgetValue = widget.value;
+        const hasObjectValue = widgetValue !== null && typeof widgetValue === "object";
+
+        if (isVideoPreviewWidget(widget) && hasObjectValue) {
+            widgetValue.hidden = shouldHide;
         }
 
         widget[PREVIEW_WIDGET_STYLES] ??= new Map();
@@ -539,12 +585,21 @@ function applyDomPreviewVisibility(node, shouldHide) {
             continue;
         }
 
-        if (widget.videoEl && !widget.value.paused && widget.videoEl.hidden === false) {
+        if (widget.videoEl && !(hasObjectValue && widgetValue.paused) && widget.videoEl.hidden === false) {
             widget.videoEl.play?.();
         }
     }
 
+    applyNodeVideoContainerVisibility(node, shouldHide);
     applyExternalMediaVisibility(node, shouldHide);
+}
+
+function refreshVideoDomLayerVisibility(node) {
+    if (!isSaveVideoAdvancedNode(node) || !isHideModeEnabled(node)) {
+        return;
+    }
+
+    applyDomPreviewVisibility(node, !node[HOVER_STATE]);
 }
 
 function applyVideoPreviewVisibility(node, shouldHide) {
@@ -649,6 +704,16 @@ function isPreviewWidget(widget) {
     return widget?.name === CANVAS_IMAGE_PREVIEW_WIDGET ||
         widget?.name === VIDEO_PREVIEW_WIDGET ||
         widget?.type === "IMAGE_PREVIEW";
+}
+
+function isDomPreviewWidget(widget) {
+    return isPreviewWidget(widget) || isVideoPreviewWidget(widget);
+}
+
+function isVideoPreviewWidget(widget) {
+    return widget?.name === VIDEO_PREVIEW_WIDGET ||
+        widget?.name === NATIVE_VIDEO_PREVIEW_WIDGET ||
+        widget?.type === "video";
 }
 
 function getWidgetBottom(node) {
@@ -963,6 +1028,7 @@ function setupVideoHideMode(node) {
     const originalOnDrawForeground = node.onDrawForeground;
     node.onDrawForeground = function (ctx, ...args) {
         const result = originalOnDrawForeground?.call(this, ctx, ...args);
+        refreshVideoDomLayerVisibility(this);
         drawHiddenPlaceholder(this, ctx);
         return result;
     };
