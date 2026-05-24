@@ -59,6 +59,26 @@ def _prepare_image_frames(images: torch.Tensor) -> torch.Tensor:
     return frames
 
 
+def _materialize_audio(audio, slot: str):
+    if audio is None:
+        return None
+
+    try:
+        waveform = audio["waveform"]
+        sample_rate = audio["sample_rate"]
+    except Exception as exc:
+        print(f"Video Comparer ignored unavailable {slot} audio: {exc}")
+        return None
+
+    if waveform is None or sample_rate is None:
+        return None
+
+    return {
+        "waveform": waveform,
+        "sample_rate": sample_rate,
+    }
+
+
 class VideoComparer(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -77,6 +97,8 @@ class VideoComparer(io.ComfyNode):
             inputs=[
                 video_input("video_1"),
                 video_input("video_2"),
+                io.Audio.Input("audio_1", optional=True, tooltip="Audio source for video 1 preview playback."),
+                io.Audio.Input("audio_2", optional=True, tooltip="Audio source for video 2 preview playback."),
                 io.Float.Input("frame_rate", default=24.0, min=0.01, max=1000.0, step=0.01),
             ],
             outputs=[],
@@ -92,12 +114,12 @@ class VideoComparer(io.ComfyNode):
         return float("NaN")
 
     @classmethod
-    def execute(cls, video_1, video_2, frame_rate: float = 24.0) -> io.NodeOutput:
+    def execute(cls, video_1, video_2, audio_1=None, audio_2=None, frame_rate: float = 24.0) -> io.NodeOutput:
         result = {
             "video_comparison": [{
                 "videos": [
-                    cls._preview_result(video_1, "video_1", frame_rate),
-                    cls._preview_result(video_2, "video_2", frame_rate),
+                    cls._preview_result(video_1, "video_1", frame_rate, audio_1),
+                    cls._preview_result(video_2, "video_2", frame_rate, audio_2),
                 ],
                 "frame_rate": float(frame_rate),
             }]
@@ -106,9 +128,10 @@ class VideoComparer(io.ComfyNode):
         return io.NodeOutput(ui=result)
 
     @classmethod
-    def _preview_result(cls, source, slot: str, frame_rate: float) -> ui.SavedResult:
+    def _preview_result(cls, source, slot: str, frame_rate: float, audio=None) -> ui.SavedResult:
         preview_dir = os.path.join(folder_paths.get_temp_directory(), _PREVIEW_SUBFOLDER)
         os.makedirs(preview_dir, exist_ok=True)
+        audio = _materialize_audio(audio, slot)
 
         filename = f"{_hidden_node_id(cls)}_{slot}_{uuid.uuid4().hex}.mp4"
         output_path = os.path.join(preview_dir, filename)
@@ -120,18 +143,35 @@ class VideoComparer(io.ComfyNode):
         }
 
         if hasattr(source, "save_to"):
-            source.save_to(
-                output_path,
-                format=Types.VideoContainer.MP4,
-                codec=Types.VideoCodec.H264,
-                metadata=metadata,
-            )
+            if audio is None:
+                source.save_to(
+                    output_path,
+                    format=Types.VideoContainer.MP4,
+                    codec=Types.VideoCodec.H264,
+                    metadata=metadata,
+                )
+            else:
+                components = source.get_components()
+                video = InputImpl.VideoFromComponents(
+                    Types.VideoComponents(
+                        images=components.images,
+                        audio=audio,
+                        frame_rate=components.frame_rate,
+                        metadata=metadata,
+                    )
+                )
+                video.save_to(
+                    output_path,
+                    format=Types.VideoContainer.MP4,
+                    codec=Types.VideoCodec.H264,
+                    metadata=metadata,
+                )
         else:
             frames = _prepare_image_frames(source)
             video = InputImpl.VideoFromComponents(
                 Types.VideoComponents(
                     images=frames,
-                    audio=None,
+                    audio=audio,
                     frame_rate=_frame_rate_fraction(float(frame_rate)),
                     metadata=metadata,
                 )
