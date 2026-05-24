@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import uuid
 from datetime import date
 from pathlib import Path
@@ -609,6 +610,10 @@ class SaveVideoAdvanced(io.ComfyNode):
             "-",
         ]
 
+        metadata_path = cls._write_ffmpeg_metadata_file(video_format, save_dir)
+        if metadata_path is not None:
+            command += ["-f", "ffmetadata", "-i", metadata_path, "-map_metadata", "1"]
+
         if loop_count > 0:
             command += ["-vf", f"loop=loop={loop_count}:size={len(frames)}"]
 
@@ -620,27 +625,34 @@ class SaveVideoAdvanced(io.ComfyNode):
             suffix = "M" if str(video_format.get("megabit")) == "True" else "K"
             command += ["-b:v", f"{bitrate}{suffix}"]
 
-        metadata_args = cls._ffmpeg_metadata_args(video_format)
-        command += metadata_args
+        if metadata_path is not None:
+            command += ["-movflags", "use_metadata_tags"]
         _merge_filter_args(command)
         command.append(video_path)
 
         env = os.environ.copy()
         env.update(video_format.get("environment", {}))
         pbar = ProgressBar(len(frame_arrays))
-        process = subprocess.Popen(command, stdin=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
-        assert process.stdin is not None
-        assert process.stderr is not None
         try:
-            for frame_array in frame_arrays:
-                process.stdin.write(frame_array.tobytes())
-                pbar.update(1)
-            process.stdin.close()
-            stderr = process.stderr.read()
-            return_code = process.wait()
-        except BrokenPipeError:
-            stderr = process.stderr.read()
-            return_code = process.wait()
+            process = subprocess.Popen(command, stdin=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+            assert process.stdin is not None
+            assert process.stderr is not None
+            try:
+                for frame_array in frame_arrays:
+                    process.stdin.write(frame_array.tobytes())
+                    pbar.update(1)
+                process.stdin.close()
+                stderr = process.stderr.read()
+                return_code = process.wait()
+            except BrokenPipeError:
+                stderr = process.stderr.read()
+                return_code = process.wait()
+        finally:
+            if metadata_path is not None:
+                try:
+                    os.unlink(metadata_path)
+                except FileNotFoundError:
+                    pass
 
         if return_code != 0:
             raise RuntimeError("Save Video Advanced ffmpeg failed:\n" + stderr.decode("utf-8", "replace"))
@@ -749,11 +761,11 @@ class SaveVideoAdvanced(io.ComfyNode):
         return output_path
 
     @classmethod
-    def _ffmpeg_metadata_args(cls, video_format: dict[str, Any]) -> list[str]:
+    def _ffmpeg_metadata(cls, video_format: dict[str, Any]) -> dict[str, str]:
         if comfy_args.disable_metadata or str(video_format.get("save_metadata", "False")) == "False":
-            return []
+            return {}
 
-        metadata: dict[str, Any] = {}
+        metadata: dict[str, str] = {}
         hidden = getattr(cls, "hidden", None)
         if hidden is not None:
             if hidden.prompt is not None:
@@ -761,13 +773,30 @@ class SaveVideoAdvanced(io.ComfyNode):
             if hidden.extra_pnginfo is not None:
                 for key, value in hidden.extra_pnginfo.items():
                     metadata[key] = json.dumps(value)
+        return metadata
 
-        command = []
-        for key, value in metadata.items():
-            command += ["-metadata", f"{key}={value}"]
-        if metadata:
-            command += ["-movflags", "use_metadata_tags"]
-        return command
+    @staticmethod
+    def _ffmetadata_escape(value: str) -> str:
+        return re.sub(r"([=;#\\])", r"\\\1", value).replace("\n", r"\n")
+
+    @classmethod
+    def _write_ffmpeg_metadata_file(cls, video_format: dict[str, Any], save_dir: str) -> str | None:
+        metadata = cls._ffmpeg_metadata(video_format)
+        if not metadata:
+            return None
+
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            prefix="helto_save_video_metadata_",
+            suffix=".ffmetadata",
+            dir=save_dir,
+            delete=False,
+        ) as stream:
+            stream.write(";FFMETADATA1\n")
+            for key, value in metadata.items():
+                stream.write(f"{cls._ffmetadata_escape(str(key))}={cls._ffmetadata_escape(value)}\n")
+            return stream.name
 
     @classmethod
     def _png_metadata(cls) -> PngInfo | None:
