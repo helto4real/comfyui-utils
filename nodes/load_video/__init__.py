@@ -6,7 +6,7 @@ from typing import Any
 
 import torch
 import torch.nn.functional as F
-from comfy_api.latest import InputImpl, io
+from comfy_api.latest import InputImpl, io, ui
 
 try:
     import comfy.model_management
@@ -14,6 +14,7 @@ except Exception:
     comfy = None
 
 from .video_config import resolve_video_path
+from .video_io import preview_result
 from . import video_routes  # noqa: F401
 
 
@@ -164,6 +165,7 @@ class HeltoLoadVideo(io.ComfyNode):
             display_name="Load Video",
             category="HELTO/Video",
             description="Loads a selected video as image frames, audio, and video metadata.",
+            has_intermediate_output=True,
             inputs=[
                 io.String.Input("video", default=""),
                 io.String.Input("video_folder_alias", default="input"),
@@ -217,6 +219,7 @@ class HeltoLoadVideo(io.ComfyNode):
             source_path = _resolve_source(video, video_folder_alias)
         except Exception:
             return io.NodeOutput(_empty_images(), _empty_audio(), 0.0, 64, 64, 0.0)
+        preview = ui.PreviewVideo([preview_result(source_path)])
 
         start_time = max(_as_float(start_time), 0.0)
         requested_duration = max(_as_float(duration), 0.0)
@@ -242,7 +245,7 @@ class HeltoLoadVideo(io.ComfyNode):
 
         images = _normalize_images(components.images)
         if skip_first_frames >= images.shape[0]:
-            return io.NodeOutput(_empty_images(), _trim_audio(components.audio, 0.0, 0.0), source_fps, 64, 64, 0.0)
+            return io.NodeOutput(_empty_images(), _trim_audio(components.audio, 0.0, 0.0), source_fps, 64, 64, 0.0, ui=preview)
 
         if skip_first_frames > 0:
             images = images[skip_first_frames:]
@@ -279,4 +282,4 @@ class HeltoLoadVideo(io.ComfyNode):
         height = int(images.shape[1]) if images.ndim == 4 else 0
         width = int(images.shape[2]) if images.ndim == 4 else 0
 
-        return io.NodeOutput(images, audio, float(output_fps), width, height, float(output_duration))
+        return io.NodeOutput(images, audio, float(output_fps), width, height, float(output_duration), ui=preview)

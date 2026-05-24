@@ -3,8 +3,10 @@ import { app } from "/scripts/app.js";
 const NODE_CLASSES = new Map([
     ["HeltoSaveImageAdvanced", "Save Image Advanced"],
     ["HeltoSaveVideoAdvanced", "Save Video Advanced"],
+    ["HeltoLoadVideo", "Load Video"],
 ]);
 const VIDEO_NODE_CLASS = "HeltoSaveVideoAdvanced";
+const VIDEO_NODE_CLASSES = new Set(["HeltoSaveVideoAdvanced", "HeltoLoadVideo"]);
 const PROPERTY_NAME = "hide mode";
 const HOVER_STATE = "__heltoHideModePreviewHover";
 const ORIGINAL_HIDE_STATE = "__heltoHideModeOriginalHideOutputImages";
@@ -81,7 +83,7 @@ function isSaveImageAdvancedNode(node) {
 }
 
 function isSaveVideoAdvancedNode(node) {
-    return getNodeClass(node) === VIDEO_NODE_CLASS;
+    return VIDEO_NODE_CLASSES.has(getNodeClass(node));
 }
 
 function setCanvasDirty(node) {
@@ -1126,7 +1128,9 @@ app.registerExtension({
 
         if (isSaveVideoAdvancedNode(node)) {
             setupVideoHideMode(node);
-            setupFormatWidgets(node);
+            if (getNodeClass(node) === VIDEO_NODE_CLASS) {
+                setupFormatWidgets(node);
+            }
         }
     },
 });

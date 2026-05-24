@@ -4,13 +4,8 @@ import { api } from "/scripts/api.js";
 const NODE_CLASS = "HeltoLoadVideo";
 const DISPLAY_NAME = "Load Video";
 const ROUTE_PREFIX = "/helto_load_video";
-const HIDE_PROPERTY = "hide mode";
-const HIDE_WIDGET = "__heltoLoadVideoHideModeWidget";
-const PREVIEW_WIDGET = "__heltoLoadVideoPreviewWidget";
-const HOVER_STATE = "__heltoLoadVideoHoverState";
 const PICKER_BUTTON = "__heltoLoadVideoPickerButton";
-const PLACEHOLDER_SRC = new URL("./hidden_preview_placeholder.png", import.meta.url).href;
-const PREVIEW_HEIGHT = 180;
+const PREVIEW_REQUEST = "__heltoLoadVideoPreviewRequest";
 
 let stylesInjected = false;
 
@@ -21,33 +16,6 @@ function injectStyles() {
     stylesInjected = true;
     const style = document.createElement("style");
     style.textContent = `
-        .helto-load-video-preview {
-            background: #050505;
-            box-sizing: border-box;
-            display: block;
-            height: 180px;
-            margin: 0;
-            max-width: 100%;
-            min-height: 0;
-            min-width: 0;
-            overflow: hidden;
-            position: relative;
-            width: 100%;
-        }
-        .helto-load-video-preview video,
-        .helto-load-video-preview img {
-            display: block;
-            height: 100%;
-            max-width: 100%;
-            object-fit: contain;
-            width: 100%;
-        }
-        .helto-load-video-preview img {
-            object-fit: cover;
-        }
-        .helto-load-video-preview[hidden] {
-            display: none !important;
-        }
         .helto-load-video-dialog {
             align-items: center;
             background: rgba(0, 0, 0, 0.55);
@@ -254,69 +222,12 @@ async function fetchJson(path, options = {}) {
     return data;
 }
 
-function ensureProperties(node) {
-    node.properties ??= {};
-    if (node.properties[HIDE_PROPERTY] === undefined) {
-        if (typeof node.addProperty === "function") {
-            node.addProperty(HIDE_PROPERTY, false, "boolean");
-        } else {
-            node.properties[HIDE_PROPERTY] = false;
-        }
-    }
-}
-
-function ensureHideModeWidget(node) {
-    if (node[HIDE_WIDGET]) {
-        return;
-    }
-    const existing = node.widgets?.find((widget) => widget.name === HIDE_PROPERTY);
-    const widget = existing ?? node.addWidget?.(
-        "toggle",
-        HIDE_PROPERTY,
-        Boolean(node.properties?.[HIDE_PROPERTY]),
-        (value) => {
-            node.properties[HIDE_PROPERTY] = Boolean(value);
-            node[PREVIEW_WIDGET]?.applyHideMode();
-            setCanvasDirty(node);
-        },
-        { on: "true", off: "false" },
-    );
-    if (!widget) {
-        return;
-    }
-    widget.value = Boolean(node.properties?.[HIDE_PROPERTY]);
-    widget.callback = (value) => {
-        node.properties[HIDE_PROPERTY] = Boolean(value);
-        node[PREVIEW_WIDGET]?.applyHideMode();
-        setCanvasDirty(node);
-    };
-    widget.serialize = false;
-    widget.options ??= {};
-    widget.options.serialize = false;
-    node[HIDE_WIDGET] = widget;
-}
-
-function isHideModeEnabled(node) {
-    if (node[HIDE_WIDGET]) {
-        node.properties[HIDE_PROPERTY] = Boolean(node[HIDE_WIDGET].value);
-    }
-    return Boolean(node.properties?.[HIDE_PROPERTY]);
-}
-
 function getVideoWidget(node) {
     return node.widgets?.find((widget) => widget.name === "video");
 }
 
 function getAliasWidget(node) {
     return node.widgets?.find((widget) => widget.name === "video_folder_alias");
-}
-
-function videoUrl(alias, filename, mtime = 0) {
-    if (!filename) {
-        return "";
-    }
-    const params = new URLSearchParams({ alias: alias || "input", filename, t: String(Math.floor(mtime || 0)) });
-    return routeUrl(`${ROUTE_PREFIX}/video?${params.toString()}`);
 }
 
 function hideWidget(widget) {
@@ -328,193 +239,46 @@ function hideWidget(widget) {
     widget.computeSize = () => [0, -4];
 }
 
-class LoadVideoPreviewWidget {
-    constructor(node) {
-        injectStyles();
-        this.name = "helto_load_video_preview";
-        this.type = "custom";
-        this.node = node;
-        this.domWidget = null;
-        this.lastAppliedHeight = null;
-        this.lastAppliedWidth = null;
-        this.layoutSyncQueued = false;
-        this.element = document.createElement("div");
-        this.element.className = "helto-load-video-preview";
-        this.video = document.createElement("video");
-        this.video.controls = true;
-        this.video.loop = true;
-        this.video.muted = true;
-        this.video.playsInline = true;
-        this.video.preload = "metadata";
-        this.placeholder = document.createElement("img");
-        this.placeholder.src = PLACEHOLDER_SRC;
-        this.placeholder.hidden = true;
-        this.element.append(this.video, this.placeholder);
-        this.element.addEventListener("mouseenter", () => this.setHover(true));
-        this.element.addEventListener("mouseleave", () => this.setHover(false));
+function previewPayloadPath(alias, filename) {
+    if (!filename) {
+        return "";
     }
-
-    setHover(value) {
-        this.node[HOVER_STATE] = Boolean(value);
-        this.applyHideMode();
-    }
-
-    setSource(url) {
-        if (!url) {
-            this.video.pause();
-            this.video.removeAttribute("src");
-            this.video.load();
-            this.element.hidden = true;
-            this.applyFixedPreviewSize();
-            return;
-        }
-        this.element.hidden = false;
-        if (this.video.src !== url) {
-            this.video.pause();
-            this.video.src = url;
-        }
-        this.applyHideMode();
-        this.syncPreviewLayout();
-    }
-
-    applyHideMode() {
-        const hidden = isHideModeEnabled(this.node) && !this.node[HOVER_STATE];
-        this.video.hidden = hidden;
-        this.placeholder.hidden = !hidden;
-        this.syncPreviewLayout();
-    }
-
-    syncPreviewLayout() {
-        if (this.layoutSyncQueued) {
-            return;
-        }
-        this.layoutSyncQueued = true;
-        requestAnimationFrame(() => {
-            this.layoutSyncQueued = false;
-            if (this.applyFixedPreviewSize()) {
-                setCanvasDirty(this.node);
-            }
-        });
-    }
-
-    getAvailablePreviewWidth(width) {
-        const nodeWidth = Number.isFinite(width) ? width : this.node.size?.[0];
-        const margin = Number.isFinite(this.domWidget?.margin) ? this.domWidget.margin : 0;
-        if (!Number.isFinite(nodeWidth) || nodeWidth <= 0) {
-            return 360;
-        }
-        return Math.max(120, nodeWidth - margin * 2);
-    }
-
-    getAvailablePreviewHeight() {
-        return this.element.hidden ? 0 : PREVIEW_HEIGHT;
-    }
-
-    getLegacyPreviewHeight() {
-        if (this.element.hidden) {
-            return 0;
-        }
-
-        const nodeHeight = Array.isArray(this.node.size) ? this.node.size[1] : null;
-        const widgetTop = Number.isFinite(this.domWidget?.last_y) ? this.domWidget.last_y : null;
-        if (Number.isFinite(nodeHeight) && Number.isFinite(widgetTop)) {
-            return Math.max(PREVIEW_HEIGHT, nodeHeight - widgetTop - 12);
-        }
-
-        return PREVIEW_HEIGHT;
-    }
-
-    applyFixedPreviewSize(width) {
-        const allocatedWidth = this.getAvailablePreviewWidth(width);
-        const allocatedHeight = this.getLegacyPreviewHeight();
-        const nextWidth = Math.max(0, Math.round(allocatedWidth * 100) / 100);
-        const nextHeight = Math.max(0, Math.round(allocatedHeight * 100) / 100);
-
-        if (this.lastAppliedWidth === nextWidth && this.lastAppliedHeight === nextHeight) {
-            return false;
-        }
-
-        this.lastAppliedWidth = nextWidth;
-        this.lastAppliedHeight = nextHeight;
-        this.element.style.width = `${nextWidth}px`;
-        this.element.style.maxWidth = `${nextWidth}px`;
-        this.element.style.height = `${nextHeight}px`;
-        this.element.style.minHeight = "0px";
-        return true;
-    }
-
-    computeSize(width) {
-        const previewWidth = this.getAvailablePreviewWidth(width);
-        const previewHeight = this.element.hidden ? -4 : this.getLegacyPreviewHeight();
-        this.syncPreviewLayout();
-        return [previewWidth, previewHeight];
-    }
-
-    computeLayoutSize(width) {
-        if (this.element.hidden) {
-            return { minHeight: 0, maxHeight: 0, minWidth: 0 };
-        }
-        return { minHeight: PREVIEW_HEIGHT, maxHeight: 1_000_000, minWidth: 0 };
-    }
-
-    getHeight() {
-        return this.element.hidden ? 0 : PREVIEW_HEIGHT;
-    }
-
-    getMinHeight() {
-        return this.getHeight();
-    }
-
-    getMaxHeight() {
-        return this.getHeight();
-    }
-
-    serializeValue() {
-        return undefined;
-    }
+    const params = new URLSearchParams({ alias: alias || "input", filename });
+    return `${ROUTE_PREFIX}/preview?${params.toString()}`;
 }
 
-function ensurePreviewWidget(node) {
-    if (node[PREVIEW_WIDGET]) {
-        return;
+function applyNativePreview(node, payload) {
+    const output = {
+        images: payload?.images || [],
+        animated: payload?.animated || [true],
+    };
+
+    app.nodeOutputs ??= {};
+    app.nodeOutputs[String(node.id)] = output;
+
+    if (typeof node.onExecuted === "function") {
+        node.onExecuted(output);
+    } else {
+        node.images = output.images;
+        node.animatedImages = output.animated?.find(Boolean);
     }
-    const preview = new LoadVideoPreviewWidget(node);
-    if (typeof node.addDOMWidget === "function") {
-        const created = node.addDOMWidget(preview.name, "preview", preview.element, {
-            serialize: false,
-            hideOnZoom: false,
-            getValue() {
-                return undefined;
-            },
-            setValue() {},
-        });
-        const domWidget = created ?? node.widgets?.[node.widgets.length - 1];
-        if (domWidget) {
-            preview.domWidget = domWidget;
-            domWidget.serialize = false;
-            domWidget.value = undefined;
-            domWidget.options ??= {};
-            domWidget.options.serialize = false;
-            domWidget.computeLayoutSize = preview.computeLayoutSize.bind(preview);
-            domWidget.computeSize = preview.computeSize.bind(preview);
-            domWidget.onDraw = () => preview.syncPreviewLayout();
-            domWidget.getHeight = preview.getHeight.bind(preview);
-            domWidget.getMinHeight = preview.getMinHeight.bind(preview);
-            domWidget.getMaxHeight = preview.getMaxHeight.bind(preview);
-            domWidget.serializeValue = preview.serializeValue.bind(preview);
-        }
-    } else if (typeof node.addWidget === "function") {
-        const widget = node.addWidget("custom", preview.name, undefined, () => {});
-        widget.draw = () => {};
-        widget.computeSize = preview.computeSize.bind(preview);
-    }
-    node[PREVIEW_WIDGET] = preview;
+    setCanvasDirty(node);
 }
 
-function syncPreviewFromWidgets(node) {
+async function refreshNativePreview(node) {
     const video = getVideoWidget(node)?.value || "";
     const alias = getAliasWidget(node)?.value || "input";
-    node[PREVIEW_WIDGET]?.setSource(videoUrl(alias, video));
+    if (!video) {
+        return;
+    }
+
+    const requestId = Symbol("load-video-preview");
+    node[PREVIEW_REQUEST] = requestId;
+    const payload = await fetchJson(previewPayloadPath(alias, video));
+    if (node[PREVIEW_REQUEST] !== requestId) {
+        return;
+    }
+    applyNativePreview(node, payload);
 }
 
 async function showFolderDialog(onDone) {
@@ -781,7 +545,7 @@ async function openPicker(node) {
             aliasWidget.value = folderSelect.value;
             aliasWidget.callback?.(folderSelect.value);
         }
-        node[PREVIEW_WIDGET]?.setSource(videoUrl(folderSelect.value, selectedVideo.filename, selectedVideo.mtime));
+        refreshNativePreview(node).catch((err) => console.warn("Failed to refresh Load Video preview:", err));
         setCanvasDirty(node);
         overlay.remove();
     });
@@ -822,7 +586,6 @@ app.registerExtension({
 
         const onNodeCreated = nodeType.prototype.onNodeCreated;
         const onConfigure = nodeType.prototype.onConfigure;
-        const onResize = nodeType.prototype.onResize;
 
         nodeType.prototype.onNodeCreated = function () {
             const result = onNodeCreated?.apply(this, arguments);
@@ -830,10 +593,7 @@ app.registerExtension({
                 return result;
             }
 
-            ensureProperties(this);
-            ensureHideModeWidget(this);
             ensurePickerButton(this);
-            ensurePreviewWidget(this);
             hideWidget(getAliasWidget(this));
 
             const videoWidget = getVideoWidget(this);
@@ -841,7 +601,7 @@ app.registerExtension({
                 const originalCallback = videoWidget.callback;
                 videoWidget.callback = (...args) => {
                     originalCallback?.apply(videoWidget, args);
-                    syncPreviewFromWidgets(this);
+                    refreshNativePreview(this).catch((err) => console.warn("Failed to refresh Load Video preview:", err));
                     setCanvasDirty(this);
                 };
             }
@@ -851,33 +611,21 @@ app.registerExtension({
                 const originalCallback = aliasWidget.callback;
                 aliasWidget.callback = (...args) => {
                     originalCallback?.apply(aliasWidget, args);
-                    syncPreviewFromWidgets(this);
+                    refreshNativePreview(this).catch((err) => console.warn("Failed to refresh Load Video preview:", err));
                     setCanvasDirty(this);
                 };
             }
 
-            syncPreviewFromWidgets(this);
+            refreshNativePreview(this).catch((err) => console.warn("Failed to refresh Load Video preview:", err));
             return result;
         };
 
         nodeType.prototype.onConfigure = function () {
             const result = onConfigure?.apply(this, arguments);
             if (isLoadVideoNode(this)) {
-                ensureProperties(this);
-                ensureHideModeWidget(this);
                 ensurePickerButton(this);
-                ensurePreviewWidget(this);
                 hideWidget(getAliasWidget(this));
-                syncPreviewFromWidgets(this);
-                this[PREVIEW_WIDGET]?.syncPreviewLayout();
-            }
-            return result;
-        };
-
-        nodeType.prototype.onResize = function () {
-            const result = onResize?.apply(this, arguments);
-            if (isLoadVideoNode(this)) {
-                this[PREVIEW_WIDGET]?.syncPreviewLayout();
+                refreshNativePreview(this).catch((err) => console.warn("Failed to refresh Load Video preview:", err));
             }
             return result;
         };

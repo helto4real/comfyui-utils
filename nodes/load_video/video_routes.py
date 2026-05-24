@@ -14,7 +14,7 @@ from .video_config import (
     remove_folder,
     resolve_video_path,
 )
-from .video_io import list_videos, make_thumbnail
+from .video_io import list_videos, make_thumbnail, preview_result
 
 
 ROUTE_PREFIX = "/helto_load_video"
@@ -98,6 +98,19 @@ async def get_video(request):
         if path.suffix.lower() not in VIDEO_EXTENSIONS:
             return web.Response(status=400, text="Unsupported video type")
         return web.FileResponse(path, headers={"Cache-Control": "private, max-age=300"})
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+
+
+@server.PromptServer.instance.routes.get(f"{ROUTE_PREFIX}/preview")
+async def get_preview(request):
+    try:
+        alias = request.query.get("alias", "input") or "input"
+        filename = urllib.parse.unquote(request.query.get("filename", ""))
+        path = resolve_video_path(alias, filename)
+        if path.suffix.lower() not in VIDEO_EXTENSIONS:
+            return web.json_response({"error": "Unsupported video type"}, status=400)
+        return web.json_response({"images": [preview_result(path)], "animated": [True]})
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=400)
 

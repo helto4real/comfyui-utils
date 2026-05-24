@@ -2,9 +2,19 @@ from __future__ import annotations
 
 import os
 import hashlib
+import shutil
+import uuid
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
+
+import folder_paths
+
+try:
+    from comfy_api.latest import io, ui
+except ImportError:
+    io = None
+    ui = None
 
 try:
     from .video_config import THUMB_CACHE_DIR, VIDEO_EXTENSIONS
@@ -83,6 +93,33 @@ def make_thumbnail(video_path: Path, max_size: int = 360) -> Path:
             return output_path
 
     raise ValueError(f"No decodable video frame found in {video_path}")
+
+
+def preview_result(video_path: Path, subfolder: str = "helto_load_video") -> ui.SavedResult:
+    if io is None or ui is None:
+        raise RuntimeError("ComfyUI API is required to create video preview results.")
+
+    video_path = Path(video_path).resolve()
+    for folder_type, base_dir in (
+        (io.FolderType.output, folder_paths.get_output_directory()),
+        (io.FolderType.temp, folder_paths.get_temp_directory()),
+    ):
+        base_path = Path(base_dir).resolve()
+        try:
+            if os.path.commonpath((str(base_path), str(video_path))) == str(base_path):
+                rel_path = os.path.relpath(video_path, base_path)
+                return ui.SavedResult(os.path.basename(rel_path), os.path.dirname(rel_path), folder_type)
+        except ValueError:
+            continue
+
+    preview_dir = Path(folder_paths.get_temp_directory()) / subfolder
+    preview_dir.mkdir(parents=True, exist_ok=True)
+    preview_path = preview_dir / video_path.name
+    if preview_path.resolve() != video_path:
+        if preview_path.exists():
+            preview_path = preview_dir / f"{video_path.stem}_{uuid.uuid4().hex}{video_path.suffix}"
+        shutil.copy2(video_path, preview_path)
+    return ui.SavedResult(preview_path.name, subfolder, io.FolderType.temp)
 
 
 def list_videos(root: str | Path, recursive: bool = True) -> list[dict[str, Any]]:
