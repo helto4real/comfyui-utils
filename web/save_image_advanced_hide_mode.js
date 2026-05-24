@@ -111,6 +111,10 @@ function getVueNodeBodyElement(node) {
     return nodeElement?.querySelector?.(`[data-testid="node-body-${cssEscape(node.id)}"]`) ?? null;
 }
 
+function isVueRenderedNode(node) {
+    return getVueNodeElement(node) instanceof HTMLElement;
+}
+
 function hasVueVideoPreview(node) {
     return Boolean(getVueNodeElement(node)?.querySelector?.(".video-preview"));
 }
@@ -1339,7 +1343,7 @@ function updatePreviewHover(node, isHovering, { deferHide = true } = {}) {
     if (isHovering) {
         clearHoverClearTimer(node);
         ensureVideoPreviewMediaType(node);
-        if (!hasVueVideoPreview(node)) {
+        if (isVueRenderedNode(node) && !hasVueVideoPreview(node)) {
             scheduleRestoredVueOutputRefresh(node, { force: true });
         }
     } else if (deferHide && node[HOVER_STATE]) {
@@ -1397,7 +1401,7 @@ function scheduleHideModeSync(node) {
 }
 
 function refreshRestoredVueOutput(node, { force = false } = {}) {
-    if (!isSaveVideoAdvancedNode(node) || (!force && node[RESTORED_OUTPUT_REFRESHED])) {
+    if (!isSaveVideoAdvancedNode(node) || !isVueRenderedNode(node) || (!force && node[RESTORED_OUTPUT_REFRESHED])) {
         return;
     }
 
