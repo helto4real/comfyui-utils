@@ -395,22 +395,44 @@ function isPointerOverPreviewRect(node) {
         return true;
     }
 
+    if (isPointerOverNodeVideoContainer(node, x, y)) {
+        return true;
+    }
+
     for (const element of node[PREVIEW_MEDIA_STYLES]?.keys?.() ?? []) {
-        if (!(element instanceof HTMLElement)) {
-            continue;
-        }
-
-        const rect = element.getBoundingClientRect();
-        if (rect.width < 20 || rect.height < 20) {
-            continue;
-        }
-
-        if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+        if (isPointInsideElement(element, x, y)) {
             return true;
         }
     }
 
     return false;
+}
+
+function isPointInsideElement(element, x, y) {
+    if (!(element instanceof HTMLElement)) {
+        return false;
+    }
+
+    const rect = element.getBoundingClientRect();
+    if (rect.width < 20 || rect.height < 20) {
+        return false;
+    }
+
+    return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+}
+
+function isPointerOverNodeVideoContainer(node, x, y) {
+    if (!(node.videoContainer instanceof HTMLElement)) {
+        return false;
+    }
+
+    if (isPointInsideElement(node.videoContainer, x, y)) {
+        return true;
+    }
+
+    return Array.from(node.videoContainer.querySelectorAll("video, img")).some((element) => {
+        return isPointInsideElement(element, x, y);
+    });
 }
 
 function applyExternalMediaVisibility(node, shouldHide) {
