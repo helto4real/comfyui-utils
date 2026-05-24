@@ -27,6 +27,9 @@ function injectStyles() {
             flex-direction: column;
             gap: 6px;
             height: 100%;
+            max-width: 100%;
+            min-width: 0;
+            overflow: hidden;
             padding: 4px;
             width: 100%;
         }
@@ -45,6 +48,7 @@ function injectStyles() {
             gap: 6px;
             grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
             min-height: 0;
+            width: 100%;
             overflow: hidden;
             position: relative;
         }
@@ -78,6 +82,8 @@ function injectStyles() {
             flex: 0 0 28px;
             gap: 6px;
             grid-template-columns: 28px 28px minmax(0, 1fr) 82px 88px;
+            min-width: 0;
+            overflow: hidden;
         }
         .helto-video-comparer__button,
         .helto-video-comparer__select {
@@ -413,6 +419,10 @@ class VideoComparerPreviewWidget {
     setVisible(isVisible) {
         this.element.hidden = !isVisible;
         this.element.style.display = isVisible ? "" : "none";
+        if (isVisible) {
+            this.element.style.width = "";
+            this.element.style.maxWidth = "";
+        }
         if (!isVisible) {
             this.element.style.height = "0px";
             this.element.style.minHeight = "0px";
@@ -529,9 +539,6 @@ class VideoComparerPreviewWidget {
 
     resetLayoutHeight() {
         this.lastAppliedHeight = null;
-        if (this.domWidget) {
-            this.domWidget.computedHeight = undefined;
-        }
     }
 
     getAvailablePreviewHeight() {
@@ -584,7 +591,7 @@ class VideoComparerPreviewWidget {
     applyFixedPreviewHeight() {
         const allocatedHeight = this.getAvailablePreviewHeight();
         const elementHeight = this.getInnerPreviewHeight(allocatedHeight);
-        const nextHeight = elementHeight > 0 ? elementHeight : 0;
+        const nextHeight = elementHeight > 0 ? Math.round(elementHeight * 100) / 100 : 0;
         if (this.lastAppliedHeight === nextHeight) {
             return false;
         }
@@ -593,17 +600,11 @@ class VideoComparerPreviewWidget {
         if (elementHeight <= 0) {
             this.element.style.height = "0px";
             this.element.style.minHeight = "0px";
-            if (this.domWidget) {
-                this.domWidget.computedHeight = -4;
-            }
             return true;
         }
 
         this.element.style.height = `${elementHeight}px`;
         this.element.style.minHeight = "0px";
-        if (this.domWidget) {
-            this.domWidget.computedHeight = allocatedHeight;
-        }
         return true;
     }
 
@@ -624,17 +625,10 @@ class VideoComparerPreviewWidget {
         }
 
         const height = this.getAvailablePreviewHeight();
-        if (this.domWidget) {
-            this.domWidget.computedHeight = height;
-        }
         return [nodeWidth, height];
     }
 
     computeLayoutSize(width) {
-        const nodeWidth = Array.isArray(width?.size)
-            ? width.size[0]
-            : this.node.size?.[0] ?? width ?? 360;
-
         if (!this.hasSources) {
             return {
                 minHeight: 0,
@@ -646,7 +640,7 @@ class VideoComparerPreviewWidget {
         return {
             minHeight: 0,
             maxHeight: 1_000_000,
-            minWidth: nodeWidth,
+            minWidth: 0,
         };
     }
 
