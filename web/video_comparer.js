@@ -10,6 +10,9 @@ const PREVIEW_WIDGET = "__heltoVideoComparerPreviewWidget";
 const HOVER_STATE = "__heltoVideoComparerHoverState";
 const PLACEHOLDER_SRC = new URL("./hidden_preview_placeholder.png", import.meta.url).href;
 const AUDIO_SOURCES = ["video 1", "video 2", "muted"];
+const PLAY_ICON = "▶";
+const PAUSE_ICON = "⏸";
+const RESET_ICON = "↺";
 
 let stylesInjected = false;
 
@@ -95,8 +98,15 @@ function injectStyles() {
             height: 24px;
         }
         .helto-video-comparer__button {
+            align-items: center;
             cursor: pointer;
+            display: flex;
+            justify-content: center;
             padding: 0;
+        }
+        .helto-video-comparer__icon {
+            font: 15px/1 sans-serif;
+            pointer-events: none;
         }
         .helto-video-comparer__select {
             min-width: 0;
@@ -238,6 +248,7 @@ class VideoComparerPreviewWidget {
         this.node = node;
         this.hasSources = false;
         this.syncing = false;
+        this.isPlaying = false;
         this.domWidget = null;
         this.layoutSyncQueued = false;
         this.lastAppliedHeight = null;
@@ -266,8 +277,8 @@ class VideoComparerPreviewWidget {
         this.controls = document.createElement("div");
         this.controls.className = "helto-video-comparer__controls";
 
-        this.playButton = this.createButton("Play", () => this.togglePlay());
-        this.resetButton = this.createButton("Reset", () => this.seekBoth(0));
+        this.playButton = this.createButton("Play", PLAY_ICON, () => this.togglePlay());
+        this.resetButton = this.createButton("Reset", RESET_ICON, () => this.seekBoth(0));
         this.timeline = document.createElement("input");
         this.timeline.className = "helto-video-comparer__timeline";
         this.timeline.type = "range";
@@ -309,11 +320,17 @@ class VideoComparerPreviewWidget {
         return pane;
     }
 
-    createButton(label, callback) {
+    createButton(label, icon, callback) {
         const button = document.createElement("button");
         button.className = "helto-video-comparer__button";
         button.type = "button";
-        button.textContent = label;
+        button.title = label;
+        button.setAttribute("aria-label", label);
+        const iconElement = document.createElement("span");
+        iconElement.className = "helto-video-comparer__icon";
+        iconElement.setAttribute("aria-hidden", "true");
+        iconElement.textContent = icon;
+        button.append(iconElement);
         button.addEventListener("click", (event) => {
             event.preventDefault();
             event.stopPropagation();
@@ -438,7 +455,14 @@ class VideoComparerPreviewWidget {
     }
 
     isPaused() {
-        return this.playButton.textContent === "Play";
+        return !this.isPlaying;
+    }
+
+    setPlayButtonState(isPlaying) {
+        this.isPlaying = isPlaying;
+        this.playButton.title = isPlaying ? "Pause" : "Play";
+        this.playButton.setAttribute("aria-label", this.playButton.title);
+        this.playButton.querySelector(".helto-video-comparer__icon").textContent = isPlaying ? PAUSE_ICON : PLAY_ICON;
     }
 
     playBoth(source = this.video1) {
@@ -453,7 +477,7 @@ class VideoComparerPreviewWidget {
             video.play().catch(() => {});
         }
         this.syncing = false;
-        this.playButton.textContent = "Pause";
+        this.setPlayButtonState(true);
     }
 
     pauseVideosOnly() {
@@ -466,7 +490,7 @@ class VideoComparerPreviewWidget {
 
     pauseBoth() {
         this.pauseVideosOnly();
-        this.playButton.textContent = "Play";
+        this.setPlayButtonState(false);
     }
 
     togglePlay() {
