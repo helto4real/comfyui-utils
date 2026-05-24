@@ -1,4 +1,5 @@
 import { app } from "/scripts/app.js";
+import { api } from "/scripts/api.js";
 
 const NODE_CLASSES = new Map([
     ["HeltoSaveImageAdvanced", "Save Image Advanced"],
@@ -21,6 +22,8 @@ const PREVIEW_WATCHER = "__heltoHideModePreviewWatcher";
 const PREVIEW_OBSERVER = "__heltoHideModePreviewObserver";
 const HOVER_CLEAR_TIMER = "__heltoHideModeHoverClearTimer";
 const VUE_NODE_POSITION_STYLE = "__heltoHideModeVueNodePositionStyle";
+const DEBUG_STORAGE_KEY = "heltoHideModeDebug";
+const RESTORED_OUTPUT_REFRESHED = "__heltoHideModeRestoredOutputRefreshed";
 const FORMAT_WIDGETS = "__heltoVideoFormatWidgets";
 const FORMAT_WIDGET_COUNT = "__heltoVideoFormatWidgetCount";
 const FORMAT_WIDGET_CALLBACK = "__heltoVideoFormatWidgetCallback";
@@ -28,6 +31,7 @@ const CANVAS_IMAGE_PREVIEW_WIDGET = "$$canvas-image-preview";
 const VIDEO_PREVIEW_WIDGET = "videopreview";
 const NATIVE_VIDEO_PREVIEW_WIDGET = "video-preview";
 const VUE_PLACEHOLDER_ATTR = "data-helto-hide-mode-placeholder";
+const VUE_FALLBACK_PLACEHOLDER_ATTR = "data-helto-hide-mode-fallback";
 const PLACEHOLDER_SRC = new URL("./hidden_preview_placeholder.png", import.meta.url).href;
 
 let placeholderImage = null;
@@ -102,9 +106,82 @@ function getVueNodeElement(node) {
     return exactMatch ?? document.querySelector(`[data-node-id="${cssEscape(node.id)}"]`);
 }
 
+function getVueNodeBodyElement(node) {
+    const nodeElement = getVueNodeElement(node);
+    return nodeElement?.querySelector?.(`[data-testid="node-body-${cssEscape(node.id)}"]`) ?? null;
+}
+
+function hasVueVideoPreview(node) {
+    return Boolean(getVueNodeElement(node)?.querySelector?.(".video-preview"));
+}
+
+function ensureVideoPreviewMediaType(node) {
+    if (isSaveVideoAdvancedNode(node)) {
+        node.previewMediaType = "video";
+    }
+}
+
 function setCanvasDirty(node) {
     node?.graph?.setDirtyCanvas?.(true, true);
     app.canvas?.setDirty?.(true, true);
+}
+
+function isDebugEnabled() {
+    return Boolean(globalThis.HELTO_HIDE_MODE_DEBUG) || localStorage.getItem(DEBUG_STORAGE_KEY) === "1";
+}
+
+function getHideModeDebugState(node) {
+    const nodeElement = getVueNodeElement(node);
+    const nodeId = String(node.id);
+    const output = app.nodeOutputs?.[nodeId];
+
+    return {
+        id: nodeId,
+        type: getNodeClass(node),
+        hideMode: Boolean(node.properties?.[PROPERTY_NAME]),
+        widgetValue: node[HIDE_MODE_WIDGET]?.value,
+        hover: Boolean(node[HOVER_STATE]),
+        hiddenState: node[PREVIEW_HIDDEN_STATE],
+        hideOutputImages: Boolean(node.hideOutputImages),
+        imgs: Array.isArray(node.imgs) ? node.imgs.length : null,
+        images: Array.isArray(node.images) ? node.images.length : null,
+        hiddenImages: Array.isArray(node[HIDDEN_IMAGES]) ? node[HIDDEN_IMAGES].length : null,
+        hiddenNodeImages: Array.isArray(node[HIDDEN_NODE_IMAGES]) ? node[HIDDEN_NODE_IMAGES].length : null,
+        nodeOutputs: Array.isArray(output?.images) ? output.images.length : null,
+        videoContainer: node.videoContainer instanceof HTMLElement,
+        domPreviewWidgets: getDomPreviewWidgets(node).map((widget) => ({
+            name: widget.name,
+            type: widget.type,
+            elements: getWidgetElements(widget).length,
+        })),
+        vueNode: nodeElement instanceof HTMLElement,
+        vuePreviews: nodeElement?.querySelectorAll?.(".video-preview").length ?? null,
+        placeholders: nodeElement?.querySelectorAll?.(`[${VUE_PLACEHOLDER_ATTR}]`).length ?? null,
+    };
+}
+
+function debugHideModeState(node, label, { force = false } = {}) {
+    if ((!force && !isDebugEnabled()) || !isSaveVideoAdvancedNode(node)) {
+        return null;
+    }
+
+    const state = getHideModeDebugState(node);
+    console.warn("[Helto hide mode]", label, state);
+    return state;
+}
+
+function dumpHideModeDebugState() {
+    const nodes = app.graph?._nodes ?? [];
+    const states = nodes
+        .filter(isSaveVideoAdvancedNode)
+        .map((node) => debugHideModeState(node, "manual dump", { force: true }))
+        .filter(Boolean);
+
+    if (states.length === 0) {
+        console.warn("[Helto hide mode] no managed video hide-mode nodes found");
+    }
+
+    return states;
 }
 
 function ensureHideModeProperty(node) {
@@ -440,6 +517,11 @@ function isPointInsideElement(element, x, y) {
     return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
 }
 
+function isVueHiddenPlaceholderElement(element) {
+    return element instanceof HTMLElement &&
+        (element.hasAttribute(VUE_PLACEHOLDER_ATTR) || Boolean(element.closest?.(`[${VUE_PLACEHOLDER_ATTR}]`)));
+}
+
 function isPointerOverNodeVideoContainer(node, x, y) {
     if (!(node.videoContainer instanceof HTMLElement)) {
         return false;
@@ -471,6 +553,10 @@ function applyExternalMediaVisibility(node, shouldHide) {
     node[PREVIEW_MEDIA_STYLES] ??= new Map();
 
     for (const media of document.querySelectorAll("video, img")) {
+        if (isVueHiddenPlaceholderElement(media)) {
+            continue;
+        }
+
         const shouldAffectMedia = mediaMatchesPreviewRecords(media, records) || mediaOverlapsNodePreview(media, nodeRects);
 
         const managedElements = shouldAffectMedia ? getManagedMediaElements(media, nodeRects) : [media];
@@ -622,43 +708,45 @@ function getVuePreviewOverlayRect(nodeElement, previewRoot, placeholder) {
     };
 }
 
-function ensureVueHiddenPlaceholder(node, previewRoot) {
-    const parent = previewRoot.parentElement;
-    if (!(parent instanceof HTMLElement)) {
-        return null;
-    }
+function createVueHiddenPlaceholder() {
+    const placeholder = document.createElement("div");
+    placeholder.setAttribute(VUE_PLACEHOLDER_ATTR, "true");
+    placeholder.style.background = "#050505";
+    placeholder.style.borderRadius = "4px";
+    placeholder.style.boxSizing = "border-box";
+    placeholder.style.flex = "0 0 auto";
+    placeholder.style.overflow = "hidden";
+    placeholder.style.maxWidth = "100%";
+    placeholder.style.minWidth = "0";
+    placeholder.style.width = "100%";
 
-    const nodeElement = getVueNodeElement(node) ?? previewRoot.closest?.("[data-node-id]");
-    const mountElement = nodeElement instanceof HTMLElement ? nodeElement : parent;
+    const image = document.createElement("img");
+    image.alt = "";
+    image.decoding = "async";
+    image.src = PLACEHOLDER_SRC;
+    image.style.display = "block";
+    image.style.height = "100%";
+    image.style.objectFit = "cover";
+    image.style.width = "100%";
+    placeholder.append(image);
 
+    return placeholder;
+}
+
+function getVueHiddenPlaceholder(mountElement) {
     let placeholder = mountElement.querySelector(`[${VUE_PLACEHOLDER_ATTR}]`);
     if (!placeholder) {
-        placeholder = document.createElement("div");
-        placeholder.setAttribute(VUE_PLACEHOLDER_ATTR, "true");
-        placeholder.style.background = "#050505";
-        placeholder.style.borderRadius = "4px";
-        placeholder.style.boxSizing = "border-box";
-        placeholder.style.flex = "0 0 auto";
-        placeholder.style.overflow = "hidden";
-        placeholder.style.maxWidth = "100%";
-        placeholder.style.minWidth = "0";
-        placeholder.style.width = "100%";
-
-        const image = document.createElement("img");
-        image.alt = "";
-        image.decoding = "async";
-        image.src = PLACEHOLDER_SRC;
-        image.style.display = "block";
-        image.style.height = "100%";
-        image.style.objectFit = "cover";
-        image.style.width = "100%";
-        placeholder.append(image);
+        placeholder = createVueHiddenPlaceholder();
     }
 
     if (placeholder.parentElement !== mountElement) {
         mountElement.append(placeholder);
     }
 
+    return placeholder;
+}
+
+function prepareAbsoluteVuePlaceholder(node, nodeElement, placeholder) {
     placeholder.style.display = "";
     placeholder.style.pointerEvents = "auto";
     placeholder.style.position = "absolute";
@@ -668,23 +756,41 @@ function ensureVueHiddenPlaceholder(node, previewRoot) {
     placeholder.style.maxWidth = "100%";
     placeholder.style.minWidth = "0";
 
+    if (!(VUE_NODE_POSITION_STYLE in node)) {
+        node[VUE_NODE_POSITION_STYLE] = nodeElement.style.position;
+    }
+    if (getComputedStyle(nodeElement).position === "static") {
+        nodeElement.style.position = "relative";
+    }
+}
+
+function applyVuePlaceholderOverlayRect(placeholder, overlayRect) {
+    placeholder.style.setProperty("top", `${Math.round(overlayRect.top)}px`, "important");
+    placeholder.style.setProperty("left", `${Math.round(overlayRect.left)}px`, "important");
+    placeholder.style.setProperty("right", `${Math.round(overlayRect.right)}px`, "important");
+    placeholder.style.setProperty("bottom", `${Math.round(overlayRect.bottom ?? 16)}px`, "important");
+    placeholder.style.setProperty("width", "auto", "important");
+    placeholder.style.setProperty("height", "auto", "important");
+    placeholder.style.setProperty("min-height", "64px", "important");
+}
+
+function ensureVueHiddenPlaceholder(node, previewRoot) {
+    const parent = previewRoot.parentElement;
+    if (!(parent instanceof HTMLElement)) {
+        return null;
+    }
+
+    const nodeElement = getVueNodeElement(node) ?? previewRoot.closest?.("[data-node-id]");
+    const mountElement = nodeElement instanceof HTMLElement ? nodeElement : parent;
+    const placeholder = getVueHiddenPlaceholder(mountElement);
+    placeholder.removeAttribute(VUE_FALLBACK_PLACEHOLDER_ATTR);
+
     if (nodeElement instanceof HTMLElement) {
-        if (!(VUE_NODE_POSITION_STYLE in node)) {
-            node[VUE_NODE_POSITION_STYLE] = nodeElement.style.position;
-        }
-        if (getComputedStyle(nodeElement).position === "static") {
-            nodeElement.style.position = "relative";
-        }
+        prepareAbsoluteVuePlaceholder(node, nodeElement, placeholder);
 
         const overlayRect = getVuePreviewOverlayRect(nodeElement, previewRoot, placeholder);
         if (overlayRect) {
-            placeholder.style.setProperty("top", `${Math.round(overlayRect.top)}px`, "important");
-            placeholder.style.setProperty("left", `${Math.round(overlayRect.left)}px`, "important");
-            placeholder.style.setProperty("right", `${Math.round(overlayRect.right)}px`, "important");
-            placeholder.style.setProperty("bottom", "16px", "important");
-            placeholder.style.setProperty("width", "auto", "important");
-            placeholder.style.setProperty("height", "auto", "important");
-            placeholder.style.setProperty("min-height", "64px", "important");
+            applyVuePlaceholderOverlayRect(placeholder, overlayRect);
         }
         return placeholder;
     }
@@ -694,9 +800,9 @@ function ensureVueHiddenPlaceholder(node, previewRoot) {
     return placeholder;
 }
 
-function removeVueHiddenPlaceholder(node, previewRoot) {
-    const parent = previewRoot.parentElement;
-    const nodeElement = previewRoot.closest?.("[data-node-id]");
+function removeVueHiddenPlaceholderByNode(node, previewRoot = null) {
+    const parent = previewRoot?.parentElement;
+    const nodeElement = getVueNodeElement(node) ?? previewRoot?.closest?.("[data-node-id]");
     parent?.querySelector?.(`[${VUE_PLACEHOLDER_ATTR}]`)?.remove();
     nodeElement?.querySelector?.(`[${VUE_PLACEHOLDER_ATTR}]`)?.remove();
 
@@ -704,6 +810,87 @@ function removeVueHiddenPlaceholder(node, previewRoot) {
         nodeElement.style.position = node[VUE_NODE_POSITION_STYLE];
         delete node[VUE_NODE_POSITION_STYLE];
     }
+}
+
+function removeVueHiddenPlaceholder(node, previewRoot) {
+    removeVueHiddenPlaceholderByNode(node, previewRoot);
+}
+
+function getVueFallbackContentBottom(nodeElement, bodyElement) {
+    const nodeRect = nodeElement.getBoundingClientRect();
+    const bodyRect = bodyElement.getBoundingClientRect();
+    const placeholderSelector = `[${VUE_PLACEHOLDER_ATTR}]`;
+    const widgetRegionBottom = nodeRect.top + (nodeRect.height * 0.75);
+    const candidates = Array.from(bodyElement.querySelectorAll("*")).filter((element) => {
+        if (!(element instanceof HTMLElement) || element.closest?.(placeholderSelector)) {
+            return false;
+        }
+
+        const rect = element.getBoundingClientRect();
+        if (rect.width <= 20 || rect.height <= 8 || rect.height > 72) {
+            return false;
+        }
+        if (rect.top < nodeRect.top || rect.bottom > widgetRegionBottom) {
+            return false;
+        }
+
+        const overlapsBody = rect.bottom > bodyRect.top && rect.top < bodyRect.bottom;
+        const looksLikeControlRow = rect.width >= Math.min(120, bodyRect.width * 0.2);
+        return overlapsBody && looksLikeControlRow;
+    });
+
+    if (!candidates.length) {
+        return null;
+    }
+
+    return candidates.reduce((bottom, element) => {
+        const rect = element.getBoundingClientRect();
+        return Math.max(bottom, rect.bottom);
+    }, 0) || null;
+}
+
+function getVueFallbackOverlayRect(node, nodeElement, bodyElement) {
+    const nodeRect = nodeElement.getBoundingClientRect();
+    const bodyRect = bodyElement.getBoundingClientRect();
+    const scale = getNodeCssScale(nodeElement);
+    const titleHeight = globalThis.LiteGraph?.NODE_TITLE_HEIGHT ?? 30;
+    const previewTop = getPreviewAreaTop(node);
+    const contentBottom = getVueFallbackContentBottom(nodeElement, bodyElement);
+    const top = contentBottom
+        ? (contentBottom - nodeRect.top) / scale + 8
+        : titleHeight + previewTop + 8;
+    const left = (bodyRect.left - nodeRect.left) / scale;
+    const right = (nodeRect.right - bodyRect.right) / scale;
+
+    if (![top, left, right].every(Number.isFinite)) {
+        return null;
+    }
+
+    return {
+        top: Math.max(0, top),
+        left: Math.max(0, left),
+        right: Math.max(0, right),
+        bottom: 16,
+    };
+}
+
+function ensureVueFallbackHiddenPlaceholder(node) {
+    const nodeElement = getVueNodeElement(node);
+    const bodyElement = getVueNodeBodyElement(node);
+    if (!(nodeElement instanceof HTMLElement) || !(bodyElement instanceof HTMLElement)) {
+        return null;
+    }
+
+    const placeholder = getVueHiddenPlaceholder(nodeElement);
+    placeholder.setAttribute(VUE_FALLBACK_PLACEHOLDER_ATTR, "true");
+    prepareAbsoluteVuePlaceholder(node, nodeElement, placeholder);
+
+    const overlayRect = getVueFallbackOverlayRect(node, nodeElement, bodyElement);
+    if (overlayRect) {
+        applyVuePlaceholderOverlayRect(placeholder, overlayRect);
+    }
+
+    return placeholder;
 }
 
 function applyVuePreviewRootVisibility(node, previewRoot, shouldHide) {
@@ -736,13 +923,17 @@ function applyVuePreviewRootVisibility(node, previewRoot, shouldHide) {
     }
 }
 
-function applyVueVideoPreviewVisibility(node, shouldHide) {
+function applyVueVideoPreviewVisibility(node, shouldHide, { retryMissingPreview = true } = {}) {
+    ensureVideoPreviewMediaType(node);
+
     const records = getHiddenPreviewRecords(node);
     const nodeRects = getNodePreviewClientRects(node);
     const nodeElement = getVueNodeElement(node);
     const candidates = nodeElement
         ? nodeElement.querySelectorAll(".video-preview")
         : document.querySelectorAll(".video-preview");
+
+    let affectedPreviewCount = 0;
 
     for (const candidate of candidates) {
         const previewRoot = candidate.closest?.(".video-preview") ?? candidate;
@@ -758,6 +949,7 @@ function applyVueVideoPreviewVisibility(node, shouldHide) {
             continue;
         }
 
+        affectedPreviewCount += 1;
         applyVuePreviewRootVisibility(node, previewRoot, shouldHide);
 
         for (const video of previewRoot.querySelectorAll?.("video") ?? []) {
@@ -765,6 +957,22 @@ function applyVueVideoPreviewVisibility(node, shouldHide) {
                 video.pause();
                 video.autoplay = false;
             }
+        }
+    }
+
+    if (nodeElement && affectedPreviewCount === 0) {
+        if (shouldHide) {
+            ensureVueFallbackHiddenPlaceholder(node);
+        } else if (retryMissingPreview) {
+            scheduleRestoredVueOutputRefresh(node, { force: true });
+            setTimeout(() => applyVueVideoPreviewVisibility(node, false, { retryMissingPreview: false }), 100);
+            setTimeout(() => applyVueVideoPreviewVisibility(node, false, { retryMissingPreview: false }), 500);
+
+            if (hasVueVideoPreview(node)) {
+                removeVueHiddenPlaceholderByNode(node);
+            }
+        } else if (hasVueVideoPreview(node)) {
+            removeVueHiddenPlaceholderByNode(node);
         }
     }
 }
@@ -949,6 +1157,8 @@ function syncVideoHideOutputImages(node, { force = false } = {}) {
         node.hideOutputImages = nextValue;
         setCanvasDirty(node);
     }
+
+    debugHideModeState(node, force ? "sync forced" : "sync");
 }
 
 function getLocalPos(node, event, localPos) {
@@ -1128,6 +1338,10 @@ function clearHoverClearTimer(node) {
 function updatePreviewHover(node, isHovering, { deferHide = true } = {}) {
     if (isHovering) {
         clearHoverClearTimer(node);
+        ensureVideoPreviewMediaType(node);
+        if (!hasVueVideoPreview(node)) {
+            scheduleRestoredVueOutputRefresh(node, { force: true });
+        }
     } else if (deferHide && node[HOVER_STATE]) {
         if (!node[HOVER_CLEAR_TIMER]) {
             node[HOVER_CLEAR_TIMER] = setTimeout(() => {
@@ -1180,6 +1394,40 @@ function scheduleHideModeSync(node) {
     requestAnimationFrame(() => syncHideOutputImages(node, { force: true }));
     setTimeout(() => syncHideOutputImages(node, { force: true }), 100);
     setTimeout(() => syncHideOutputImages(node, { force: true }), 500);
+}
+
+function refreshRestoredVueOutput(node, { force = false } = {}) {
+    if (!isSaveVideoAdvancedNode(node) || (!force && node[RESTORED_OUTPUT_REFRESHED])) {
+        return;
+    }
+
+    const nodeId = String(node.id);
+    const output = app.nodeOutputs?.[nodeId];
+    if (!output?.images?.length || typeof api.dispatchEvent !== "function" || typeof CustomEvent === "undefined") {
+        return;
+    }
+
+    ensureVideoPreviewMediaType(node);
+    const refreshedOutput = {
+        ...output,
+        images: output.images.map((image) => ({ ...image })),
+        animated: Array.isArray(output.animated) ? [...output.animated] : output.animated,
+    };
+    node[RESTORED_OUTPUT_REFRESHED] = true;
+    api.dispatchEvent(new CustomEvent("executed", {
+        detail: {
+            node: nodeId,
+            display_node: nodeId,
+            output: refreshedOutput,
+            prompt_id: "helto_hide_mode_restored_preview",
+        },
+    }));
+}
+
+function scheduleRestoredVueOutputRefresh(node, options = {}) {
+    requestAnimationFrame(() => refreshRestoredVueOutput(node, options));
+    setTimeout(() => refreshRestoredVueOutput(node, options), 100);
+    setTimeout(() => refreshRestoredVueOutput(node, options), 500);
 }
 
 function setupImageHideMode(node) {
@@ -1254,6 +1502,7 @@ function setupImageHideMode(node) {
 function setupVideoHideMode(node) {
     ensureHideModeProperty(node);
     ensureHideModeWidget(node);
+    ensureVideoPreviewMediaType(node);
     node[HOVER_STATE] = false;
     managedHideModeNodes.add(node);
 
@@ -1262,7 +1511,9 @@ function setupVideoHideMode(node) {
         const result = originalOnConfigure?.apply(this, args);
         ensureHideModeProperty(this);
         ensureHideModeWidget(this);
+        ensureVideoPreviewMediaType(this);
         setHideModeValue(this, this.properties?.[PROPERTY_NAME]);
+        scheduleRestoredVueOutputRefresh(this);
         syncHideOutputImages(this);
         return result;
     };
@@ -1288,6 +1539,7 @@ function setupVideoHideMode(node) {
 
     const originalOnExecuted = node.onExecuted;
     node.onExecuted = function (...args) {
+        ensureVideoPreviewMediaType(this);
         const result = originalOnExecuted?.apply(this, args);
         scheduleHideModeSync(this);
         return result;
@@ -1467,4 +1719,14 @@ app.registerExtension({
             }
         }
     },
+    afterConfigureGraph() {
+        for (const node of managedHideModeNodes) {
+            scheduleRestoredVueOutputRefresh(node);
+            debugHideModeState(node, "afterConfigureGraph");
+            setTimeout(() => debugHideModeState(node, "afterConfigureGraph +500ms"), 500);
+            setTimeout(() => debugHideModeState(node, "afterConfigureGraph +2000ms"), 2000);
+        }
+    },
 });
+
+globalThis.HELTO_HIDE_MODE_DUMP = dumpHideModeDebugState;
