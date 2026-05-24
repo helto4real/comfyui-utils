@@ -20,6 +20,7 @@ const PREVIEW_MEDIA_STYLES = "__heltoHideModePreviewMediaStyles";
 const PREVIEW_WATCHER = "__heltoHideModePreviewWatcher";
 const PREVIEW_OBSERVER = "__heltoHideModePreviewObserver";
 const HOVER_CLEAR_TIMER = "__heltoHideModeHoverClearTimer";
+const VUE_NODE_POSITION_STYLE = "__heltoHideModeVueNodePositionStyle";
 const FORMAT_WIDGETS = "__heltoVideoFormatWidgets";
 const FORMAT_WIDGET_COUNT = "__heltoVideoFormatWidgetCount";
 const FORMAT_WIDGET_CALLBACK = "__heltoVideoFormatWidgetCallback";
@@ -93,7 +94,12 @@ function cssEscape(value) {
 }
 
 function getVueNodeElement(node) {
-    return document.querySelector(`[data-node-id="${cssEscape(node.id)}"]`);
+    const nodeId = String(node.id);
+    const exactMatch = Array.from(document.querySelectorAll("[data-node-id]")).find((element) => {
+        return element.getAttribute("data-node-id") === nodeId;
+    });
+
+    return exactMatch ?? document.querySelector(`[data-node-id="${cssEscape(node.id)}"]`);
 }
 
 function setCanvasDirty(node) {
@@ -578,19 +584,64 @@ function elementOverlapsAnyNodeRect(element, nodeRects) {
     });
 }
 
+function getNodeCssScale(nodeElement) {
+    const nodeRect = nodeElement.getBoundingClientRect();
+    const nodeWidth = nodeElement.offsetWidth;
+
+    if (!nodeWidth || nodeRect.width <= 0) {
+        return 1;
+    }
+
+    return nodeRect.width / nodeWidth;
+}
+
+function getVuePreviewOverlayRect(nodeElement, previewRoot, placeholder) {
+    const nodeRect = nodeElement.getBoundingClientRect();
+    const previewRect = previewRoot.getBoundingClientRect();
+    const scale = getNodeCssScale(nodeElement);
+    const sourceRect = previewRect.width > 0 && previewRect.height > 0
+        ? previewRect
+        : placeholder.getBoundingClientRect();
+
+    if (!sourceRect.width || !sourceRect.height) {
+        return null;
+    }
+
+    const top = (sourceRect.top - nodeRect.top) / scale;
+    const left = (sourceRect.left - nodeRect.left) / scale;
+    const right = (nodeRect.right - sourceRect.right) / scale;
+
+    if (![top, left, right].every(Number.isFinite)) {
+        return null;
+    }
+
+    return {
+        top: Math.max(0, top),
+        left: Math.max(0, left),
+        right: Math.max(0, right),
+    };
+}
+
 function ensureVueHiddenPlaceholder(node, previewRoot) {
     const parent = previewRoot.parentElement;
     if (!(parent instanceof HTMLElement)) {
         return null;
     }
 
-    let placeholder = parent.querySelector(`[${VUE_PLACEHOLDER_ATTR}]`);
+    const nodeElement = getVueNodeElement(node) ?? previewRoot.closest?.("[data-node-id]");
+    const mountElement = nodeElement instanceof HTMLElement ? nodeElement : parent;
+
+    let placeholder = mountElement.querySelector(`[${VUE_PLACEHOLDER_ATTR}]`);
     if (!placeholder) {
         placeholder = document.createElement("div");
         placeholder.setAttribute(VUE_PLACEHOLDER_ATTR, "true");
         placeholder.style.background = "#050505";
         placeholder.style.borderRadius = "4px";
+        placeholder.style.boxSizing = "border-box";
+        placeholder.style.flex = "0 0 auto";
         placeholder.style.overflow = "hidden";
+        placeholder.style.maxWidth = "100%";
+        placeholder.style.minWidth = "0";
         placeholder.style.width = "100%";
 
         const image = document.createElement("img");
@@ -602,25 +653,57 @@ function ensureVueHiddenPlaceholder(node, previewRoot) {
         image.style.objectFit = "cover";
         image.style.width = "100%";
         placeholder.append(image);
-        parent.insertBefore(placeholder, previewRoot);
+    }
+
+    if (placeholder.parentElement !== mountElement) {
+        mountElement.append(placeholder);
     }
 
     placeholder.style.display = "";
-    const nodeElement = getVueNodeElement(node) ?? previewRoot.closest?.("[data-node-id]");
-    const nodeRect = nodeElement instanceof HTMLElement ? nodeElement.getBoundingClientRect() : null;
-    const placeholderTop = placeholder.getBoundingClientRect().top;
-    const previewHeight = previewRoot.getBoundingClientRect().height || previewRoot.offsetHeight || 352;
-    const availableHeight = nodeRect ? nodeRect.bottom - placeholderTop - 32 : 0;
-    const height = availableHeight > 64 ? availableHeight : previewHeight;
-    placeholder.style.height = `${Math.max(64, Math.round(height))}px`;
     placeholder.style.pointerEvents = "auto";
+    placeholder.style.position = "absolute";
+    placeholder.style.zIndex = "3";
+    placeholder.style.boxSizing = "border-box";
+    placeholder.style.flex = "";
+    placeholder.style.maxWidth = "100%";
+    placeholder.style.minWidth = "0";
+
+    if (nodeElement instanceof HTMLElement) {
+        if (!(VUE_NODE_POSITION_STYLE in node)) {
+            node[VUE_NODE_POSITION_STYLE] = nodeElement.style.position;
+        }
+        if (getComputedStyle(nodeElement).position === "static") {
+            nodeElement.style.position = "relative";
+        }
+
+        const overlayRect = getVuePreviewOverlayRect(nodeElement, previewRoot, placeholder);
+        if (overlayRect) {
+            placeholder.style.setProperty("top", `${Math.round(overlayRect.top)}px`, "important");
+            placeholder.style.setProperty("left", `${Math.round(overlayRect.left)}px`, "important");
+            placeholder.style.setProperty("right", `${Math.round(overlayRect.right)}px`, "important");
+            placeholder.style.setProperty("bottom", "16px", "important");
+            placeholder.style.setProperty("width", "auto", "important");
+            placeholder.style.setProperty("height", "auto", "important");
+            placeholder.style.setProperty("min-height", "64px", "important");
+        }
+        return placeholder;
+    }
+
+    const previewHeight = previewRoot.getBoundingClientRect().height || previewRoot.offsetHeight || 352;
+    placeholder.style.height = `${Math.max(64, Math.round(previewHeight))}px`;
     return placeholder;
 }
 
-function removeVueHiddenPlaceholder(previewRoot) {
+function removeVueHiddenPlaceholder(node, previewRoot) {
     const parent = previewRoot.parentElement;
-    const placeholder = parent?.querySelector?.(`[${VUE_PLACEHOLDER_ATTR}]`);
-    placeholder?.remove();
+    const nodeElement = previewRoot.closest?.("[data-node-id]");
+    parent?.querySelector?.(`[${VUE_PLACEHOLDER_ATTR}]`)?.remove();
+    nodeElement?.querySelector?.(`[${VUE_PLACEHOLDER_ATTR}]`)?.remove();
+
+    if (node && VUE_NODE_POSITION_STYLE in node && nodeElement instanceof HTMLElement) {
+        nodeElement.style.position = node[VUE_NODE_POSITION_STYLE];
+        delete node[VUE_NODE_POSITION_STYLE];
+    }
 }
 
 function applyVuePreviewRootVisibility(node, previewRoot, shouldHide) {
@@ -642,7 +725,7 @@ function applyVuePreviewRootVisibility(node, previewRoot, shouldHide) {
         return;
     }
 
-    removeVueHiddenPlaceholder(previewRoot);
+    removeVueHiddenPlaceholder(node, previewRoot);
     if (previewRoot.dataset.heltoHideModeDisplay !== undefined) {
         previewRoot.style.display = previewRoot.dataset.heltoHideModeDisplay;
         delete previewRoot.dataset.heltoHideModeDisplay;
