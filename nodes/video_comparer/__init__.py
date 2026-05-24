@@ -94,7 +94,7 @@ class VideoComparer(io.ComfyNode):
 
         return io.Schema(
             node_id="HeltoVideoComparer",
-            display_name="Video Comparer",
+            display_name="Helto Video Comparer",
             category="HELTO/Video",
             description="Compares two videos side by side in a synchronized node preview.",
             inputs=[

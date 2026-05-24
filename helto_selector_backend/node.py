@@ -10,7 +10,7 @@ class HeltoImageSelector(io.ComfyNode):
     def define_schema(cls) -> io.Schema:
         return io.Schema(
             node_id="HeltoImageSelector",
-            display_name="Multi-Image Selector",
+            display_name="Helto Multi-Image Selector",
             category="image",
             inputs=[
                 io.String.Input(
@@ -36,4 +36,3 @@ class HeltoImageSelector(io.ComfyNode):
     def execute(cls, selected_images: str = "[]", resize_mode: str = DEFAULT_RESIZE_MODE) -> io.NodeOutput:
         tensor_list, image_batch = select_images(selected_images, resize_mode)
         return io.NodeOutput(tensor_list, image_batch)
-

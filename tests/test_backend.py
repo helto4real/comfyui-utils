@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import asyncio
 import json
 import os
 import sys
@@ -381,6 +382,7 @@ class NodeSchemaContractTests(unittest.TestCase):
         result = node_module.HeltoImageSelector.execute("[]", "zoom to fit")
 
         self.assertEqual(schema.node_id, "HeltoImageSelector")
+        self.assertEqual(schema.display_name, "Helto Multi-Image Selector")
         self.assertEqual([input_def.id for input_def in schema.inputs], ["selected_images", "resize_mode"])
         self.assertEqual([output_def.id for output_def in schema.outputs], ["images", "image_batch"])
         self.assertTrue(schema.outputs[0].is_output_list)
@@ -389,6 +391,30 @@ class NodeSchemaContractTests(unittest.TestCase):
         self.assertEqual(len(result[0]), 1)
         self.assertEqual(tuple(result[0][0].shape), (1, 512, 512, 3))
         self.assertEqual(tuple(result[1].shape), (1, 512, 512, 3))
+
+    def test_registered_node_display_names_are_helto_prefixed(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+
+        node_classes = asyncio.run(extension_module.HeltoUtilsExtension().get_node_list())
+        schemas = [node_cls.define_schema() for node_cls in node_classes]
+
+        self.assertEqual(len(schemas), 10)
+        self.assertEqual(
+            [schema.node_id for schema in schemas],
+            [
+                "HeltoVideoParams",
+                "HeltoVideoParamsLTX",
+                "AspectRatioCalculator",
+                "ModelAutoRouter",
+                "HeltoImageComparer",
+                "HeltoVideoComparer",
+                "HeltoLoadVideo",
+                "HeltoImageSelector",
+                "HeltoSaveImageAdvanced",
+                "HeltoSaveVideoAdvanced",
+            ],
+        )
+        self.assertTrue(all(schema.display_name.startswith("Helto ") for schema in schemas))
 
     @staticmethod
     def _import_node_with_fake_comfy_api():
@@ -448,6 +474,214 @@ class NodeSchemaContractTests(unittest.TestCase):
                 sys.modules.pop("helto_selector_backend.node", None)
             else:
                 sys.modules["helto_selector_backend.node"] = previous_node
+
+    @staticmethod
+    def _import_extension_with_fake_comfy_runtime():
+        class FakeSchema:
+            def __init__(
+                self,
+                node_id,
+                display_name,
+                category,
+                inputs=None,
+                outputs=None,
+                hidden=None,
+                **kwargs,
+            ):
+                self.node_id = node_id
+                self.display_name = display_name
+                self.category = category
+                self.inputs = inputs or []
+                self.outputs = outputs or []
+                self.hidden = hidden or []
+                self.kwargs = kwargs
+
+        class FakeField:
+            def __init__(self, id=None, *args, display_name=None, is_output_list=False, **kwargs):
+                self.id = id
+                self.display_name = display_name
+                self.is_output_list = is_output_list
+                self.args = args
+                self.kwargs = kwargs
+
+        class FakeNodeOutput(tuple):
+            def __new__(cls, *values, **kwargs):
+                output = tuple.__new__(cls, values)
+                output.kwargs = kwargs
+                return output
+
+        class FakeSocket:
+            Input = FakeField
+            Output = FakeField
+
+        class FakeMultiType:
+            Input = FakeField
+
+        class FakeHidden:
+            unique_id = object()
+
+        class FakeFolderType:
+            output = "output"
+            temp = "temp"
+
+        class FakeIO:
+            ComfyNode = object
+            Schema = FakeSchema
+            NodeOutput = FakeNodeOutput
+            String = FakeSocket
+            Image = FakeSocket
+            Int = FakeSocket
+            Float = FakeSocket
+            Combo = FakeSocket
+            Boolean = FakeSocket
+            Model = FakeSocket
+            Audio = FakeSocket
+            Vae = FakeSocket
+            Latent = FakeSocket
+            Video = FakeSocket
+            MultiType = FakeMultiType
+            Hidden = FakeHidden
+            FolderType = FakeFolderType
+
+            @staticmethod
+            def Custom(_name):
+                return FakeSocket
+
+        class FakeComfyExtension:
+            async def get_node_list(self):
+                return []
+
+        class FakeVideoContainer:
+            MP4 = "mp4"
+
+        class FakeVideoCodec:
+            H264 = "h264"
+
+        class FakeTypes:
+            VideoContainer = FakeVideoContainer
+            VideoCodec = FakeVideoCodec
+
+            class VideoComponents:
+                def __init__(self, **kwargs):
+                    self.kwargs = kwargs
+
+        class FakeInputImpl:
+            class VideoFromFile:
+                def __init__(self, *args, **kwargs):
+                    self.args = args
+                    self.kwargs = kwargs
+
+            class VideoFromComponents:
+                def __init__(self, *args, **kwargs):
+                    self.args = args
+                    self.kwargs = kwargs
+
+        class FakeSavedResult:
+            def __init__(self, *args, **kwargs):
+                self.args = args
+                self.kwargs = kwargs
+
+        class FakeImageSaveHelper:
+            @staticmethod
+            def _create_png_metadata(_cls):
+                return None
+
+            @staticmethod
+            def _convert_tensor_to_pil(_image):
+                raise AssertionError("Image conversion should not run during schema tests")
+
+            @staticmethod
+            def save_images(*args, **kwargs):
+                raise AssertionError("Image saving should not run during schema tests")
+
+        class FakeUI:
+            SavedResult = FakeSavedResult
+            ImageSaveHelper = FakeImageSaveHelper
+
+        class FakeRoutes:
+            def get(self, _path):
+                return lambda handler: handler
+
+            def post(self, _path):
+                return lambda handler: handler
+
+            def delete(self, _path):
+                return lambda handler: handler
+
+        class FakePromptServer:
+            instance = types.SimpleNamespace(routes=FakeRoutes())
+
+        class FakeWeb:
+            Response = object
+            FileResponse = object
+
+            @staticmethod
+            def json_response(*args, **kwargs):
+                return {"args": args, "kwargs": kwargs}
+
+        modules = {
+            "aiohttp": types.ModuleType("aiohttp"),
+            "aiohttp.web": types.ModuleType("aiohttp.web"),
+            "comfy_api": types.ModuleType("comfy_api"),
+            "comfy_api.latest": types.ModuleType("comfy_api.latest"),
+            "folder_paths": types.ModuleType("folder_paths"),
+            "server": types.ModuleType("server"),
+            "comfy": types.ModuleType("comfy"),
+            "comfy.cli_args": types.ModuleType("comfy.cli_args"),
+            "comfy.utils": types.ModuleType("comfy.utils"),
+        }
+        modules["comfy_api.latest"].ComfyExtension = FakeComfyExtension
+        modules["comfy_api.latest"].InputImpl = FakeInputImpl
+        modules["comfy_api.latest"].Types = FakeTypes
+        modules["comfy_api.latest"].io = FakeIO
+        modules["comfy_api.latest"].ui = FakeUI
+        modules["aiohttp"].web = FakeWeb
+        modules["aiohttp.web"].Response = FakeWeb.Response
+        modules["aiohttp.web"].FileResponse = FakeWeb.FileResponse
+        modules["aiohttp.web"].json_response = FakeWeb.json_response
+        modules["folder_paths"].folder_names_and_paths = {}
+        modules["folder_paths"].get_input_directory = lambda: tempfile.gettempdir()
+        modules["folder_paths"].get_output_directory = lambda: tempfile.gettempdir()
+        modules["folder_paths"].get_temp_directory = lambda: tempfile.gettempdir()
+        modules["folder_paths"].get_filename_list = lambda _name: []
+        modules["folder_paths"].get_full_path = lambda _name, filename: filename
+        modules["folder_paths"].get_folder_paths = lambda _name: []
+        modules["server"].PromptServer = FakePromptServer
+        modules["comfy.cli_args"].args = types.SimpleNamespace(disable_metadata=False)
+        modules["comfy.utils"].ProgressBar = lambda _total: types.SimpleNamespace(update_absolute=lambda *_args: None)
+
+        package_name = "helto_utils_schema_test"
+        previous_modules = {name: sys.modules.get(name) for name in modules}
+        previous_package_modules = {
+            name: module
+            for name, module in sys.modules.items()
+            if name == package_name or name.startswith(f"{package_name}.")
+        }
+        for name in previous_package_modules:
+            sys.modules.pop(name, None)
+
+        sys.modules.update(modules)
+        init_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "__init__.py"))
+        spec = importlib.util.spec_from_file_location(
+            package_name,
+            init_path,
+            submodule_search_locations=[os.path.dirname(init_path)],
+        )
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[package_name] = module
+        try:
+            spec.loader.exec_module(module)
+            return module
+        finally:
+            for name, previous in previous_modules.items():
+                if previous is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = previous
+            for name in list(sys.modules):
+                if name == package_name or name.startswith(f"{package_name}."):
+                    sys.modules.pop(name, None)
+            sys.modules.update(previous_package_modules)
 
 
 if __name__ == "__main__":

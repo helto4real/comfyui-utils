@@ -162,7 +162,7 @@ class HeltoLoadVideo(io.ComfyNode):
     def define_schema(cls) -> io.Schema:
         return io.Schema(
             node_id="HeltoLoadVideo",
-            display_name="Load Video",
+            display_name="Helto Load Video",
             category="HELTO/Video",
             description="Loads a selected video as image frames, audio, and video metadata.",
             has_intermediate_output=True,

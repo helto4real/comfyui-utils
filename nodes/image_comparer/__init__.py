@@ -31,7 +31,7 @@ class ImageComparer(io.ComfyNode):
     def define_schema(cls) -> io.Schema:
         return io.Schema(
             node_id="HeltoImageComparer",
-            display_name="Image Comparer",
+            display_name="Helto Image Comparer",
             category="HELTO/Image",
             description="Compares an original image against a new image in the node preview.",
             inputs=[

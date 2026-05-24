@@ -16,7 +16,7 @@ class HeltoVideoParams(io.ComfyNode):
     def define_schema(cls) -> io.Schema:
         return io.Schema(
             node_id="HeltoVideoParams",
-            display_name="Video Parameters",
+            display_name="Helto Video Parameters",
             category="HELTO/Video",
             description="Returns WAN 2.2 video dimensions and sampler parameters.",
             inputs=[

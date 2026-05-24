@@ -23,7 +23,7 @@ class SaveImageAdvanced(io.ComfyNode):
     def define_schema(cls) -> io.Schema:
         return io.Schema(
             node_id="HeltoSaveImageAdvanced",
-            display_name="Save Image Advanced",
+            display_name="Helto Save Image Advanced",
             category="HELTO/Image",
             description="Saves images to an absolute folder with optional alternate, date, and subfolder routing.",
             inputs=[

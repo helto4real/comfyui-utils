@@ -17,7 +17,7 @@ class HeltoVideoParamsLTX(io.ComfyNode):
     def define_schema(cls) -> io.Schema:
         return io.Schema(
             node_id="HeltoVideoParamsLTX",
-            display_name="Video Parameters LTX",
+            display_name="Helto Video Parameters LTX",
             category="HELTO/Video",
             description="Returns LTX 2.3 video dimensions and frame-safe sampler parameters.",
             inputs=[

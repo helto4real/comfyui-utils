@@ -343,7 +343,7 @@ class SaveVideoAdvanced(io.ComfyNode):
 
         return io.Schema(
             node_id="HeltoSaveVideoAdvanced",
-            display_name="Save Video Advanced",
+            display_name="Helto Save Video Advanced",
             category="HELTO/Video",
             description="Saves images or latents as video with advanced folder routing and VideoHelperSuite-style format controls.",
             inputs=[

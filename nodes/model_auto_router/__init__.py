@@ -8,7 +8,7 @@ class ModelAutoRouter(io.ComfyNode):
     def define_schema(cls) -> io.Schema:
         return io.Schema(
             node_id="ModelAutoRouter",
-            display_name="Model Auto Router (Mute-safe)",
+            display_name="Helto Model Auto Router (Mute-safe)",
             category="HELTO/Utils",
             description="Routes model_a when connected, otherwise falls back to model_b.",
             inputs=[

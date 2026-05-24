@@ -10,7 +10,7 @@ class AspectRatioCalculator(io.ComfyNode):
     def define_schema(cls) -> io.Schema:
         return io.Schema(
             node_id="AspectRatioCalculator",
-            display_name="Aspect Ratio Calculator",
+            display_name="Helto Aspect Ratio Calculator",
             category="HELTO/Utils",
             description="Calculates width and height from an aspect ratio and side length.",
             inputs=[
