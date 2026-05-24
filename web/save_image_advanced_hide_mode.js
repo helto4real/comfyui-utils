@@ -24,6 +24,7 @@ const HOVER_CLEAR_TIMER = "__heltoHideModeHoverClearTimer";
 const VUE_NODE_POSITION_STYLE = "__heltoHideModeVueNodePositionStyle";
 const DEBUG_STORAGE_KEY = "heltoHideModeDebug";
 const RESTORED_OUTPUT_REFRESHED = "__heltoHideModeRestoredOutputRefreshed";
+const RESTORE_REFRESH_SCHEDULED = "__heltoHideModeRestoreRefreshScheduled";
 const FORMAT_WIDGETS = "__heltoVideoFormatWidgets";
 const FORMAT_WIDGET_COUNT = "__heltoVideoFormatWidgetCount";
 const FORMAT_WIDGET_CALLBACK = "__heltoVideoFormatWidgetCallback";
@@ -172,6 +173,16 @@ function syncPrivatePreviewUrls(node, output) {
     return false;
 }
 
+function getStoredNodeOutput(node) {
+    for (const key of previewKeysForNode(node)) {
+        const output = app.nodeOutputs?.[key];
+        if (output?.images?.length) {
+            return output;
+        }
+    }
+    return null;
+}
+
 function applyPrivateImagePreviews(node, records) {
     if (!Array.isArray(records) || records.length === 0) {
         return false;
@@ -281,11 +292,7 @@ function ensureHideModeWidget(node) {
         "toggle",
         PROPERTY_NAME,
         Boolean(node.properties?.[PROPERTY_NAME]),
-        (value) => {
-            node.properties[PROPERTY_NAME] = Boolean(value);
-            syncHideOutputImages(node);
-            setCanvasDirty(node);
-        },
+        (value) => handleHideModeToggle(node, value),
         { on: "true", off: "false" },
     );
 
@@ -294,16 +301,33 @@ function ensureHideModeWidget(node) {
     }
 
     widget.value = Boolean(node.properties?.[PROPERTY_NAME]);
-    widget.callback = (value) => {
-        node.properties[PROPERTY_NAME] = Boolean(value);
-        syncHideOutputImages(node);
-        setCanvasDirty(node);
-    };
+    widget.callback = (value) => handleHideModeToggle(node, value);
     widget.serialize = false;
     widget.options ??= {};
     widget.options.serialize = false;
     node[HIDE_MODE_WIDGET] = widget;
     node.setSize?.(node.computeSize?.() ?? node.size);
+}
+
+function handleHideModeToggle(node, value) {
+    const enabled = Boolean(value);
+    node.properties[PROPERTY_NAME] = enabled;
+    if (node[HIDE_MODE_WIDGET]) {
+        node[HIDE_MODE_WIDGET].value = enabled;
+    }
+
+    if (isSaveVideoAdvancedNode(node)) {
+        node[RESTORED_OUTPUT_REFRESHED] = false;
+    }
+
+    syncHideOutputImages(node);
+
+    if (isSaveVideoAdvancedNode(node) && !enabled) {
+        applyDomPreviewVisibility(node, false);
+        scheduleRestoredVueOutputRefresh(node, { force: true });
+    }
+
+    setCanvasDirty(node);
 }
 
 function setHideModeValue(node, value) {
@@ -1212,9 +1236,16 @@ function syncVideoHideOutputImages(node, { force = false } = {}) {
     }
 
     const shouldHide = isHideModeEnabled(node) && !node[HOVER_STATE];
-    const nextValue = shouldHide || node[ORIGINAL_HIDE_STATE];
     const isVideoNode = isSaveVideoAdvancedNode(node);
-    const shouldApplyPreviewVisibility = force || !isVideoNode || node[PREVIEW_HIDDEN_STATE] !== shouldHide;
+    const nextValue = isVideoNode ? shouldHide : shouldHide || node[ORIGINAL_HIDE_STATE];
+    const hideOutputImagesChanged = node.hideOutputImages !== nextValue;
+
+    if (hideOutputImagesChanged) {
+        node.hideOutputImages = nextValue;
+        setCanvasDirty(node);
+    }
+
+    const shouldApplyPreviewVisibility = force || hideOutputImagesChanged || !isVideoNode || node[PREVIEW_HIDDEN_STATE] !== shouldHide;
 
     if (shouldApplyPreviewVisibility) {
         applyVideoPreviewVisibility(node, shouldHide);
@@ -1225,11 +1256,6 @@ function syncVideoHideOutputImages(node, { force = false } = {}) {
         } else if (isVideoNode) {
             stopPreviewWatcher(node);
         }
-        setCanvasDirty(node);
-    }
-
-    if (node.hideOutputImages !== nextValue) {
-        node.hideOutputImages = nextValue;
         setCanvasDirty(node);
     }
 
@@ -1472,16 +1498,21 @@ function scheduleHideModeSync(node) {
 }
 
 function refreshRestoredVueOutput(node, { force = false } = {}) {
-    if (!isSaveVideoAdvancedNode(node) || !isVueRenderedNode(node) || (!force && node[RESTORED_OUTPUT_REFRESHED])) {
+    if (!isSaveVideoAdvancedNode(node) || (!force && node[RESTORED_OUTPUT_REFRESHED])) {
+        return;
+    }
+
+    if (isHideModeEnabled(node) && !node[HOVER_STATE]) {
         return;
     }
 
     const nodeId = String(node.id);
-    const output = app.nodeOutputs?.[nodeId];
+    const output = getStoredNodeOutput(node);
     if (!output?.images?.length || typeof api.dispatchEvent !== "function" || typeof CustomEvent === "undefined") {
         return;
     }
 
+    applyDomPreviewVisibility(node, false);
     syncPrivatePreviewUrls(node, output);
     ensureVideoPreviewMediaType(node);
     const refreshedOutput = {
@@ -1501,9 +1532,21 @@ function refreshRestoredVueOutput(node, { force = false } = {}) {
 }
 
 function scheduleRestoredVueOutputRefresh(node, options = {}) {
-    requestAnimationFrame(() => refreshRestoredVueOutput(node, options));
-    setTimeout(() => refreshRestoredVueOutput(node, options), 100);
-    setTimeout(() => refreshRestoredVueOutput(node, options), 500);
+    if (node[RESTORE_REFRESH_SCHEDULED]) {
+        return;
+    }
+
+    node[RESTORE_REFRESH_SCHEDULED] = true;
+    const run = () => {
+        refreshRestoredVueOutput(node, options);
+    };
+
+    requestAnimationFrame(run);
+    setTimeout(run, 100);
+    setTimeout(() => {
+        run();
+        node[RESTORE_REFRESH_SCHEDULED] = false;
+    }, 500);
 }
 
 function setupImageHideMode(node) {
