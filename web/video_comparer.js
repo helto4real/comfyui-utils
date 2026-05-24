@@ -219,6 +219,11 @@ function isHideModeEnabled(node) {
 }
 
 function recordToUrl(record) {
+    if (record?.private && record?.token) {
+        const params = new URLSearchParams({ token: record.token });
+        return api.apiURL(`/helto_utils/private_media?${params.toString()}${app.getRandParam?.() ?? ""}`);
+    }
+
     if (!record?.filename || !record?.type) {
         return null;
     }

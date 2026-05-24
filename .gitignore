@@ -1,5 +1,6 @@
 __pycache__/
 **/__pycache__/
 *.py[cod]
+config/
 nodes/load_video/config/
 nodes/load_video/thumbnail_cache/

@@ -178,6 +178,7 @@ class HeltoLoadVideo(io.ComfyNode):
                 io.Combo.Input("resize_mode", options=["original", "resize", "pad", "crop"], default="original"),
                 io.Int.Input("custom_width", default=0, min=0, max=16384, step=8),
                 io.Int.Input("custom_height", default=0, min=0, max=16384, step=8),
+                io.Boolean.Input("privacy_mode", default=True),
             ],
             outputs=[
                 io.Image.Output("images"),
@@ -214,12 +215,13 @@ class HeltoLoadVideo(io.ComfyNode):
         resize_mode: str = "original",
         custom_width: int = 0,
         custom_height: int = 0,
+        privacy_mode: bool = True,
     ) -> io.NodeOutput:
         try:
             source_path = _resolve_source(video, video_folder_alias)
         except Exception:
             return io.NodeOutput(_empty_images(), _empty_audio(), 0.0, 64, 64, 0.0)
-        preview = ui.PreviewVideo([preview_result(source_path)])
+        preview = ui.PreviewVideo([preview_result(source_path, privacy_mode=privacy_mode)])
 
         start_time = max(_as_float(start_time), 0.0)
         requested_duration = max(_as_float(duration), 0.0)

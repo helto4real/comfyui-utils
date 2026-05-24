@@ -4,6 +4,7 @@ import os
 import hashlib
 import shutil
 import uuid
+from io import BytesIO
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
@@ -18,8 +19,10 @@ except ImportError:
 
 try:
     from .video_config import THUMB_CACHE_DIR, VIDEO_EXTENSIONS
+    from ...shared.privacy import decrypt_bytes, encrypt_bytes, private_media_record, remove_plain_file_silent
 except ImportError:
     from video_config import THUMB_CACHE_DIR, VIDEO_EXTENSIONS
+    from shared.privacy import decrypt_bytes, encrypt_bytes, private_media_record, remove_plain_file_silent
 
 
 def _fraction_to_float(value: Any) -> float:
@@ -67,13 +70,11 @@ def thumbnail_path(video_path: Path, max_size: int = 360) -> Path:
     return THUMB_CACHE_DIR / f"{key}.webp"
 
 
-def make_thumbnail(video_path: Path, max_size: int = 360) -> Path:
-    video_path = Path(video_path)
-    THUMB_CACHE_DIR.mkdir(exist_ok=True)
-    output_path = thumbnail_path(video_path, max_size=max_size)
-    if output_path.exists():
-        return output_path
+def encrypted_thumbnail_path(video_path: Path, max_size: int = 360) -> Path:
+    return thumbnail_path(video_path, max_size=max_size).with_suffix(".webp.enc")
 
+
+def generate_thumbnail_bytes(video_path: Path, max_size: int = 360) -> bytes:
     import av
     from PIL import Image
 
@@ -88,18 +89,61 @@ def make_thumbnail(video_path: Path, max_size: int = 360) -> Path:
             if rotation != 0:
                 image = image.rotate(-rotation, expand=True)
             image.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
-            output_path.parent.mkdir(exist_ok=True)
-            image.save(output_path, "WEBP", quality=86, method=4)
-            return output_path
+            output = BytesIO()
+            image.save(output, "WEBP", quality=86, method=4)
+            return output.getvalue()
 
     raise ValueError(f"No decodable video frame found in {video_path}")
 
 
-def preview_result(video_path: Path, subfolder: str = "helto_load_video") -> ui.SavedResult:
+def make_thumbnail(video_path: Path, max_size: int = 360) -> Path:
+    video_path = Path(video_path)
+    THUMB_CACHE_DIR.mkdir(exist_ok=True)
+    output_path = thumbnail_path(video_path, max_size=max_size)
+    if output_path.exists():
+        return output_path
+
+    output_path.parent.mkdir(exist_ok=True)
+    output_path.write_bytes(generate_thumbnail_bytes(video_path, max_size=max_size))
+    return output_path
+
+
+def thumbnail_bytes(video_path: Path, privacy_mode: bool, max_size: int = 360) -> bytes:
+    video_path = Path(video_path)
+    THUMB_CACHE_DIR.mkdir(exist_ok=True)
+    plain_path = thumbnail_path(video_path, max_size=max_size)
+    encrypted_path = encrypted_thumbnail_path(video_path, max_size=max_size)
+
+    if privacy_mode:
+        if encrypted_path.exists():
+            return decrypt_bytes(encrypted_path.read_bytes())
+        if plain_path.exists():
+            data = plain_path.read_bytes()
+        else:
+            data = generate_thumbnail_bytes(video_path, max_size=max_size)
+        encrypted_path.write_bytes(encrypt_bytes(data))
+        remove_plain_file_silent(plain_path)
+        return data
+
+    if plain_path.exists():
+        return plain_path.read_bytes()
+    if encrypted_path.exists():
+        data = decrypt_bytes(encrypted_path.read_bytes())
+    else:
+        data = generate_thumbnail_bytes(video_path, max_size=max_size)
+    plain_path.write_bytes(data)
+    remove_plain_file_silent(encrypted_path)
+    return data
+
+
+def preview_result(video_path: Path, subfolder: str = "helto_load_video", privacy_mode: bool = True) -> ui.SavedResult | dict:
     if io is None or ui is None:
         raise RuntimeError("ComfyUI API is required to create video preview results.")
 
     video_path = Path(video_path).resolve()
+    if privacy_mode:
+        return private_media_record(video_path, content_type="video/mp4", encrypted=False, filename=video_path.name)
+
     for folder_type, base_dir in (
         (io.FolderType.output, folder_paths.get_output_directory()),
         (io.FolderType.temp, folder_paths.get_temp_directory()),

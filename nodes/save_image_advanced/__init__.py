@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import os
 import re
+from io import BytesIO
 from datetime import date
 
 import folder_paths
 from comfy_api.latest import io, ui
+
+from ...shared.privacy import private_media_record, write_encrypted_temp_bytes
 
 
 _COUNTER_RE_TEMPLATE = r"^{prefix}_(?P<counter>\d+)_?\.png$"
@@ -34,6 +37,7 @@ class SaveImageAdvanced(io.ComfyNode):
                 io.Boolean.Input("use_date_folder", default=False),
                 io.String.Input("subfolder", default=""),
                 io.String.Input("filename_prefix", default="img"),
+                io.Boolean.Input("privacy_mode", default=True),
             ],
             outputs=[
                 io.Image.Output("images"),
@@ -59,6 +63,7 @@ class SaveImageAdvanced(io.ComfyNode):
         use_date_folder: bool = False,
         subfolder: str = "",
         filename_prefix: str = "img",
+        privacy_mode: bool = True,
     ) -> io.NodeOutput:
         node_id = cls._node_id()
         cached_preview = cls.state["previews"].get(node_id)
@@ -75,17 +80,23 @@ class SaveImageAdvanced(io.ComfyNode):
         )
         filename_prefix = cls._normalize_filename_prefix(filename_prefix)
 
-        saved_count = cls._save_images(images, save_dir, filename_prefix)
-        print(f"Save Image Advanced saved {saved_count} image(s) to: {save_dir}")
-        preview = ui.SavedImages(
-            ui.ImageSaveHelper.save_images(
-                images,
-                filename_prefix=filename_prefix,
-                folder_type=io.FolderType.temp,
-                cls=cls,
-                compress_level=4,
+        saved_paths = cls._save_images(images, save_dir, filename_prefix)
+        print(f"Save Image Advanced saved {len(saved_paths)} image(s) to: {save_dir}")
+        if privacy_mode:
+            preview = {
+                "helto_private_images": cls._private_preview_records(images, filename_prefix),
+                "images": [],
+            }
+        else:
+            preview = ui.SavedImages(
+                ui.ImageSaveHelper.save_images(
+                    images,
+                    filename_prefix=filename_prefix,
+                    folder_type=io.FolderType.temp,
+                    cls=cls,
+                    compress_level=4,
+                )
             )
-        )
         cls.state["previews"][node_id] = preview
 
         return io.NodeOutput(images, ui=preview)
@@ -136,21 +147,40 @@ class SaveImageAdvanced(io.ComfyNode):
         return prefix if prefix not in ("", ".", os.pardir) else "img"
 
     @classmethod
-    def _save_images(cls, images, save_dir: str, filename_prefix: str) -> int:
+    def _save_images(cls, images, save_dir: str, filename_prefix: str) -> list[str]:
         os.makedirs(save_dir, exist_ok=True)
         counter = cls._next_counter(save_dir, filename_prefix)
         metadata = ui.ImageSaveHelper._create_png_metadata(cls)
-        saved_count = 0
+        saved_paths = []
 
         for image in images:
             image_file = f"{filename_prefix}_{counter:05}.png"
             image_path = os.path.join(save_dir, image_file)
             pil_image = ui.ImageSaveHelper._convert_tensor_to_pil(image)
             pil_image.save(image_path, pnginfo=metadata, compress_level=4)
-            saved_count += 1
+            saved_paths.append(image_path)
             counter += 1
 
-        return saved_count
+        return saved_paths
+
+    @classmethod
+    def _private_preview_records(cls, images, filename_prefix: str) -> list[dict]:
+        records = []
+        metadata = ui.ImageSaveHelper._create_png_metadata(cls)
+        for index, image in enumerate(images):
+            pil_image = ui.ImageSaveHelper._convert_tensor_to_pil(image)
+            buffer = BytesIO()
+            pil_image.save(buffer, format="PNG", pnginfo=metadata, compress_level=4)
+            path = write_encrypted_temp_bytes(buffer.getvalue(), ".png", "save_image_advanced")
+            records.append(
+                private_media_record(
+                    path,
+                    content_type="image/png",
+                    encrypted=True,
+                    filename=f"{filename_prefix}_{index + 1:05}.png",
+                )
+            )
+        return records
 
     @staticmethod
     def _next_counter(save_dir: str, filename_prefix: str) -> int:

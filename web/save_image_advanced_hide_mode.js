@@ -130,6 +130,43 @@ function setCanvasDirty(node) {
     app.canvas?.setDirty?.(true, true);
 }
 
+function privateRecordToUrl(record) {
+    if (!record?.private || !record?.token) {
+        return null;
+    }
+    const params = new URLSearchParams({ token: record.token });
+    return api.apiURL(`/helto_utils/private_media?${params.toString()}${app.getRandParam?.() ?? ""}`);
+}
+
+function applyPrivateImagePreviews(node, records) {
+    if (!Array.isArray(records) || records.length === 0) {
+        return false;
+    }
+
+    const images = [];
+    for (const record of records) {
+        const url = privateRecordToUrl(record);
+        if (!url) {
+            continue;
+        }
+        const image = new Image();
+        image.onload = () => setCanvasDirty(node);
+        image.src = url;
+        images.push(image);
+    }
+
+    if (!images.length) {
+        return false;
+    }
+
+    node.imgs = images;
+    node.imageIndex = 0;
+    node[HIDDEN_IMAGES] = images;
+    node[HIDDEN_IMAGE_INDEX] = 0;
+    setCanvasDirty(node);
+    return true;
+}
+
 function isDebugEnabled() {
     return Boolean(globalThis.HELTO_HIDE_MODE_DEBUG) || localStorage.getItem(DEBUG_STORAGE_KEY) === "1";
 }
@@ -1466,6 +1503,15 @@ function setupImageHideMode(node) {
     node.onDrawBackground = function (...args) {
         const result = originalOnDrawBackground?.apply(this, args);
         syncImageHideOutputImages(this);
+        return result;
+    };
+
+    const originalOnExecuted = node.onExecuted;
+    node.onExecuted = function (output, ...args) {
+        const result = originalOnExecuted?.call(this, output, ...args);
+        if (applyPrivateImagePreviews(this, output?.helto_private_images)) {
+            syncImageHideOutputImages(this);
+        }
         return result;
     };
 

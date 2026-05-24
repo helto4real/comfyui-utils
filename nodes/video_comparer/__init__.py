@@ -3,12 +3,15 @@ from __future__ import annotations
 import os
 import re
 import uuid
+from io import BytesIO
 from fractions import Fraction
 from typing import Any
 
 import folder_paths
 import torch
 from comfy_api.latest import InputImpl, Types, io, ui
+
+from ...shared.privacy import private_media_record, write_encrypted_temp_bytes
 
 
 _PREVIEW_SUBFOLDER = "helto_video_comparer"
@@ -100,6 +103,7 @@ class VideoComparer(io.ComfyNode):
                 io.Audio.Input("audio_1", optional=True, tooltip="Audio source for video 1 preview playback."),
                 io.Audio.Input("audio_2", optional=True, tooltip="Audio source for video 2 preview playback."),
                 io.Float.Input("frame_rate", default=24.0, min=0.01, max=1000.0, step=0.01),
+                io.Boolean.Input("privacy_mode", default=True),
             ],
             outputs=[],
             hidden=[
@@ -114,12 +118,20 @@ class VideoComparer(io.ComfyNode):
         return float("NaN")
 
     @classmethod
-    def execute(cls, video_1, video_2, audio_1=None, audio_2=None, frame_rate: float = 24.0) -> io.NodeOutput:
+    def execute(
+        cls,
+        video_1,
+        video_2,
+        audio_1=None,
+        audio_2=None,
+        frame_rate: float = 24.0,
+        privacy_mode: bool = True,
+    ) -> io.NodeOutput:
         result = {
             "video_comparison": [{
                 "videos": [
-                    cls._preview_result(video_1, "video_1", frame_rate, audio_1),
-                    cls._preview_result(video_2, "video_2", frame_rate, audio_2),
+                    cls._preview_result(video_1, "video_1", frame_rate, audio_1, privacy_mode=privacy_mode),
+                    cls._preview_result(video_2, "video_2", frame_rate, audio_2, privacy_mode=privacy_mode),
                 ],
                 "frame_rate": float(frame_rate),
             }]
@@ -128,9 +140,8 @@ class VideoComparer(io.ComfyNode):
         return io.NodeOutput(ui=result)
 
     @classmethod
-    def _preview_result(cls, source, slot: str, frame_rate: float, audio=None) -> ui.SavedResult:
+    def _preview_result(cls, source, slot: str, frame_rate: float, audio=None, privacy_mode: bool = True) -> ui.SavedResult | dict:
         preview_dir = os.path.join(folder_paths.get_temp_directory(), _PREVIEW_SUBFOLDER)
-        os.makedirs(preview_dir, exist_ok=True)
         audio = _materialize_audio(audio, slot)
 
         filename = f"{_hidden_node_id(cls)}_{slot}_{uuid.uuid4().hex}.mp4"
@@ -142,10 +153,14 @@ class VideoComparer(io.ComfyNode):
             "frame_rate": float(frame_rate),
         }
 
+        target = BytesIO() if privacy_mode else output_path
+        if not privacy_mode:
+            os.makedirs(preview_dir, exist_ok=True)
+
         if hasattr(source, "save_to"):
             if audio is None:
                 source.save_to(
-                    output_path,
+                    target,
                     format=Types.VideoContainer.MP4,
                     codec=Types.VideoCodec.H264,
                     metadata=metadata,
@@ -161,7 +176,7 @@ class VideoComparer(io.ComfyNode):
                     )
                 )
                 video.save_to(
-                    output_path,
+                    target,
                     format=Types.VideoContainer.MP4,
                     codec=Types.VideoCodec.H264,
                     metadata=metadata,
@@ -176,6 +191,11 @@ class VideoComparer(io.ComfyNode):
                     metadata=metadata,
                 )
             )
-            video.save_to(output_path, format=Types.VideoContainer.MP4, codec=Types.VideoCodec.H264, metadata=metadata)
+            video.save_to(target, format=Types.VideoContainer.MP4, codec=Types.VideoCodec.H264, metadata=metadata)
+
+        if privacy_mode:
+            assert isinstance(target, BytesIO)
+            path = write_encrypted_temp_bytes(target.getvalue(), ".mp4", _PREVIEW_SUBFOLDER)
+            return private_media_record(path, content_type="video/mp4", encrypted=True, filename=filename)
 
         return ui.SavedResult(filename, _PREVIEW_SUBFOLDER, io.FolderType.temp)

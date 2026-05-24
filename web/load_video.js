@@ -6,6 +6,7 @@ const DISPLAY_NAME = "Load Video";
 const ROUTE_PREFIX = "/helto_load_video";
 const PICKER_BUTTON = "__heltoLoadVideoPickerButton";
 const PREVIEW_REQUEST = "__heltoLoadVideoPreviewRequest";
+const EXECUTED_WRAPPED = "__heltoLoadVideoExecutedWrapped";
 
 let stylesInjected = false;
 
@@ -209,8 +210,20 @@ function setCanvasDirty(node) {
     app.canvas?.setDirty?.(true, true);
 }
 
+function ensureVideoPreviewMediaType(node) {
+    node.previewMediaType = "video";
+}
+
 function routeUrl(path) {
     return api.apiURL(path);
+}
+
+function privateRecordToUrl(record) {
+    if (!record?.private || !record?.token) {
+        return null;
+    }
+    const params = new URLSearchParams({ token: record.token });
+    return api.apiURL(`/helto_utils/private_media?${params.toString()}${app.getRandParam?.() ?? ""}`);
 }
 
 async function fetchJson(path, options = {}) {
@@ -230,6 +243,14 @@ function getAliasWidget(node) {
     return node.widgets?.find((widget) => widget.name === "video_folder_alias");
 }
 
+function getPrivacyWidget(node) {
+    return node.widgets?.find((widget) => widget.name === "privacy_mode");
+}
+
+function isPrivacyModeEnabled(node) {
+    return Boolean(getPrivacyWidget(node)?.value ?? node.properties?.privacy_mode ?? true);
+}
+
 function hideWidget(widget) {
     if (!widget) {
         return;
@@ -239,12 +260,44 @@ function hideWidget(widget) {
     widget.computeSize = () => [0, -4];
 }
 
-function previewPayloadPath(alias, filename) {
+function previewPayloadPath(alias, filename, privacyMode = true) {
     if (!filename) {
         return "";
     }
-    const params = new URLSearchParams({ alias: alias || "input", filename });
+    const params = new URLSearchParams({ alias: alias || "input", filename, privacy: privacyMode ? "1" : "0" });
     return `${ROUTE_PREFIX}/preview?${params.toString()}`;
+}
+
+function privatePreviewUrls(output) {
+    if (!Array.isArray(output?.images)) {
+        return [];
+    }
+    return output.images.map(privateRecordToUrl).filter(Boolean);
+}
+
+function previewKeysForNode(node) {
+    const keys = [String(node.id)];
+    const graphId = node.graph?.id;
+    if (graphId && !node.graph?.isRootGraph) {
+        keys.push(`${graphId}:${node.id}`);
+    }
+    return keys;
+}
+
+function syncPrivatePreviewUrls(node, output) {
+    const urls = privatePreviewUrls(output);
+    app.nodePreviewImages ??= {};
+
+    if (urls.length) {
+        for (const key of previewKeysForNode(node)) {
+            app.nodePreviewImages[key] = urls;
+        }
+        ensureVideoPreviewMediaType(node);
+    } else {
+        for (const key of previewKeysForNode(node)) {
+            delete app.nodePreviewImages[key];
+        }
+    }
 }
 
 function applyNativePreview(node, payload) {
@@ -253,6 +306,7 @@ function applyNativePreview(node, payload) {
         animated: payload?.animated || [true],
     };
     const nodeId = String(node.id);
+    syncPrivatePreviewUrls(node, output);
 
     app.nodeOutputs ??= {};
     app.nodeOutputs[nodeId] = output;
@@ -278,13 +332,14 @@ function applyNativePreview(node, payload) {
 async function refreshNativePreview(node) {
     const video = getVideoWidget(node)?.value || "";
     const alias = getAliasWidget(node)?.value || "input";
+    const privacyMode = isPrivacyModeEnabled(node);
     if (!video) {
         return;
     }
 
     const requestId = Symbol("load-video-preview");
     node[PREVIEW_REQUEST] = requestId;
-    const payload = await fetchJson(previewPayloadPath(alias, video));
+    const payload = await fetchJson(previewPayloadPath(alias, video, privacyMode));
     if (node[PREVIEW_REQUEST] !== requestId) {
         return;
     }
@@ -502,6 +557,7 @@ async function openPicker(node) {
         const params = new URLSearchParams({
             alias: folderSelect.value,
             recursive: recursive ? "1" : "0",
+            privacy: isPrivacyModeEnabled(node) ? "1" : "0",
         });
         const data = await fetchJson(`${ROUTE_PREFIX}/videos?${params.toString()}`);
         availableVideos = data.videos || [];
@@ -587,6 +643,19 @@ function ensurePickerButton(node) {
     }
 }
 
+function wrapOnExecuted(node) {
+    if (node[EXECUTED_WRAPPED]) {
+        return;
+    }
+    node[EXECUTED_WRAPPED] = true;
+
+    const originalOnExecuted = node.onExecuted;
+    node.onExecuted = function (output, ...args) {
+        syncPrivatePreviewUrls(this, output);
+        return originalOnExecuted?.call(this, output, ...args);
+    };
+}
+
 app.registerExtension({
     name: "Helto.LoadVideo",
     async beforeRegisterNodeDef(nodeType, nodeData) {
@@ -604,6 +673,8 @@ app.registerExtension({
             }
 
             ensurePickerButton(this);
+            ensureVideoPreviewMediaType(this);
+            wrapOnExecuted(this);
             hideWidget(getAliasWidget(this));
 
             const videoWidget = getVideoWidget(this);
@@ -634,6 +705,8 @@ app.registerExtension({
             const result = onConfigure?.apply(this, arguments);
             if (isLoadVideoNode(this)) {
                 ensurePickerButton(this);
+                ensureVideoPreviewMediaType(this);
+                wrapOnExecuted(this);
                 hideWidget(getAliasWidget(this));
                 refreshNativePreview(this).catch((err) => console.warn("Failed to refresh Load Video preview:", err));
             }

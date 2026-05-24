@@ -14,7 +14,7 @@ from .video_config import (
     remove_folder,
     resolve_video_path,
 )
-from .video_io import list_videos, make_thumbnail, preview_result
+from .video_io import list_videos, preview_result, thumbnail_bytes
 
 
 ROUTE_PREFIX = "/helto_load_video"
@@ -65,6 +65,7 @@ async def get_videos(request):
     try:
         alias = request.query.get("alias", "input") or "input"
         recursive = request.query.get("recursive", "1").lower() not in {"0", "false", "no"}
+        privacy_mode = request.query.get("privacy", "true").lower() in {"1", "true", "yes"}
         folder = folder_by_alias(alias)
         if not os.path.isdir(folder.path):
             return web.json_response({"videos": [], "warning": "Folder does not exist."})
@@ -77,7 +78,12 @@ async def get_videos(request):
             )
             video["thumb_url"] = (
                 f"{ROUTE_PREFIX}/thumb?"
-                + urllib.parse.urlencode({"alias": alias, "filename": video["filename"], "t": int(video["mtime"])})
+                + urllib.parse.urlencode({
+                    "alias": alias,
+                    "filename": video["filename"],
+                    "t": int(video["mtime"]),
+                    "privacy": "1" if privacy_mode else "0",
+                })
             )
         return web.json_response({"videos": videos})
     except Exception as exc:
@@ -107,10 +113,11 @@ async def get_preview(request):
     try:
         alias = request.query.get("alias", "input") or "input"
         filename = urllib.parse.unquote(request.query.get("filename", ""))
+        privacy_mode = request.query.get("privacy", "true").lower() in {"1", "true", "yes"}
         path = resolve_video_path(alias, filename)
         if path.suffix.lower() not in VIDEO_EXTENSIONS:
             return web.json_response({"error": "Unsupported video type"}, status=400)
-        return web.json_response({"images": [preview_result(path)], "animated": [True]})
+        return web.json_response({"images": [preview_result(path, privacy_mode=privacy_mode)], "animated": [True]})
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=400)
 
@@ -119,9 +126,13 @@ async def get_preview(request):
 async def get_thumb(request):
     try:
         alias = request.query.get("alias", "input") or "input"
+        privacy_mode = request.query.get("privacy", "true").lower() in {"1", "true", "yes"}
         filename = urllib.parse.unquote(request.query.get("filename", ""))
         path = resolve_video_path(alias, filename)
-        thumbnail = make_thumbnail(path)
-        return web.FileResponse(thumbnail, headers={"Cache-Control": "public, max-age=86400", "Content-Type": "image/webp"})
+        return web.Response(
+            body=thumbnail_bytes(path, privacy_mode),
+            headers={"Cache-Control": "public, max-age=86400"},
+            content_type="image/webp",
+        )
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=400)

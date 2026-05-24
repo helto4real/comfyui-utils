@@ -21,6 +21,8 @@ from comfy_api.latest import io, ui
 from PIL import Image, ExifTags
 from PIL.PngImagePlugin import PngInfo
 
+from ...shared.privacy import private_media_record
+
 
 _COUNTER_RE_TEMPLATE = r"^{prefix}_(?P<counter>\d+)(?:-audio)?\.[^.]+$"
 _VHS_FORMAT_FOLDER = "VHS_video_formats"
@@ -367,6 +369,7 @@ class SaveVideoAdvanced(io.ComfyNode):
                 ),
                 io.Boolean.Input("pingpong", default=False),
                 io.Boolean.Input("save_output", default=True),
+                io.Boolean.Input("privacy_mode", default=True),
             ],
             outputs=[
                 io.Image.Output("images"),
@@ -402,6 +405,7 @@ class SaveVideoAdvanced(io.ComfyNode):
         format: str = "video/h264-mp4",
         pingpong: bool = False,
         save_output: bool = True,
+        privacy_mode: bool = True,
         **kwargs,
     ) -> io.NodeOutput:
         node_id = cls._node_id()
@@ -409,6 +413,8 @@ class SaveVideoAdvanced(io.ComfyNode):
 
         if images is None:
             return io.NodeOutput(None, audio, (save_output, []), ui=cached_preview)
+        if privacy_mode and not save_output:
+            raise ValueError("Save Video Advanced privacy mode requires save_output=True because save_output=False writes the output itself to ComfyUI temp.")
 
         decoded_images = cls._prepare_images(images, vae)
         frames = [frame for frame in decoded_images]
@@ -445,7 +451,10 @@ class SaveVideoAdvanced(io.ComfyNode):
             format_kwargs=kwargs,
         )
         final_path = output_files[-1]
-        preview = ui.PreviewVideo([cls._preview_result(final_path)])
+        if privacy_mode:
+            preview = ui.PreviewVideo([private_media_record(final_path, encrypted=False)])
+        else:
+            preview = ui.PreviewVideo([cls._preview_result(final_path)])
         cls.state["previews"][node_id] = preview
 
         print(f"Save Video Advanced saved {len(output_files)} file(s) to: {save_dir}")
