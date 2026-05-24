@@ -11,6 +11,7 @@ from .nodes.save_image_advanced import SaveImageAdvanced
 from .nodes.save_video_advanced import SaveVideoAdvanced
 from .nodes.video_comparer import VideoComparer
 from .nodes.wan_video_params import HeltoVideoParams
+from .helto_image_selector import HeltoImageSelector
 from .shared import private_media_routes  # noqa: F401
 
 
@@ -28,6 +29,7 @@ class HeltoUtilsExtension(ComfyExtension):
             ImageComparer,
             VideoComparer,
             HeltoLoadVideo,
+            HeltoImageSelector,
             SaveImageAdvanced,
             SaveVideoAdvanced,
         ]

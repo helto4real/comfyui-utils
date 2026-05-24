@@ -1,0 +1,454 @@
+from __future__ import annotations
+
+import importlib
+import json
+import os
+import sys
+import tempfile
+import types
+import unittest
+from io import BytesIO
+
+from PIL import Image
+
+from helto_selector_backend.crypto import decrypt_selection, encrypt_selection
+from helto_selector_backend.image_processing import (
+    parse_selected_paths,
+    select_images,
+)
+from helto_selector_backend.scanning import delete_image_files, discover_image_folders, scan_image_folders
+from helto_selector_backend.services import (
+    DeleteImagesPayload,
+    ScanFoldersPayload,
+    clear_cache_payload,
+    decrypt_payload,
+    delete_images_payload,
+    encrypt_payload,
+    get_input_dir_payload,
+    scan_folders_payload,
+)
+from helto_selector_backend.thumbnail_cache import (
+    delete_thumbnail_cache_for_paths,
+    get_thumbnail_bytes,
+    thumbnail_cache_paths,
+)
+
+
+def write_image(path: str, size: tuple[int, int], color: tuple[int, int, int]) -> None:
+    Image.new("RGB", size, color).save(path)
+
+
+class ImageProcessingTests(unittest.TestCase):
+    def test_empty_selection_returns_black_placeholder_and_batch(self):
+        images, image_batch = select_images("[]")
+
+        self.assertEqual(len(images), 1)
+        self.assertEqual(tuple(images[0].shape), (1, 512, 512, 3))
+        self.assertEqual(tuple(image_batch.shape), (1, 512, 512, 3))
+        self.assertEqual(float(image_batch.sum()), 0.0)
+
+    def test_missing_files_are_skipped(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = os.path.join(tmpdir, "first.png")
+            missing_path = os.path.join(tmpdir, "missing.png")
+            write_image(image_path, (8, 6), (255, 0, 0))
+
+            images, image_batch = select_images(json.dumps([image_path, missing_path]))
+
+            self.assertEqual(len(images), 1)
+            self.assertEqual(tuple(images[0].shape), (1, 6, 8, 3))
+            self.assertEqual(tuple(image_batch.shape), (1, 6, 8, 3))
+
+    def test_resize_modes_preserve_current_shapes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            first = os.path.join(tmpdir, "first.png")
+            second = os.path.join(tmpdir, "second.png")
+            write_image(first, (10, 8), (255, 0, 0))
+            write_image(second, (4, 6), (0, 255, 0))
+            selected = json.dumps([first, second])
+
+            zoom_images, zoom_batch = select_images(selected, "zoom to fit")
+            self.assertEqual([tuple(t.shape) for t in zoom_images], [(1, 8, 10, 3), (1, 8, 10, 3)])
+            self.assertEqual(tuple(zoom_batch.shape), (2, 8, 10, 3))
+
+            pad_images, pad_batch = select_images(selected, "pad")
+            self.assertEqual([tuple(t.shape) for t in pad_images], [(1, 8, 10, 3), (1, 8, 10, 3)])
+            self.assertEqual(tuple(pad_batch.shape), (2, 8, 10, 3))
+
+            raw_images, raw_batch = select_images(selected, "No resize")
+            self.assertEqual([tuple(t.shape) for t in raw_images], [(1, 8, 10, 3), (1, 6, 4, 3)])
+            self.assertEqual(tuple(raw_batch.shape), (2, 8, 10, 3))
+
+    def test_encrypted_selection_parses_with_same_key(self):
+        key = b"1" * 32
+        plain = json.dumps(["/tmp/a.png"])
+        encrypted = encrypt_selection(plain, key=key)
+
+        parsed = parse_selected_paths(encrypted, decrypt_func=lambda text: decrypt_selection(text, key=key))
+
+        self.assertEqual(parsed, ["/tmp/a.png"])
+
+
+class ScanningAndThumbnailTests(unittest.TestCase):
+    def test_scan_image_folders_returns_expected_metadata(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = os.path.join(tmpdir, "image.png")
+            ignored_path = os.path.join(tmpdir, "notes.txt")
+            write_image(image_path, (4, 4), (0, 0, 255))
+            with open(ignored_path, "w", encoding="utf-8") as f:
+                f.write("ignore me")
+
+            results = scan_image_folders([tmpdir], recursive=False)
+
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0]["path"], image_path)
+            self.assertEqual(results[0]["folder"], tmpdir)
+            self.assertEqual(results[0]["image_folder"], tmpdir)
+            self.assertEqual(results[0]["name"], "image.png")
+            self.assertIn("date_modified", results[0])
+            self.assertGreater(results[0]["size_bytes"], 0)
+
+    def test_discover_image_folders_includes_empty_subfolders_sorted_by_root_and_name(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            alpha_root = os.path.join(tmpdir, "alpha")
+            beta_root = os.path.join(tmpdir, "beta")
+            os.makedirs(os.path.join(beta_root, "zeta"))
+            os.makedirs(os.path.join(beta_root, "empty", "nested"))
+            os.makedirs(os.path.join(alpha_root, "middle"))
+
+            results = discover_image_folders([beta_root, alpha_root])
+
+            self.assertEqual(
+                [(item["root"], item["relative"], item["name"]) for item in results],
+                [
+                    (alpha_root, "", "alpha"),
+                    (alpha_root, "middle", "middle"),
+                    (beta_root, "", "beta"),
+                    (beta_root, "empty", "empty"),
+                    (beta_root, os.path.join("empty", "nested"), "nested"),
+                    (beta_root, "zeta", "zeta"),
+                ],
+            )
+
+    def test_recursive_scan_reports_actual_image_folder(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            child_dir = os.path.join(tmpdir, "child")
+            os.makedirs(child_dir)
+            image_path = os.path.join(child_dir, "image.png")
+            write_image(image_path, (4, 4), (0, 0, 255))
+
+            results = scan_image_folders([tmpdir], recursive=True)
+
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0]["folder"], tmpdir)
+            self.assertEqual(results[0]["image_folder"], child_dir)
+
+    def test_thumbnail_cache_migrates_between_plain_and_encrypted(self):
+        key = b"2" * 32
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = os.path.join(tmpdir, "image.png")
+            cache_dir = os.path.join(tmpdir, "cache")
+            os.makedirs(cache_dir)
+            write_image(image_path, (16, 16), (123, 45, 67))
+
+            plain_bytes = get_thumbnail_bytes(image_path, False, cache_dir=cache_dir, key=key)
+            plain_cache, encrypted_cache = thumbnail_cache_paths(image_path, cache_dir)
+            self.assertTrue(os.path.exists(plain_cache))
+            self.assertFalse(os.path.exists(encrypted_cache))
+
+            encrypted_mode_bytes = get_thumbnail_bytes(image_path, True, cache_dir=cache_dir, key=key)
+            self.assertEqual(plain_bytes, encrypted_mode_bytes)
+            self.assertFalse(os.path.exists(plain_cache))
+            self.assertTrue(os.path.exists(encrypted_cache))
+
+            plain_again_bytes = get_thumbnail_bytes(image_path, False, cache_dir=cache_dir, key=key)
+            self.assertEqual(plain_bytes, plain_again_bytes)
+            self.assertTrue(os.path.exists(plain_cache))
+            self.assertFalse(os.path.exists(encrypted_cache))
+
+    def test_delete_thumbnail_cache_for_paths_removes_plain_and_encrypted_variants(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = os.path.join(tmpdir, "removed.png")
+            cache_dir = os.path.join(tmpdir, "cache")
+            os.makedirs(cache_dir)
+            plain_cache, encrypted_cache = thumbnail_cache_paths(image_path, cache_dir)
+
+            with open(plain_cache, "wb") as f:
+                f.write(b"plain")
+            with open(encrypted_cache, "wb") as f:
+                f.write(b"encrypted")
+
+            removed_count = delete_thumbnail_cache_for_paths([image_path], cache_dir=cache_dir)
+
+            self.assertEqual(removed_count, 2)
+            self.assertFalse(os.path.exists(plain_cache))
+            self.assertFalse(os.path.exists(encrypted_cache))
+
+    def test_delete_thumbnail_cache_for_paths_keeps_unlisted_image_cache(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            removed_path = os.path.join(tmpdir, "removed.png")
+            kept_path = os.path.join(tmpdir, "kept.png")
+            cache_dir = os.path.join(tmpdir, "cache")
+            os.makedirs(cache_dir)
+
+            removed_plain, _ = thumbnail_cache_paths(removed_path, cache_dir)
+            kept_plain, kept_encrypted = thumbnail_cache_paths(kept_path, cache_dir)
+            with open(removed_plain, "wb") as f:
+                f.write(b"removed")
+            with open(kept_plain, "wb") as f:
+                f.write(b"kept")
+            with open(kept_encrypted, "wb") as f:
+                f.write(b"kept encrypted")
+
+            removed_count = delete_thumbnail_cache_for_paths([removed_path], cache_dir=cache_dir)
+
+            self.assertEqual(removed_count, 1)
+            self.assertFalse(os.path.exists(removed_plain))
+            self.assertTrue(os.path.exists(kept_plain))
+            self.assertTrue(os.path.exists(kept_encrypted))
+
+    def test_delete_image_files_deletes_allowlisted_images_only(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_root = os.path.join(tmpdir, "images")
+            outside_root = os.path.join(tmpdir, "outside")
+            os.makedirs(image_root)
+            os.makedirs(outside_root)
+            image_path = os.path.join(image_root, "delete_me.png")
+            outside_path = os.path.join(outside_root, "keep_me.png")
+            write_image(image_path, (4, 4), (255, 0, 0))
+            write_image(outside_path, (4, 4), (0, 255, 0))
+
+            result = delete_image_files([image_path, outside_path], [image_root], recursive=False)
+
+            self.assertEqual(result["deleted"], [image_path])
+            self.assertEqual(result["missing"], [])
+            self.assertEqual(result["skipped"], [outside_path])
+            self.assertFalse(os.path.exists(image_path))
+            self.assertTrue(os.path.exists(outside_path))
+
+    def test_delete_image_files_skips_existing_subfolder_image_when_not_recursive(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            child_dir = os.path.join(tmpdir, "child")
+            os.makedirs(child_dir)
+            image_path = os.path.join(child_dir, "keep_me.png")
+            write_image(image_path, (4, 4), (0, 0, 255))
+
+            result = delete_image_files([image_path], [tmpdir], recursive=False)
+
+            self.assertEqual(result["deleted"], [])
+            self.assertEqual(result["missing"], [])
+            self.assertEqual(result["skipped"], [image_path])
+            self.assertTrue(os.path.exists(image_path))
+
+    def test_delete_image_files_prunes_cache_for_deleted_image(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = os.path.join(tmpdir, "delete_me.png")
+            cache_dir = os.path.join(tmpdir, "cache")
+            os.makedirs(cache_dir)
+            write_image(image_path, (4, 4), (255, 0, 0))
+            plain_cache, encrypted_cache = thumbnail_cache_paths(image_path, cache_dir)
+            with open(plain_cache, "wb") as f:
+                f.write(b"plain")
+            with open(encrypted_cache, "wb") as f:
+                f.write(b"encrypted")
+
+            result = delete_image_files([image_path], [tmpdir], recursive=False)
+            removed_count = delete_thumbnail_cache_for_paths(result["deleted"] + result["missing"], cache_dir=cache_dir)
+
+            self.assertEqual(result["deleted"], [image_path])
+            self.assertEqual(result["missing"], [])
+            self.assertEqual(result["skipped"], [])
+            self.assertEqual(removed_count, 2)
+            self.assertFalse(os.path.exists(image_path))
+            self.assertFalse(os.path.exists(plain_cache))
+            self.assertFalse(os.path.exists(encrypted_cache))
+
+    def test_delete_image_files_prunes_cache_for_already_missing_image(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            missing_path = os.path.join(tmpdir, "already_gone.png")
+            cache_dir = os.path.join(tmpdir, "cache")
+            os.makedirs(cache_dir)
+            plain_cache, encrypted_cache = thumbnail_cache_paths(missing_path, cache_dir)
+            with open(plain_cache, "wb") as f:
+                f.write(b"plain")
+            with open(encrypted_cache, "wb") as f:
+                f.write(b"encrypted")
+
+            result = delete_image_files([missing_path], [tmpdir], recursive=False)
+            removed_count = delete_thumbnail_cache_for_paths(result["deleted"] + result["missing"], cache_dir=cache_dir)
+
+            self.assertEqual(result["deleted"], [])
+            self.assertEqual(result["missing"], [missing_path])
+            self.assertEqual(result["skipped"], [])
+            self.assertEqual(removed_count, 2)
+            self.assertFalse(os.path.exists(plain_cache))
+            self.assertFalse(os.path.exists(encrypted_cache))
+
+    def test_generated_thumbnail_is_capped_at_512_pixels(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = os.path.join(tmpdir, "image.png")
+            cache_dir = os.path.join(tmpdir, "cache")
+            os.makedirs(cache_dir)
+            write_image(image_path, (1200, 800), (10, 20, 30))
+
+            thumb_bytes = get_thumbnail_bytes(image_path, False, cache_dir=cache_dir)
+
+            with Image.open(BytesIO(thumb_bytes)) as thumb:
+                self.assertEqual(thumb.size, (512, 341))
+
+
+class ServiceLayerTests(unittest.TestCase):
+    def test_scan_payload_prunes_missing_paths_and_reports_cache_count(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = os.path.join(tmpdir, "image.png")
+            missing_path = os.path.join(tmpdir, "missing.png")
+            write_image(image_path, (4, 4), (0, 0, 255))
+            removed_paths: list[list[str]] = []
+
+            payload = ScanFoldersPayload.from_request_data({
+                "folders": [tmpdir],
+                "recursive": False,
+                "previous_paths": [image_path, missing_path, 123, ""],
+            })
+            result = scan_folders_payload(
+                payload,
+                delete_cache_func=lambda paths: removed_paths.append(paths) or 5,
+            )
+
+            self.assertEqual([image["path"] for image in result["images"]], [image_path])
+            self.assertEqual(result["removed_paths"], [missing_path])
+            self.assertEqual(result["removed_cache_count"], 5)
+            self.assertEqual(removed_paths, [[missing_path]])
+            self.assertEqual(len(result["folders"]), 1)
+
+    def test_delete_payload_counts_and_prunes_deleted_and_missing_cache(self):
+        payload = DeleteImagesPayload(paths=["a.png"], folders=["/tmp/images"], recursive=True)
+        cache_paths_seen: list[list[str]] = []
+
+        result = delete_images_payload(
+            payload,
+            delete_func=lambda paths, folders, recursive: {
+                "deleted": ["a.png"],
+                "missing": ["b.png"],
+                "skipped": ["c.txt"],
+            },
+            delete_cache_func=lambda paths: cache_paths_seen.append(paths) or 2,
+        )
+
+        self.assertEqual(result["deleted_count"], 1)
+        self.assertEqual(result["missing_count"], 1)
+        self.assertEqual(result["skipped_count"], 1)
+        self.assertEqual(result["removed_cache_count"], 2)
+        self.assertEqual(cache_paths_seen, [["a.png", "b.png"]])
+
+    def test_request_payload_helpers_coerce_invalid_lists_without_string_iteration(self):
+        scan_payload = ScanFoldersPayload.from_request_data({
+            "folders": "/tmp/images",
+            "previous_paths": "/tmp/old.png",
+            "recursive": "",
+        })
+        delete_payload = DeleteImagesPayload.from_request_data({
+            "paths": "/tmp/delete.png",
+            "folders": "/tmp/images",
+            "recursive": "false",
+        })
+
+        self.assertEqual(scan_payload.folders, [])
+        self.assertEqual(scan_payload.previous_paths, [])
+        self.assertFalse(scan_payload.recursive)
+        self.assertEqual(delete_payload.paths, [])
+        self.assertEqual(delete_payload.folders, [])
+        self.assertTrue(delete_payload.recursive)
+
+    def test_encrypt_decrypt_and_clear_cache_payload_helpers(self):
+        encrypted = encrypt_payload({"data": json.dumps(["/tmp/a.png"])})["encrypted"]
+        decrypted = decrypt_payload({"encrypted": encrypted})["data"]
+        cleared: list[bool] = []
+
+        self.assertEqual(json.loads(decrypted), ["/tmp/a.png"])
+        self.assertEqual(clear_cache_payload(lambda: cleared.append(True)), {"status": "success"})
+        self.assertEqual(cleared, [True])
+
+    def test_get_input_dir_payload_uses_injected_comfy_provider(self):
+        self.assertEqual(get_input_dir_payload(lambda: "/tmp/input"), {"input_dir": "/tmp/input"})
+
+
+class NodeSchemaContractTests(unittest.TestCase):
+    def test_node_schema_and_execute_contract_are_stable(self):
+        node_module = self._import_node_with_fake_comfy_api()
+
+        schema = node_module.HeltoImageSelector.define_schema()
+        result = node_module.HeltoImageSelector.execute("[]", "zoom to fit")
+
+        self.assertEqual(schema.node_id, "HeltoImageSelector")
+        self.assertEqual([input_def.id for input_def in schema.inputs], ["selected_images", "resize_mode"])
+        self.assertEqual([output_def.id for output_def in schema.outputs], ["images", "image_batch"])
+        self.assertTrue(schema.outputs[0].is_output_list)
+        self.assertFalse(schema.outputs[1].is_output_list)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(len(result[0]), 1)
+        self.assertEqual(tuple(result[0][0].shape), (1, 512, 512, 3))
+        self.assertEqual(tuple(result[1].shape), (1, 512, 512, 3))
+
+    @staticmethod
+    def _import_node_with_fake_comfy_api():
+        class FakeSchema:
+            def __init__(self, node_id, display_name, category, inputs, outputs):
+                self.node_id = node_id
+                self.display_name = display_name
+                self.category = category
+                self.inputs = inputs
+                self.outputs = outputs
+
+        class FakeField:
+            def __init__(self, id=None, display_name=None, is_output_list=False, **kwargs):
+                self.id = id
+                self.display_name = display_name
+                self.is_output_list = is_output_list
+                self.kwargs = kwargs
+
+        class FakeNodeOutput(tuple):
+            def __new__(cls, *values):
+                return tuple.__new__(cls, values)
+
+        class FakeString:
+            Input = FakeField
+
+        class FakeImage:
+            Output = FakeField
+
+        class FakeIO:
+            ComfyNode = object
+            Schema = FakeSchema
+            String = FakeString
+            Image = FakeImage
+            NodeOutput = FakeNodeOutput
+
+        previous_comfy_api = sys.modules.get("comfy_api")
+        previous_latest = sys.modules.get("comfy_api.latest")
+        previous_node = sys.modules.get("helto_selector_backend.node")
+        sys.modules.pop("helto_selector_backend.node", None)
+        comfy_api_module = types.ModuleType("comfy_api")
+        latest_module = types.ModuleType("comfy_api.latest")
+        latest_module.io = FakeIO
+        sys.modules["comfy_api"] = comfy_api_module
+        sys.modules["comfy_api.latest"] = latest_module
+        try:
+            return importlib.import_module("helto_selector_backend.node")
+        finally:
+            if previous_comfy_api is None:
+                sys.modules.pop("comfy_api", None)
+            else:
+                sys.modules["comfy_api"] = previous_comfy_api
+            if previous_latest is None:
+                sys.modules.pop("comfy_api.latest", None)
+            else:
+                sys.modules["comfy_api.latest"] = previous_latest
+            if previous_node is None:
+                sys.modules.pop("helto_selector_backend.node", None)
+            else:
+                sys.modules["helto_selector_backend.node"] = previous_node
+
+
+if __name__ == "__main__":
+    unittest.main()

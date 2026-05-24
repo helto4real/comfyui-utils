@@ -1,0 +1,1020 @@
+/* --- CSS Design System for Multi-Image Selector --- */
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600&family=Roboto+Mono:wght@400;500&display=swap');
+
+:root {
+    --bg-primary: hsl(240, 16%, 10%);
+    --bg-secondary: hsl(240, 14%, 13%);
+    --bg-tertiary: hsl(240, 14%, 7%);
+    --accent-primary: hsl(225, 100%, 75%);
+    --accent-hover: hsl(225, 100%, 82%);
+    --accent-dim: hsla(225, 100%, 75%, 0.15);
+    --border-subtle: hsl(240, 12%, 18%);
+    --border-active: hsl(225, 80%, 65%);
+    --text-primary: hsl(220, 20%, 95%);
+    --text-secondary: hsl(220, 12%, 65%);
+    --text-dim: hsl(220, 8%, 45%);
+    
+    --font-sans: 'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --font-mono: 'Roboto Mono', monospace;
+    
+    --shadow-main: 0 8px 32px rgba(0, 0, 0, 0.5);
+    --shadow-glow: 0 0 12px hsla(225, 80%, 65%, 0.3);
+}
+
+/* --- Container Core Layout --- */
+.helto-selector-widget {
+    width: 100%;
+    height: 100%;
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    position: relative;
+    overflow: hidden;
+    min-width: 0;
+    min-height: 0;
+    pointer-events: none;
+}
+
+.helto-selector-container {
+    width: calc(100% - 16px);
+    height: calc(100% - 16px);
+    box-sizing: border-box;
+    margin: 8px;
+    padding: 8px 10px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    background: var(--bg-primary);
+    font-family: var(--font-sans);
+    color: var(--text-primary);
+    user-select: none;
+    overflow: hidden;
+    border-radius: 8px;
+    min-width: 0;
+    min-height: 0;
+    pointer-events: auto;
+}
+
+/* --- Title Bar Overlay Elements --- */
+.helto-gear-btn-overlay {
+    position: absolute;
+    top: -24px; /* Align to the ComfyUI node title bar */
+    right: 28px;
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    z-index: 10;
+    padding: 2px;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 0.2s, transform 0.2s;
+}
+.helto-gear-btn-overlay:hover {
+    color: var(--text-primary);
+    transform: rotate(45deg);
+}
+
+/* --- Toolbar Styles --- */
+.helto-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: nowrap;
+    min-width: 0;
+}
+
+.helto-btn-icon {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-secondary);
+    padding: 6px;
+    border-radius: 6px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.helto-btn-icon:hover {
+    background: hsl(240, 12%, 20%);
+    border-color: hsl(240, 12%, 28%);
+    color: var(--text-primary);
+    transform: translateY(-1px);
+}
+.helto-btn-icon:active {
+    transform: translateY(1px) scale(0.95);
+}
+.helto-btn-icon:disabled {
+    opacity: 0.55;
+    cursor: wait;
+    transform: none;
+}
+.helto-btn-icon:disabled:hover {
+    background: var(--bg-secondary);
+    border-color: var(--border-subtle);
+    color: var(--text-secondary);
+    transform: none;
+}
+.helto-btn-icon.active {
+    background: var(--accent-dim);
+    border-color: var(--border-active);
+    color: var(--accent-primary);
+    box-shadow: var(--shadow-glow);
+}
+.helto-refresh-btn.is-refreshing svg {
+    animation: heltoSpin 0.8s linear infinite;
+}
+@keyframes heltoSpin {
+    to { transform: rotate(360deg); }
+}
+
+.helto-search-container {
+    position: relative;
+    flex: 1;
+    display: flex;
+    align-items: center;
+    min-width: 0;
+}
+.helto-search-icon {
+    position: absolute;
+    left: 8px;
+    color: var(--text-dim);
+    pointer-events: none;
+    display: flex;
+    align-items: center;
+}
+.helto-search-input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 6px 8px 6px 28px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-primary);
+    border-radius: 6px;
+    font-family: var(--font-sans);
+    font-size: 13px;
+    outline: none;
+    transition: all 0.2s ease;
+}
+.helto-search-input:focus {
+    border-color: var(--border-active);
+    box-shadow: 0 0 0 2px hsla(225, 80%, 65%, 0.15);
+}
+
+/* --- Controls Slider & Sort Row --- */
+.helto-controls {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: nowrap;
+    gap: 12px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    padding: 0 2px;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.helto-filter-sort-group {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex: 1 1 auto;
+    gap: 12px;
+    min-width: 0;
+}
+
+.helto-slider-group, .helto-sort-group, .helto-folder-filter-group, .helto-subfolder-filter-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+.helto-slider-group {
+    flex: 0 0 auto;
+}
+.helto-label {
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-dim);
+}
+
+.helto-col-slider {
+    width: 70px;
+    flex: 0 0 70px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: var(--border-subtle);
+    height: 4px;
+    border-radius: 2px;
+    outline: none;
+    transition: background 0.2s;
+}
+.helto-col-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--accent-primary);
+    cursor: pointer;
+    transition: transform 0.1s;
+}
+.helto-col-slider::-webkit-slider-thumb:hover {
+    transform: scale(1.25);
+    box-shadow: var(--shadow-glow);
+}
+.helto-slider-val {
+    font-family: var(--font-mono);
+    background: var(--bg-secondary);
+    padding: 1px 4px;
+    border-radius: 4px;
+    min-width: 12px;
+    text-align: center;
+    border: 1px solid var(--border-subtle);
+}
+
+.helto-sort-link, .helto-folder-filter-link, .helto-subfolder-filter-link {
+    border-bottom: 1px dashed var(--text-dim);
+    cursor: pointer;
+    color: var(--text-primary);
+    font-weight: 500;
+    transition: all 0.2s;
+    text-transform: capitalize;
+}
+.helto-folder-filter-link, .helto-subfolder-filter-link {
+    display: inline-block;
+    max-width: 86px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: bottom;
+    text-transform: none;
+}
+.helto-sort-link:hover, .helto-folder-filter-link:hover, .helto-subfolder-filter-link:hover {
+    color: var(--accent-primary);
+    border-bottom-color: var(--accent-primary);
+}
+
+/* --- Dropdown Selection Menu --- */
+.helto-dropdown {
+    position: absolute;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    box-shadow: var(--shadow-main);
+    z-index: 9999;
+    padding: 4px 0;
+    min-width: 100px;
+    font-family: var(--font-sans);
+    font-size: 12px;
+    animation: dropdownFade 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.helto-dropdown-scrollable {
+    overflow-y: auto;
+}
+@keyframes dropdownFade {
+    from { opacity: 0; transform: translateY(-4px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+.helto-dropdown-item {
+    padding: 6px 12px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+    text-transform: capitalize;
+}
+.helto-dropdown-item:hover {
+    background: var(--accent-dim);
+    color: var(--accent-primary);
+}
+.helto-dropdown-item.active {
+    color: var(--accent-primary);
+    font-weight: 600;
+}
+
+/* --- Thumbnail Grid Scrollbox --- */
+.helto-grid {
+    flex: 1;
+    overflow-y: auto;
+    display: grid;
+    grid-template-columns: repeat(var(--cols, 4), 1fr);
+    gap: 8px;
+    padding: 4px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    align-content: start;
+    transition: opacity 0.3s ease, filter 0.3s ease, max-height 0.3s ease;
+}
+
+.helto-grid-empty {
+    grid-column: 1 / -1;
+    padding: 40px 0;
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 13px;
+    font-style: italic;
+}
+
+/* Custom Scrollbar */
+.helto-grid::-webkit-scrollbar {
+    width: 6px;
+}
+.helto-grid::-webkit-scrollbar-track {
+    background: transparent;
+}
+.helto-grid::-webkit-scrollbar-thumb {
+    background: var(--border-subtle);
+    border-radius: 3px;
+}
+.helto-grid::-webkit-scrollbar-thumb:hover {
+    background: var(--text-dim);
+}
+
+/* --- Grid Items (Thumbnails) --- */
+.helto-grid-item {
+    position: relative;
+    width: 100%;
+    height: 0;
+    padding-bottom: 100%;
+    border-radius: 6px;
+    overflow: hidden;
+    border: 2px solid transparent;
+    background: hsl(240, 14%, 6%);
+    cursor: pointer;
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.helto-grid-item:hover {
+    transform: scale(1.03);
+    border-color: hsl(240, 12%, 35%);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+.helto-grid-item.selected {
+    border-color: var(--border-active);
+    box-shadow: var(--shadow-glow);
+}
+
+.helto-thumb {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    transition: opacity 0.2s ease, filter 0.3s ease;
+}
+.helto-thumb.lazy-load {
+    opacity: 0;
+}
+.helto-thumb.aspect-zoom {
+    object-fit: cover;
+}
+.helto-thumb.aspect-original {
+    object-fit: contain;
+    background: hsl(240, 14%, 4%);
+}
+
+.helto-item-checkmark {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--border-active);
+    border: 1px solid rgba(255, 255, 255, 0.4);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transform: scale(0.6);
+    transition: opacity 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+    z-index: 2;
+}
+.helto-grid-item.selected .helto-item-checkmark {
+    opacity: 1;
+    transform: scale(1);
+}
+
+/* --- Hide Mode Transition States --- */
+.helto-grid.hidden-mode {
+    transition: opacity 0.3s ease, filter 0.3s ease;
+}
+.helto-grid.hidden-collapsed {
+    opacity: 0 !important;
+    filter: blur(8px) !important;
+    pointer-events: none !important;
+}
+
+/* --- Footer Elements --- */
+.helto-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0 2px;
+}
+.helto-status-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+.helto-status-text {
+    font-size: 12px;
+    color: var(--text-secondary);
+    font-weight: 500;
+    white-space: nowrap;
+}
+.helto-selected-preview-btn {
+    width: 28px;
+    height: 28px;
+}
+.helto-selected-preview-btn:disabled {
+    opacity: 0.35;
+    cursor: default;
+    transform: none;
+    box-shadow: none;
+}
+.helto-selected-preview-btn:disabled:hover {
+    background: var(--bg-secondary);
+    border-color: var(--border-subtle);
+    color: var(--text-secondary);
+    transform: none;
+}
+.helto-footer-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.helto-clear-btn,
+.helto-delete-selected-btn {
+    border-radius: 6px;
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-secondary);
+    transition: all 0.2s;
+}
+.helto-clear-btn:hover {
+    background: hsl(0, 50%, 20%);
+    border-color: hsl(0, 50%, 35%);
+    color: hsl(0, 100%, 75%);
+}
+.helto-delete-selected-btn:hover {
+    background: hsl(0, 60%, 20%);
+    border-color: hsl(0, 60%, 38%);
+    color: hsl(0, 100%, 78%);
+}
+.helto-delete-selected-btn.is-deleting svg {
+    opacity: 0.7;
+    transform: scale(0.92);
+}
+.delete-confirm-message {
+    color: var(--text-primary);
+    font-size: 14px;
+    line-height: 1.5;
+    padding: 4px 0;
+}
+
+/* --- Selected Images Preview Popup --- */
+.helto-selected-preview-popover {
+    position: absolute;
+    z-index: 100000;
+    max-width: min(720px, calc(100vw - 24px));
+    max-height: min(70vh, 520px);
+    padding: 8px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    box-shadow: var(--shadow-main);
+    font-family: var(--font-sans);
+    color: var(--text-primary);
+    pointer-events: auto;
+    overflow: auto;
+}
+.helto-selected-preview-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 8px;
+}
+.helto-selected-preview-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+.helto-selected-preview-close {
+    width: 24px;
+    height: 24px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    transition: all 0.15s;
+}
+.helto-selected-preview-close:hover {
+    color: var(--text-primary);
+    border-color: hsl(240, 12%, 28%);
+}
+.helto-selected-preview-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 8px;
+    max-width: 704px;
+}
+.helto-selected-preview-item {
+    min-width: 0;
+}
+.helto-selected-preview-thumb-wrap {
+    position: relative;
+    width: min(256px, 100%);
+    max-width: 256px;
+    aspect-ratio: 1 / 1;
+    overflow: hidden;
+    border-radius: 6px;
+    background: hsl(240, 14%, 6%);
+    border: 1px solid var(--border-subtle);
+}
+.helto-selected-preview-thumb {
+    width: 100%;
+    height: 100%;
+    max-width: 256px;
+    max-height: 256px;
+    display: block;
+}
+.helto-selected-preview-thumb.aspect-zoom {
+    object-fit: cover;
+}
+.helto-selected-preview-thumb.aspect-original {
+    object-fit: contain;
+    background: hsl(240, 14%, 4%);
+}
+.helto-selected-preview-remove {
+    position: absolute;
+    top: 5px;
+    right: 5px;
+    z-index: 2;
+    width: 24px;
+    height: 24px;
+    border: 1px solid rgba(255, 255, 255, 0.35);
+    border-radius: 50%;
+    background: hsla(0, 50%, 18%, 0.92);
+    color: hsl(0, 100%, 85%);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    opacity: 0.9;
+    transition: all 0.15s;
+}
+.helto-selected-preview-remove:hover {
+    background: hsl(0, 65%, 34%);
+    color: white;
+    transform: scale(1.06);
+}
+.helto-selected-preview-label {
+    margin-top: 4px;
+    max-width: 256px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+/* --- Dialog Modals System --- */
+.helto-modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: rgba(8, 9, 12, 0.7);
+    backdrop-filter: blur(5px);
+    z-index: 10000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: modalFadeIn 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+@keyframes modalFadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+.helto-modal-card {
+    background: linear-gradient(135deg, hsla(240, 15%, 15%, 0.8), hsla(240, 15%, 11%, 0.95));
+    border: 1px solid var(--border-subtle);
+    border-radius: 12px;
+    width: 440px;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.7);
+    backdrop-filter: blur(15px);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    font-family: var(--font-sans);
+    color: var(--text-primary);
+    animation: modalSlideUp 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+@keyframes modalSlideUp {
+    from { opacity: 0; transform: translateY(16px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.helto-modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border-subtle);
+}
+.helto-modal-title {
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    color: var(--text-primary);
+}
+.helto-modal-close-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 2px;
+    display: flex;
+    align-items: center;
+    transition: color 0.15s;
+}
+.helto-modal-close-btn:hover {
+    color: var(--text-primary);
+}
+
+.helto-modal-body {
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    max-height: 300px;
+    overflow-y: auto;
+}
+.modal-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 6px;
+    display: block;
+}
+
+/* --- Manage Folders Modal Controls --- */
+.folder-modal-section {
+    display: flex;
+    flex-direction: column;
+}
+.folder-add-input-group {
+    display: flex;
+    gap: 8px;
+}
+.folder-add-input {
+    flex: 1;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    padding: 8px 12px;
+    color: var(--text-primary);
+    outline: none;
+    font-family: var(--font-sans);
+    font-size: 13px;
+    transition: border-color 0.2s;
+}
+.folder-add-input:focus {
+    border-color: var(--border-active);
+}
+.folder-add-btn {
+    background: var(--border-active);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    width: 32px;
+    cursor: pointer;
+    font-size: 18px;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s;
+}
+.folder-add-btn:hover {
+    background: var(--accent-hover);
+}
+
+.folder-modal-list-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+}
+.helto-modal-folder-count {
+    font-size: 11px;
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+}
+
+.helto-modal-folder-list {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    max-height: 180px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    padding: 4px;
+    gap: 4px;
+}
+.folder-list-empty {
+    padding: 24px 0;
+    text-align: center;
+    color: var(--text-dim);
+    font-style: italic;
+    font-size: 12px;
+}
+.folder-list-item {
+    display: flex;
+    align-items: center;
+    padding: 8px 10px;
+    background: var(--bg-secondary);
+    border-radius: 6px;
+    gap: 8px;
+    border: 1px solid transparent;
+    transition: border-color 0.2s;
+}
+.folder-list-item:hover {
+    border-color: var(--border-subtle);
+}
+.folder-item-icon {
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+}
+.folder-item-path {
+    flex: 1;
+    font-size: 12px;
+    font-family: var(--font-mono);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--text-secondary);
+}
+.folder-item-del-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    padding: 2px;
+    transition: color 0.15s;
+}
+.folder-item-del-btn:hover {
+    color: hsl(0, 100%, 75%);
+}
+
+/* --- Properties Modal Settings --- */
+.settings-modal-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border-subtle);
+}
+.settings-modal-row:last-of-type {
+    border-bottom: none;
+}
+.settings-modal-text {
+    flex: 1;
+    padding-right: 20px;
+}
+.settings-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 2px;
+}
+.settings-desc {
+    font-size: 11px;
+    color: var(--text-secondary);
+    line-height: 1.4;
+}
+
+/* Toggle Switch */
+.helto-switch {
+    position: relative;
+    display: inline-block;
+    width: 36px;
+    height: 20px;
+}
+.helto-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+.helto-switch-slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--border-subtle);
+    transition: .25s ease;
+    border-radius: 20px;
+}
+.helto-switch-slider:before {
+    position: absolute;
+    content: "";
+    height: 12px;
+    width: 12px;
+    left: 3px;
+    bottom: 3px;
+    background-color: var(--text-secondary);
+    transition: .25s ease;
+    border-radius: 50%;
+}
+.helto-switch input:checked + .helto-switch-slider {
+    background-color: var(--accent-dim);
+    border-color: var(--border-active);
+}
+.helto-switch input:checked + .helto-switch-slider:before {
+    transform: translateX(16px);
+    background-color: var(--accent-primary);
+}
+
+/* Button UI Footer Modals */
+.helto-modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    padding: 12px 20px;
+    background: var(--bg-tertiary);
+    border-top: 1px solid var(--border-subtle);
+}
+.helto-modal-btn {
+    border: none;
+    border-radius: 6px;
+    padding: 8px 16px;
+    font-family: var(--font-sans);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, transform 0.1s;
+}
+.helto-modal-btn:active {
+    transform: scale(0.97);
+}
+.btn-primary {
+    background: var(--border-active);
+    color: white;
+}
+.btn-primary:hover {
+    background: var(--accent-hover);
+}
+.btn-secondary {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-secondary);
+}
+.btn-secondary:hover {
+    background: hsl(240, 12%, 18%);
+    color: var(--text-primary);
+}
+.btn-danger {
+    background: hsl(0, 60%, 25%);
+    color: hsl(0, 100%, 85%);
+    border: 1px solid hsl(0, 60%, 35%);
+}
+.btn-danger:hover {
+    background: hsl(0, 60%, 35%);
+}
+.btn-full {
+    width: 100%;
+}
+.settings-modal-action-row {
+    margin-top: 4px;
+}
+
+.helto-select {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-primary);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-family: var(--font-sans);
+    font-size: 12px;
+    outline: none;
+    cursor: pointer;
+    min-width: 110px;
+    transition: border-color 0.15s;
+}
+.helto-select:focus {
+    border-color: var(--border-active);
+}
+
+/* --- High-Res Image Preview Popup --- */
+.helto-preview-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: rgba(0, 0, 0, 0.85);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 100000;
+    opacity: 0;
+    transition: opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    pointer-events: none;
+}
+.helto-preview-overlay.active {
+    opacity: 1;
+    pointer-events: auto;
+}
+.helto-preview-window {
+    position: relative;
+    max-width: 90vw;
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    border-radius: 12px;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6);
+    background: var(--bg-primary);
+    border: 1px solid var(--border-subtle);
+    padding: 8px;
+    transform: scale(0.95);
+    transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.helto-preview-overlay.active .helto-preview-window {
+    transform: scale(1);
+}
+.helto-preview-img {
+    max-width: 85vw;
+    max-height: 80vh;
+    object-fit: contain;
+    border-radius: 8px;
+    display: block;
+}
+.helto-preview-title {
+    margin-top: 8px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    font-family: var(--font-sans);
+    text-align: center;
+    word-break: break-all;
+    max-width: 80vw;
+    padding: 2px 8px;
+}
+.helto-preview-close {
+    position: absolute;
+    top: -16px;
+    right: -16px;
+    width: 32px;
+    height: 32px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-primary);
+    border-radius: 50%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    cursor: pointer;
+    font-size: 16px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    transition: all 0.2s;
+    z-index: 100001;
+}
+.helto-preview-close:hover {
+    background: #ff4d4d;
+    color: white;
+    border-color: #ff4d4d;
+    transform: scale(1.1);
+}
