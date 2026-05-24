@@ -4,6 +4,7 @@ from comfy_api.latest import ComfyExtension, io
 
 from .nodes.aspect_ratio_calculator import AspectRatioCalculator
 from .nodes.image_comparer import ImageComparer
+from .nodes.load_video import HeltoLoadVideo
 from .nodes.ltx_video_params import HeltoVideoParamsLTX
 from .nodes.model_auto_router import ModelAutoRouter
 from .nodes.save_image_advanced import SaveImageAdvanced
@@ -25,6 +26,7 @@ class HeltoUtilsExtension(ComfyExtension):
             ModelAutoRouter,
             ImageComparer,
             VideoComparer,
+            HeltoLoadVideo,
             SaveImageAdvanced,
             SaveVideoAdvanced,
         ]

@@ -27,6 +27,7 @@ The pack registers through ComfyUI's V3 `comfy_entrypoint()` extension API and e
 | Model Auto Router (Mute-safe) | `ModelAutoRouter` | `HELTO/Utils` | Routes `model_a` when connected, otherwise falls back to `model_b`. |
 | Image Comparer | `HeltoImageComparer` | `HELTO/Image` | Output node that previews an original image against a new image. |
 | Video Comparer | `HeltoVideoComparer` | `HELTO/Video` | Output node that previews two videos or frame batches side by side. |
+| Load Video | `HeltoLoadVideo` | `HELTO/Video` | Loads videos from a searchable picker as frames, audio, and metadata. |
 | Save Image Advanced | `HeltoSaveImageAdvanced` | `HELTO/Image` | Saves PNG images to an absolute folder with alternate/date/subfolder routing. |
 | Save Video Advanced | `HeltoSaveVideoAdvanced` | `HELTO/Video` | Saves frame batches or latents as GIF, WebP, or video with folder routing and format controls. |
 
@@ -128,6 +129,33 @@ Inputs:
 Outputs: none. The node writes temporary MP4 previews under ComfyUI's temp directory and returns UI data for the frontend widget.
 
 The frontend widget provides synchronized playback, a timeline, time display, hide mode, and an `audio source` selector with `video 1`, `video 2`, and `muted`. Image batches are converted to H.264 MP4 previews; odd image dimensions are padded for encoder compatibility.
+
+## Loading
+
+### Load Video
+
+`Load Video` loads a selected video into a ComfyUI image-frame batch and passes through audio plus source metadata.
+
+Inputs are widgets only; the node has no incoming sockets. The video picker opens from the `choose video` button and can browse the default ComfyUI input folder plus configured folder aliases. The picker includes recursive browsing, search by relative filename/path, sort controls, refresh, column sizing, and muted hover previews.
+
+Inputs:
+
+| Input | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `video` | String | empty | Relative path selected from the video picker. |
+| `video_folder_alias` | String | `input` | Hidden alias for the selected configured folder. |
+| `start_time` | Float | `0.0` | Start offset in seconds. |
+| `duration` | Float | `0.0` | Seconds to load; `0` loads to the end. |
+| `force_rate` | Float | `0.0` | Output frame rate override; `0` keeps the source-derived rate. |
+| `frame_load_cap` | Int | `0` | Maximum output frames; `0` means uncapped. |
+| `skip_first_frames` | Int | `0` | Frames to skip after the start offset. |
+| `select_every_nth` | Int | `1` | Keeps every nth frame. |
+| `resize_mode` | Combo | `original` | `original`, `resize`, `pad`, or `crop`. |
+| `custom_width` / `custom_height` | Int | `0` | Target size for resize/pad/crop; `0` uses the source dimension. |
+
+Outputs: `images`, `audio`, `fps`, `width`, `height`, `duration`.
+
+Supported picker extensions are `mp4`, `mov`, `mkv`, `webm`, `avi`, and `m4v`. The frontend adds a `hide mode` toggle for the node preview; when enabled, the selected video preview is hidden until hovered.
 
 ## Advanced Saving
 
