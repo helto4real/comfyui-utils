@@ -233,6 +233,8 @@ class VideoComparerPreviewWidget {
         this.hasSources = false;
         this.syncing = false;
         this.domWidget = null;
+        this.layoutSyncQueued = false;
+        this.lastAppliedHeight = null;
 
         this.element = document.createElement("div");
         this.element.className = "helto-video-comparer";
@@ -414,6 +416,7 @@ class VideoComparerPreviewWidget {
         if (!isVisible) {
             this.element.style.height = "0px";
             this.element.style.minHeight = "0px";
+            this.lastAppliedHeight = null;
         }
 
         if (this.domWidget?.parentEl instanceof HTMLElement) {
@@ -511,15 +514,33 @@ class VideoComparerPreviewWidget {
     }
 
     syncPreviewLayout() {
+        if (this.layoutSyncQueued) {
+            return;
+        }
+
+        this.layoutSyncQueued = true;
         requestAnimationFrame(() => {
-            this.applyFixedPreviewHeight();
-            setCanvasDirty(this.node);
+            this.layoutSyncQueued = false;
+            if (this.applyFixedPreviewHeight()) {
+                setCanvasDirty(this.node);
+            }
         });
+    }
+
+    resetLayoutHeight() {
+        this.lastAppliedHeight = null;
+        if (this.domWidget) {
+            this.domWidget.computedHeight = undefined;
+        }
     }
 
     getAvailablePreviewHeight() {
         if (!this.hasSources) {
             return -4;
+        }
+
+        if (Number.isFinite(this.domWidget?.computedHeight) && this.domWidget.computedHeight > 0) {
+            return this.domWidget.computedHeight;
         }
 
         const nodeHeight = Array.isArray(this.node.size) ? this.node.size[1] : null;
@@ -561,19 +582,38 @@ class VideoComparerPreviewWidget {
     }
 
     applyFixedPreviewHeight() {
-        const height = this.getAvailablePreviewHeight();
-        if (height <= 0) {
+        const allocatedHeight = this.getAvailablePreviewHeight();
+        const elementHeight = this.getInnerPreviewHeight(allocatedHeight);
+        const nextHeight = elementHeight > 0 ? elementHeight : 0;
+        if (this.lastAppliedHeight === nextHeight) {
+            return false;
+        }
+
+        this.lastAppliedHeight = nextHeight;
+        if (elementHeight <= 0) {
             this.element.style.height = "0px";
             this.element.style.minHeight = "0px";
-            return;
+            if (this.domWidget) {
+                this.domWidget.computedHeight = -4;
+            }
+            return true;
         }
 
-        this.element.style.height = `${height}px`;
+        this.element.style.height = `${elementHeight}px`;
         this.element.style.minHeight = "0px";
-
         if (this.domWidget) {
-            this.domWidget.computedHeight = height;
+            this.domWidget.computedHeight = allocatedHeight;
         }
+        return true;
+    }
+
+    getInnerPreviewHeight(allocatedHeight) {
+        if (!Number.isFinite(allocatedHeight) || allocatedHeight <= 0) {
+            return 0;
+        }
+
+        const margin = Number.isFinite(this.domWidget?.margin) ? this.domWidget.margin : 0;
+        return Math.max(0, allocatedHeight - margin * 2);
     }
 
     computeSize(width) {
@@ -588,6 +628,26 @@ class VideoComparerPreviewWidget {
             this.domWidget.computedHeight = height;
         }
         return [nodeWidth, height];
+    }
+
+    computeLayoutSize(width) {
+        const nodeWidth = Array.isArray(width?.size)
+            ? width.size[0]
+            : this.node.size?.[0] ?? width ?? 360;
+
+        if (!this.hasSources) {
+            return {
+                minHeight: 0,
+                maxHeight: 0,
+                minWidth: 0,
+            };
+        }
+
+        return {
+            minHeight: 0,
+            maxHeight: 1_000_000,
+            minWidth: nodeWidth,
+        };
     }
 
     getHeight() {
@@ -629,7 +689,7 @@ function ensurePreviewWidget(node) {
             domWidget.value = undefined;
             domWidget.options ??= {};
             domWidget.options.serialize = false;
-            domWidget.computeSize = widget.computeSize.bind(widget);
+            domWidget.computeLayoutSize = widget.computeLayoutSize.bind(widget);
             domWidget.getHeight = widget.getHeight.bind(widget);
             domWidget.getMinHeight = widget.getMinHeight.bind(widget);
             domWidget.getMaxHeight = widget.getMaxHeight.bind(widget);
@@ -700,6 +760,21 @@ function setupVideoComparer(node) {
         if (comparison) {
             this[PREVIEW_WIDGET]?.setVideos(comparison.videos, comparison.frame_rate);
         }
+        return result;
+    };
+
+    const originalOnResize = node.onResize;
+    node.onResize = function (...args) {
+        const result = originalOnResize?.apply(this, args);
+        this[PREVIEW_WIDGET]?.resetLayoutHeight();
+        this[PREVIEW_WIDGET]?.syncPreviewLayout();
+        return result;
+    };
+
+    const originalOnDrawForeground = node.onDrawForeground;
+    node.onDrawForeground = function (...args) {
+        const result = originalOnDrawForeground?.apply(this, args);
+        this[PREVIEW_WIDGET]?.syncPreviewLayout();
         return result;
     };
 
