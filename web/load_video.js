@@ -252,11 +252,21 @@ function applyNativePreview(node, payload) {
         images: payload?.images || [],
         animated: payload?.animated || [true],
     };
+    const nodeId = String(node.id);
 
     app.nodeOutputs ??= {};
-    app.nodeOutputs[String(node.id)] = output;
+    app.nodeOutputs[nodeId] = output;
 
-    if (typeof node.onExecuted === "function") {
+    if (typeof api.dispatchEvent === "function" && typeof CustomEvent !== "undefined") {
+        api.dispatchEvent(new CustomEvent("executed", {
+            detail: {
+                node: nodeId,
+                display_node: nodeId,
+                output,
+                prompt_id: "helto_load_video_preview",
+            },
+        }));
+    } else if (typeof node.onExecuted === "function") {
         node.onExecuted(output);
     } else {
         node.images = output.images;
