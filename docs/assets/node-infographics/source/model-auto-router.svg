@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <rect width="1200" height="630" fill="#f6f2ea"/>
+  <rect x="42" y="42" width="1116" height="546" rx="28" fill="#fffdf8" stroke="#2b3036" stroke-width="3"/>
+  <rect x="42" y="42" width="1116" height="118" rx="28" fill="#7a5b9a"/>
+  <rect x="42" y="118" width="1116" height="42" fill="#7a5b9a"/>
+  <text x="80" y="93" font-size="38" font-weight="800" fill="#ffffff">Helto Model Auto Router</text>
+  <text x="80" y="132" font-size="24" font-weight="600" fill="#f8efe1">Mute-safe model branch fallback</text>
+  <rect x="850" y="75" width="254" height="44" rx="22" fill="#fffdf8" stroke="#7a5b9a" stroke-width="2"/><text x="977.0" y="104" text-anchor="middle" font-size="21" font-weight="700" fill="#7a5b9a">HELTO / Utils</text>
+  <text x="82" y="230" font-size="28" font-weight="800" fill="#2b3036">Inputs</text>
+  <text x="734" y="230" font-size="28" font-weight="800" fill="#2b3036">Outputs</text>
+  <rect x="80" y="254" width="384" height="194" rx="18" fill="#f8faf9" stroke="#cad4d1" stroke-width="2"/>
+  <rect x="734" y="254" width="384" height="194" rx="18" fill="#f8faf9" stroke="#cad4d1" stroke-width="2"/>
+  <circle cx="106" cy="281" r="5" fill="#ffffff" stroke="#2b3036" stroke-width="2"/>
+<text x="124" y="288" font-size="24" fill="#2b3036">model_a optional</text>
+<circle cx="106" cy="320" r="5" fill="#ffffff" stroke="#2b3036" stroke-width="2"/>
+<text x="124" y="327" font-size="24" fill="#2b3036">model_b optional</text>
+  <circle cx="760" cy="281" r="5" fill="#ffffff" stroke="#2b3036" stroke-width="2"/>
+<text x="778" y="288" font-size="24" fill="#2b3036">MODEL</text>
+  <path d="M496 330 C552 286, 626 286, 682 330" fill="none" stroke="#7a5b9a" stroke-width="10" stroke-linecap="round"/>
+  <path d="M682 330 l-28 -24 l4 48 z" fill="#7a5b9a"/>
+  <rect x="520" y="356" width="154" height="54" rx="27" fill="#eef3f4" stroke="#7a5b9a" stroke-width="2"/>
+  <text x="597" y="390" text-anchor="middle" font-size="22" font-weight="800" fill="#7a5b9a">NODE</text>
+  <rect x="106" y="490" width="316" height="86" rx="14" fill="#fff8ed" stroke="#69a97b" stroke-width="2"/><text x="128" y="520" font-size="20" font-weight="700" fill="#2b3036">Uses model_a when connected</text><rect x="444" y="490" width="316" height="86" rx="14" fill="#fff8ed" stroke="#69a97b" stroke-width="2"/><text x="466" y="520" font-size="20" font-weight="700" fill="#2b3036">Falls back to model_b</text><rect x="782" y="490" width="316" height="86" rx="14" fill="#fff8ed" stroke="#69a97b" stroke-width="2"/><text x="804" y="514" font-size="20" font-weight="700" fill="#2b3036">Raises a clear error if both</text><text x="804" y="536" font-size="20" font-weight="700" fill="#2b3036">are missing</text>
+</svg>
