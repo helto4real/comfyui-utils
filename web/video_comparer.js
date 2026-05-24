@@ -44,7 +44,7 @@ function injectStyles() {
             flex: 1 1 auto;
             gap: 6px;
             grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-            min-height: 112px;
+            min-height: 0;
             overflow: hidden;
             position: relative;
         }
@@ -328,7 +328,7 @@ class VideoComparerPreviewWidget {
         for (const video of this.videos()) {
             video.addEventListener("loadedmetadata", () => {
                 this.updateTimeline();
-                this.resizeNode();
+                this.syncPreviewLayout();
             });
             video.addEventListener("timeupdate", () => this.updateTimeline());
             video.addEventListener("play", () => {
@@ -372,7 +372,7 @@ class VideoComparerPreviewWidget {
         this.updateAudioSource();
         this.updateTimeline();
         this.applyHideMode();
-        this.resizeNode();
+        this.syncPreviewLayout();
     }
 
     setHover(value) {
@@ -411,8 +411,10 @@ class VideoComparerPreviewWidget {
     setVisible(isVisible) {
         this.element.hidden = !isVisible;
         this.element.style.display = isVisible ? "" : "none";
-        this.element.style.height = isVisible ? "100%" : "0px";
-        this.element.style.minHeight = isVisible ? "" : "0px";
+        if (!isVisible) {
+            this.element.style.height = "0px";
+            this.element.style.minHeight = "0px";
+        }
 
         if (this.domWidget?.parentEl instanceof HTMLElement) {
             this.domWidget.parentEl.hidden = !isVisible;
@@ -508,15 +510,70 @@ class VideoComparerPreviewWidget {
         this.timeLabel.textContent = `${formatTime(current)} / ${formatTime(duration)}`;
     }
 
-    resizeNode() {
+    syncPreviewLayout() {
         requestAnimationFrame(() => {
-            const computedSize = this.node.computeSize?.();
-            if (computedSize && Array.isArray(this.node.size)) {
-                computedSize[0] = Math.max(computedSize[0], this.node.size[0]);
-            }
-            this.node.setSize?.(computedSize ?? this.node.size);
+            this.applyFixedPreviewHeight();
             setCanvasDirty(this.node);
         });
+    }
+
+    getAvailablePreviewHeight() {
+        if (!this.hasSources) {
+            return -4;
+        }
+
+        const nodeHeight = Array.isArray(this.node.size) ? this.node.size[1] : null;
+        const widgetTop = Number.isFinite(this.domWidget?.last_y)
+            ? this.domWidget.last_y
+            : this.estimatePreviewTop();
+
+        if (Number.isFinite(nodeHeight) && Number.isFinite(widgetTop)) {
+            return Math.max(0, nodeHeight - widgetTop - 4);
+        }
+
+        return 180;
+    }
+
+    estimatePreviewTop() {
+        const widgets = this.node.widgets ?? [];
+        const defaultWidgetHeight = globalThis.LiteGraph?.NODE_WIDGET_HEIGHT ?? 20;
+        const nodeWidth = this.node.size?.[0] ?? 360;
+        let bottom = 0;
+
+        for (const widget of widgets) {
+            if (widget === this.domWidget || widget?.name === this.name) {
+                break;
+            }
+
+            if (widget?.hidden || widget?.options?.hidden) {
+                continue;
+            }
+
+            const widgetHeight = widget?.computeSize?.(nodeWidth)?.[1] ?? defaultWidgetHeight;
+            if (Number.isFinite(widget?.last_y)) {
+                bottom = Math.max(bottom, widget.last_y + widgetHeight);
+            } else {
+                bottom += widgetHeight + 4;
+            }
+        }
+
+        return bottom;
+    }
+
+    applyFixedPreviewHeight() {
+        const height = this.getAvailablePreviewHeight();
+        if (height <= 0) {
+            this.element.style.height = "0px";
+            this.element.style.minHeight = "0px";
+            return;
+        }
+
+        this.element.style.height = `${height}px`;
+        this.element.style.minHeight = "0px";
+
+        if (this.domWidget) {
+            this.domWidget.computedHeight = height;
+        }
     }
 
     computeSize(width) {
@@ -526,8 +583,11 @@ class VideoComparerPreviewWidget {
             return [nodeWidth, -4];
         }
 
-        const stageHeight = Math.max(112, Math.round(((nodeWidth - 22) / 2) * 9 / 16));
-        return [nodeWidth, stageHeight + 46];
+        const height = this.getAvailablePreviewHeight();
+        if (this.domWidget) {
+            this.domWidget.computedHeight = height;
+        }
+        return [nodeWidth, height];
     }
 
     getHeight() {
