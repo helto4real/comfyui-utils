@@ -265,7 +265,7 @@ class PrivacyShowAnyCanvasWidget {
         const nodeWidth = node.size?.[0] ?? width ?? PRIVACY_SHOW_ANY_LAYOUT.minWidth;
         const nodeHeight = node.size?.[1] ?? PRIVACY_SHOW_ANY_LAYOUT.minNodeHeight;
         const height = Math.max(0, nodeHeight - y - PRIVACY_SHOW_ANY_LAYOUT.bottomGutter);
-        const bodyPadX = 28;
+        const bodyPadX = 16;
         const topPad = 8;
         const toolbarHeight = 34;
         const textPad = 8;
