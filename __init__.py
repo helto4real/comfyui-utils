@@ -8,6 +8,7 @@ from .nodes.load_video import HeltoLoadVideo
 from .nodes.ltx_video_params import HeltoVideoParamsLTX
 from .nodes.model_auto_router import ModelAutoRouter
 from .nodes.prompt_enhancer import PromptEnhancer
+from .nodes.privacy_show_any import HeltoPrivacyShowAny
 from .nodes.save_image_advanced import SaveImageAdvanced
 from .nodes.save_video_advanced import SaveVideoAdvanced
 from .nodes.video_comparer import VideoComparer
@@ -28,6 +29,7 @@ class HeltoUtilsExtension(ComfyExtension):
             AspectRatioCalculator,
             ModelAutoRouter,
             PromptEnhancer,
+            HeltoPrivacyShowAny,
             ImageComparer,
             VideoComparer,
             HeltoLoadVideo,

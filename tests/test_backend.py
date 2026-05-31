@@ -399,7 +399,7 @@ class NodeSchemaContractTests(unittest.TestCase):
         node_classes = asyncio.run(extension_module.HeltoUtilsExtension().get_node_list())
         schemas = [node_cls.define_schema() for node_cls in node_classes]
 
-        self.assertEqual(len(schemas), 11)
+        self.assertEqual(len(schemas), 12)
         self.assertEqual(
             [schema.node_id for schema in schemas],
             [
@@ -408,6 +408,7 @@ class NodeSchemaContractTests(unittest.TestCase):
                 "AspectRatioCalculator",
                 "ModelAutoRouter",
                 "HeltoPromptEnhancer",
+                "HeltoPrivacyShowAny",
                 "HeltoImageComparer",
                 "HeltoVideoComparer",
                 "HeltoLoadVideo",
@@ -426,6 +427,39 @@ class NodeSchemaContractTests(unittest.TestCase):
         )
         self.assertEqual(prompt_enhancer_model_input.kwargs["io_kind"], "String")
         self.assertEqual(prompt_enhancer_keep_alive_unit_input.kwargs["options"], ["seconds", "minutes", "hours"])
+
+    def test_privacy_show_any_converts_supported_values_to_text(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+
+        text_node = next(
+            node_cls
+            for node_cls in asyncio.run(extension_module.HeltoUtilsExtension().get_node_list())
+            if node_cls.define_schema().node_id == "HeltoPrivacyShowAny"
+        )
+        schema = text_node.define_schema()
+        result = text_node.execute({"prompt": "hello", "steps": 4, "flags": [True, None]})
+
+        self.assertEqual(schema.display_name, "Helto Privacy Show Any")
+        self.assertEqual([input_def.id for input_def in schema.inputs], ["input", "encrypted_text_state"])
+        self.assertEqual([output_def.id for output_def in schema.outputs], ["text"])
+        self.assertTrue(schema.kwargs["is_output_node"])
+        self.assertIn('"prompt": "hello"', result[0])
+        self.assertEqual(result.kwargs["ui"]["helto_privacy_show_any"][0]["text"], result[0])
+
+    def test_privacy_show_any_summarizes_unhelpful_object_values(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        text_node = next(
+            node_cls
+            for node_cls in asyncio.run(extension_module.HeltoUtilsExtension().get_node_list())
+            if node_cls.define_schema().node_id == "HeltoPrivacyShowAny"
+        )
+
+        class ModelLike:
+            pass
+
+        result = text_node.execute(ModelLike())
+
+        self.assertIn("cannot be converted to meaningful text", result[0])
 
     def test_save_video_private_preview_only_returns_no_plain_filenames(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()
@@ -990,6 +1024,8 @@ class NodeSchemaContractTests(unittest.TestCase):
             "aiohttp.web": types.ModuleType("aiohttp.web"),
             "comfy_api": types.ModuleType("comfy_api"),
             "comfy_api.latest": types.ModuleType("comfy_api.latest"),
+            "comfy.comfy_types": types.ModuleType("comfy.comfy_types"),
+            "comfy.comfy_types.node_typing": types.ModuleType("comfy.comfy_types.node_typing"),
             "folder_paths": types.ModuleType("folder_paths"),
             "server": types.ModuleType("server"),
             "comfy": types.ModuleType("comfy"),
@@ -1013,6 +1049,7 @@ class NodeSchemaContractTests(unittest.TestCase):
         modules["folder_paths"].get_full_path = lambda _name, filename: filename
         modules["folder_paths"].get_folder_paths = lambda _name: []
         modules["server"].PromptServer = FakePromptServer
+        modules["comfy.comfy_types.node_typing"].IO = types.SimpleNamespace(ANY="*")
         modules["comfy.cli_args"].args = types.SimpleNamespace(disable_metadata=False)
         modules["comfy.utils"].ProgressBar = lambda _total: types.SimpleNamespace(update_absolute=lambda *_args: None)
 

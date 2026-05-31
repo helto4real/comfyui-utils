@@ -38,6 +38,20 @@ import {
     updateModelOptions,
     writePromptEnhancerSettings,
 } from "../../web/prompt_enhancer_helpers.js";
+import {
+    PRIVACY_SHOW_ANY_STATE_WIDGET,
+    configurePrivacyShowAnyTextarea,
+    decryptTextState,
+    encryptTextState,
+    extractPrivacyShowAnyText,
+    getPrivacyShowAnyTextAreaHeight,
+    getPrivacyShowAnyWidgetHeight,
+    getPrivacyShowAnyWidgetStartY,
+    getVuePrivacyShowAnyVisualHeight,
+    hidePrivacyShowAnyStateWidget,
+    isEncryptedText,
+    serializedEncryptedWidgetValue,
+} from "../../web/privacy_show_any_helpers.js";
 
 function appWithSettings(settings) {
     return {
@@ -68,7 +82,7 @@ function jsonResponse(payload, ok = true) {
     };
 }
 
-test("renderer detection honors explicit Vue and legacy settings first", () => {
+test("renderer detection uses Vue enabled setting when renderer name is missing", () => {
     assert.equal(isLegacyCanvasRenderer({
         app: appWithSettings({ "Comfy.VueNodes.Enabled": true }),
         document: documentWithVueNode(false),
@@ -84,16 +98,38 @@ test("renderer detection honors explicit Vue and legacy settings first", () => {
 
 test("renderer detection follows renderer names before DOM and LiteGraph fallbacks", () => {
     assert.equal(isLegacyCanvasRenderer({
-        app: appWithSettings({ "Comfy.Graph.Renderer": "LiteGraph Canvas" }),
+        app: appWithSettings({
+            "Comfy.Graph.Renderer": "LiteGraph Canvas",
+            "Comfy.VueNodes.Enabled": true,
+        }),
         document: documentWithVueNode(true),
         window: {},
     }), true);
+    assert.equal(getCanvasRendererLayoutMode({
+        app: appWithSettings({
+            "Comfy.Graph.Renderer": "LiteGraph Canvas",
+            "Comfy.VueNodes.Enabled": true,
+        }),
+        document: documentWithVueNode(true),
+        window: {},
+    }), "legacy");
 
     assert.equal(isLegacyCanvasRenderer({
-        app: appWithSettings({ "Comfy.Graph.Renderer": "Nodes 2.0" }),
+        app: appWithSettings({
+            "Comfy.Graph.Renderer": "Nodes 2.0",
+            "Comfy.VueNodes.Enabled": false,
+        }),
         document: documentWithVueNode(false),
         window: { LiteGraph: {} },
     }), false);
+    assert.equal(getCanvasRendererLayoutMode({
+        app: appWithSettings({
+            "Comfy.Graph.Renderer": "Nodes 2.0",
+            "Comfy.VueNodes.Enabled": false,
+        }),
+        document: documentWithVueNode(false),
+        window: { LiteGraph: {} },
+    }), "vue");
 });
 
 test("renderer detection uses Vue DOM marker before LiteGraph fallback", () => {
@@ -481,6 +517,86 @@ test("prompt enhancer hides serialized model and settings widgets", () => {
     assert.equal(node.widgets[2].hidden, true);
     assert.equal(node.widgets[3].hidden, undefined);
     assert.deepEqual(collapsed, ["model", "hide_mode", "privacy_mode"]);
+});
+
+test("privacy show any extracts output text and hides encrypted state widget", () => {
+    const output = { helto_privacy_show_any: [{ text: "secret text" }] };
+    const node = {
+        widgets: [
+            { name: PRIVACY_SHOW_ANY_STATE_WIDGET, value: "__HELTO_ENC__:abc" },
+            { name: "other" },
+        ],
+    };
+    const collapsed = [];
+
+    const widget = hidePrivacyShowAnyStateWidget(node, (item) => collapsed.push(item.name));
+
+    assert.equal(extractPrivacyShowAnyText(output), "secret text");
+    assert.equal(widget.hidden, true);
+    assert.equal(widget.type, "hidden");
+    assert.deepEqual(collapsed, [PRIVACY_SHOW_ANY_STATE_WIDGET]);
+});
+
+test("privacy show any serializes only encrypted text state", async () => {
+    const selectorApi = {
+        async encrypt(text) {
+            return { encrypted: `__HELTO_ENC__:${Buffer.from(text).toString("base64")}` };
+        },
+        async decrypt(encrypted) {
+            return { data: Buffer.from(encrypted.slice("__HELTO_ENC__:".length), "base64").toString("utf8") };
+        },
+    };
+
+    const encrypted = await encryptTextState("private", selectorApi);
+
+    assert.equal(isEncryptedText(encrypted), true);
+    assert.equal(await decryptTextState(encrypted, selectorApi), "private");
+    assert.equal(serializedEncryptedWidgetValue({ value: encrypted }), encrypted);
+    assert.equal(serializedEncryptedWidgetValue({ value: "private" }), "");
+    assert.equal(await encryptTextState("private", { encrypt: async () => ({ encrypted: "private" }) }), "");
+});
+
+test("privacy show any textarea defaults to read-only multiline wrapping", () => {
+    const textarea = {};
+
+    configurePrivacyShowAnyTextarea(textarea);
+
+    assert.equal(textarea.readOnly, true);
+    assert.equal(textarea.wrap, "soft");
+    assert.equal(textarea.spellcheck, false);
+});
+
+test("privacy show any sizing fills remaining node body with a floor", () => {
+    const domWidget = { y: 84 };
+    const node = {
+        size: [740, 680],
+        widgets: [
+            { name: "seed", y: 42, height: 24 },
+            domWidget,
+        ],
+    };
+
+    assert.equal(getPrivacyShowAnyWidgetStartY(node, domWidget), 84);
+    assert.equal(getPrivacyShowAnyWidgetHeight(node, 84), 584);
+    assert.equal(getPrivacyShowAnyWidgetHeight({ size: [360, 140] }, 84), 160);
+});
+
+test("privacy show any textarea height fills widget body with a floor", () => {
+    assert.equal(getPrivacyShowAnyTextAreaHeight(584, 30), 530);
+    assert.equal(getPrivacyShowAnyTextAreaHeight(96, 30), 80);
+});
+
+test("privacy show any vue visual height follows explicit node height", () => {
+    const nodeEl = {
+        style: {
+            getPropertyValue(name) {
+                return name === "--node-height" ? "620px" : "";
+            },
+        },
+    };
+    const domWidget = { element: { closest: () => nodeEl } };
+
+    assert.equal(getVuePrivacyShowAnyVisualHeight({ size: [360, 300] }, domWidget), 544);
 });
 
 test("legacy sizing stays static instead of deriving from current node height", () => {

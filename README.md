@@ -25,6 +25,7 @@ The pack registers through ComfyUI's V3 `comfy_entrypoint()` extension API and e
 | Video Parameters LTX | `HeltoVideoParamsLTX` | `HELTO/Video` | LTX 2.3 width, height, frame-safe frame count, and sampler parameter helper. |
 | Aspect Ratio Calculator | `AspectRatioCalculator` | `HELTO/Utils` | Converts a side length plus aspect ratio into width and height. |
 | Model Auto Router (Mute-safe) | `ModelAutoRouter` | `HELTO/Utils` | Routes `model_a` when connected, otherwise falls back to `model_b`. |
+| Privacy Show Any | `HeltoPrivacyShowAny` | `HELTO/Privacy` | Displays any connected value as copyable text while saving only encrypted display state. |
 | Image Comparer | `HeltoImageComparer` | `HELTO/Image` | Output node that previews an original image against a new image. |
 | Video Comparer | `HeltoVideoComparer` | `HELTO/Video` | Output node that previews two videos or frame batches side by side. |
 | Load Video | `HeltoLoadVideo` | `HELTO/Video` | Loads videos from a searchable picker as frames, audio, and metadata. |
@@ -193,6 +194,14 @@ Inputs:
 Outputs: `images` as an image list, and `image_batch` as a batched image tensor.
 
 When no valid image is selected, the node returns a 512x512 black placeholder. `zoom to fit` resizes selected images to the first image's dimensions, `pad` pads images to the largest selected dimensions, and `No resize` preserves each loaded image before the batch output normalizes mixed sizes. Privacy mode also encrypts thumbnail cache entries and serialized selections.
+
+### Privacy Show Any
+
+`Helto Privacy Show Any` is an output node for inspecting arbitrary values. It accepts an `*` input, converts safe values to text, displays the result in a read-only node panel, exposes a copy button, and outputs the same text as a string.
+
+Plain display text is not serialized into the workflow. The frontend stores the last displayed value only in the hidden `encrypted_text_state` widget using the same `__HELTO_ENC__:` encryption route as the multi-image selector.
+
+Scalar values, strings, bytes that decode as UTF-8, lists, tuples, sets, and dictionaries convert directly to text or JSON. Tensor-like and array-like values are summarized by shape, dtype, and device unless they are tiny. Runtime-heavy objects such as models, CLIP, VAE, samplers, and other opaque Python instances are reported as unsupported because their internal state is not meaningful or safe to stringify.
 
 ## Advanced Saving
 

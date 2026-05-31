@@ -28,10 +28,13 @@ import {
 } from "./ui.js";
 
 // Load Stylesheet dynamically using modern ES modules URL resolving
-const link = document.createElement("link");
-link.rel = "stylesheet";
-link.href = new URL("./styles.css", import.meta.url).href;
-document.head.appendChild(link);
+if (!document.getElementById("helto-utils-styles")) {
+    const link = document.createElement("link");
+    link.id = "helto-utils-styles";
+    link.rel = "stylesheet";
+    link.href = new URL("./styles.css", import.meta.url).href;
+    document.head.appendChild(link);
+}
 
 const HELTO_SELECTOR_NODE_CLASS = "HeltoImageSelector";
 const GRAPH_TO_PROMPT_PATCHED = "__heltoImageSelectorGraphToPromptPatched";

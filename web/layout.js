@@ -41,16 +41,17 @@ export function getCanvasRendererLayoutMode({
     document = globalThis.document,
     window = globalThis.window,
 }) {
+    const mode = getGraphRendererMode(app);
+    if (mode) {
+        if (mode.includes("litegraph") || mode.includes("canvas") || mode.includes("classic") || mode.includes("legacy")) return "legacy";
+        if (mode.includes("vue") || mode.includes("dom") || mode.includes("modern") || /nodes?\s*2|2\.0/.test(mode)) return "vue";
+    }
+
     const vueNodesEnabled = getComfySetting(app, "Comfy.VueNodes.Enabled");
     const vueNodesValue = String(vueNodesEnabled ?? "").toLowerCase();
     if (vueNodesEnabled === true || vueNodesValue === "true" || vueNodesValue === "enabled") return "vue";
     if (vueNodesEnabled === false || vueNodesValue === "false" || vueNodesValue === "disabled") return "legacy";
 
-    const mode = getGraphRendererMode(app);
-    if (mode) {
-        if (mode.includes("litegraph") || mode.includes("canvas") || mode.includes("classic")) return "legacy";
-        if (mode.includes("vue") || mode.includes("dom") || mode.includes("modern") || /nodes?\s*2|2\.0/.test(mode)) return "vue";
-    }
     if (document.querySelector(".lg-node")) return "vue";
     if (window.LiteGraph) return "ambiguous";
     return "vue";
