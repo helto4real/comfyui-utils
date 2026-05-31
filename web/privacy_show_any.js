@@ -15,6 +15,7 @@ import {
     getPrivacyShowAnyTextAreaHeight,
     getPrivacyShowAnyWidgetHeight,
     getPrivacyShowAnyWidgetStartY,
+    getVuePrivacyShowAnyLayoutHeight,
     getVuePrivacyShowAnyVisualHeight,
     getWidget,
     hidePrivacyShowAnyStateWidget,
@@ -762,31 +763,33 @@ function syncRendererPresentation(node) {
     return useLegacyCanvas;
 }
 
-function applyHeightToDisplay(display, height) {
-    const normalized = Math.max(PRIVACY_SHOW_ANY_LAYOUT.minWidgetHeight, height);
-    const px = `${normalized}px`;
+function applyHeightToDisplay(display, visualHeight, layoutHeight = visualHeight, vuePath = shouldUseVuePath(display)) {
+    const normalizedVisualHeight = Math.max(PRIVACY_SHOW_ANY_LAYOUT.minWidgetHeight, visualHeight);
+    const normalizedLayoutHeight = Math.max(0, layoutHeight);
+    const visualPx = `${normalizedVisualHeight}px`;
+    const layoutPx = `${normalizedLayoutHeight}px`;
     const { domWidget, frame, panel, textarea, toolbar } = display;
     const toolbarHeight = toolbar?.offsetHeight || toolbar?.clientHeight || PRIVACY_SHOW_ANY_LAYOUT.toolbarHeight;
-    const textHeight = getPrivacyShowAnyTextAreaHeight(normalized, toolbarHeight);
+    const textHeight = getPrivacyShowAnyTextAreaHeight(normalizedVisualHeight, toolbarHeight);
     const textPx = `${textHeight}px`;
 
     if (domWidget) {
-        domWidget.computedHeight = normalized;
-        setWidgetHeight(domWidget, normalized);
+        domWidget.computedHeight = normalizedLayoutHeight;
+        setWidgetHeight(domWidget, normalizedLayoutHeight);
         if (domWidget.element) {
-            domWidget.element.style.height = px;
-            domWidget.element.style.minHeight = px;
-            domWidget.element.style.maxHeight = shouldUseVuePath(display) ? px : "";
+            domWidget.element.style.height = layoutPx;
+            domWidget.element.style.minHeight = layoutPx;
+            domWidget.element.style.maxHeight = vuePath ? layoutPx : "";
         }
     }
 
-    frame.style.height = px;
-    frame.style.minHeight = px;
-    frame.style.maxHeight = px;
+    frame.style.height = visualPx;
+    frame.style.minHeight = visualPx;
+    frame.style.maxHeight = visualPx;
     if (panel) {
-        panel.style.height = px;
-        panel.style.minHeight = px;
-        panel.style.maxHeight = px;
+        panel.style.height = visualPx;
+        panel.style.minHeight = visualPx;
+        panel.style.maxHeight = visualPx;
     }
 
     if (textarea) {
@@ -794,6 +797,49 @@ function applyHeightToDisplay(display, height) {
         textarea.style.minHeight = textPx;
         textarea.style.maxHeight = textPx;
         textarea.style.flexBasis = textPx;
+    }
+}
+
+function applyVueOverflow(display) {
+    const { domWidget, frame } = display;
+    const element = domWidget?.element;
+    if (!element) return;
+
+    element.style.overflow = "visible";
+    element.style.position = "relative";
+    element.style.zIndex = "1";
+
+    if (frame) {
+        frame.style.position = "absolute";
+        frame.style.left = "0";
+        frame.style.top = "0";
+        frame.style.width = "100%";
+    }
+
+    const ancestors = [
+        element.parentElement,
+        element.closest?.(".lg-node-widget"),
+        element.closest?.(".lg-node-widgets"),
+    ];
+    for (const ancestor of ancestors) {
+        if (!ancestor) continue;
+        ancestor.style.overflow = "visible";
+        ancestor.style.position = "relative";
+        ancestor.style.zIndex = "1";
+    }
+}
+
+function clearVueOverflow(display) {
+    const { domWidget, frame } = display;
+    if (domWidget?.element) {
+        domWidget.element.style.position = "";
+        domWidget.element.style.zIndex = "";
+    }
+    if (frame) {
+        frame.style.position = "";
+        frame.style.left = "";
+        frame.style.top = "";
+        frame.style.width = "";
     }
 }
 
@@ -810,14 +856,18 @@ function syncPrivacyShowAnySize(node, markDirty = true) {
 
     const { domWidget } = display;
     const vuePath = shouldUseVuePath(display);
-    const height = vuePath
+    const visualHeight = vuePath
         ? getVuePrivacyShowAnyVisualHeight(node, domWidget)
         : getPrivacyShowAnyWidgetHeight(node, getPrivacyShowAnyWidgetStartY(node, domWidget));
+    const layoutHeight = vuePath ? getVuePrivacyShowAnyLayoutHeight() : visualHeight;
 
-    if (!vuePath) {
+    if (vuePath) {
+        applyVueOverflow(display);
+    } else {
+        clearVueOverflow(display);
         applyLegacyOverflow(display);
     }
-    applyHeightToDisplay(display, height);
+    applyHeightToDisplay(display, visualHeight, layoutHeight, vuePath);
     if (markDirty) {
         setCanvasDirty(node);
     }
@@ -970,6 +1020,9 @@ function installLegacySizing(node, display) {
 }
 
 function getCurrentPrivacyShowAnyHeight(node, domWidget, display) {
+    if (shouldUseVuePath(display)) {
+        return getVuePrivacyShowAnyLayoutHeight();
+    }
     if (domWidget && !shouldUseVuePath(display)) {
         return getPrivacyShowAnyWidgetHeight(node, getPrivacyShowAnyWidgetStartY(node, domWidget));
     }

@@ -47,6 +47,7 @@ import {
     getPrivacyShowAnyTextAreaHeight,
     getPrivacyShowAnyWidgetHeight,
     getPrivacyShowAnyWidgetStartY,
+    getVuePrivacyShowAnyLayoutHeight,
     getVuePrivacyShowAnyVisualHeight,
     hidePrivacyShowAnyStateWidget,
     isEncryptedText,
@@ -587,16 +588,22 @@ test("privacy show any textarea height fills widget body with a floor", () => {
 });
 
 test("privacy show any vue visual height follows explicit node height", () => {
+    let cssNodeHeight = 620;
     const nodeEl = {
         style: {
             getPropertyValue(name) {
-                return name === "--node-height" ? "620px" : "";
+                return name === "--node-height" ? `${cssNodeHeight}px` : "";
             },
         },
     };
     const domWidget = { element: { closest: () => nodeEl } };
 
     assert.equal(getVuePrivacyShowAnyVisualHeight({ size: [360, 300] }, domWidget), 544);
+    assert.equal(getVuePrivacyShowAnyLayoutHeight(), 220);
+
+    cssNodeHeight = 360;
+    assert.equal(getVuePrivacyShowAnyVisualHeight({ size: [360, 300] }, domWidget), 284);
+    assert.equal(getVuePrivacyShowAnyLayoutHeight(), 220);
 });
 
 test("legacy sizing stays static instead of deriving from current node height", () => {

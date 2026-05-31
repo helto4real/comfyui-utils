@@ -108,3 +108,7 @@ export function getVuePrivacyShowAnyVisualHeight(node, domWidget, layout = PRIVA
     const startY = getPrivacyShowAnyWidgetStartY(node, domWidget);
     return getPrivacyShowAnyWidgetHeight(node, startY, layout);
 }
+
+export function getVuePrivacyShowAnyLayoutHeight(layout = PRIVACY_SHOW_ANY_LAYOUT) {
+    return layout.defaultWidgetHeight;
+}
