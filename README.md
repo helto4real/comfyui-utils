@@ -245,7 +245,7 @@ Inputs:
 | `format` | Combo | `video/h264-mp4` when available | Includes `image/gif`, `image/webp`, and discovered/fallback video presets. |
 | `pingpong` | Boolean | `False` | Appends reversed middle frames for a ping-pong loop. |
 | `save_output` | Boolean | `True` | When false, writes to ComfyUI temp instead of the selected output folder. |
-| `privacy_mode` | Boolean | `True` | When true, previews point at the saved output and `save_output=False` is rejected. |
+| `privacy_mode` | Boolean | `True` | When true, previews are served through the encrypted private-media path, including preview-only runs with `save_output=False`. |
 
 Outputs: `images`, `audio`, and `filenames` as `VHS_FILENAMES`.
 
@@ -261,7 +261,7 @@ Formats come from VideoHelperSuite-compatible JSON presets when they are availab
 | `subfolder must be relative` or `subfolder cannot contain path traversal` | Keep `subfolder` relative and do not use `..`. |
 | `ffmpeg is required for Save Video Advanced video outputs.` | Install `imageio-ffmpeg` in the ComfyUI environment or make `ffmpeg` available on `PATH`. |
 | Latent input fails in `Save Video Advanced` | Connect a VAE when the `images` input receives latents. |
-| `Save Video Advanced privacy mode requires save_output=True` | Leave `save_output` enabled when `privacy_mode` is enabled. |
+| `Save Video Advanced private preview is not available downstream` | With `save_output=False` and `privacy_mode=True`, the encrypted UI preview is available, but `filenames` is intentionally empty because no readable video file is saved. |
 | `Ingen modell hittades!` from `Model Auto Router` | Connect or unmute at least one of `model_a` or `model_b`. |
 | Expected video format is missing | Install or check VideoHelperSuite-compatible `video_formats` JSON presets. Built-in fallback formats are still available. |
 | Comparer or selector preview is hidden | Toggle `hide mode` off, or hover the node preview area to reveal it. |

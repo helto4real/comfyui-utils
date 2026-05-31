@@ -125,6 +125,11 @@ def write_encrypted_temp_bytes(data: bytes, suffix: str, subfolder: str) -> Path
     return output_path
 
 
+def write_encrypted_temp_file(path: str | os.PathLike[str], subfolder: str) -> Path:
+    source_path = Path(path)
+    return write_encrypted_temp_bytes(source_path.read_bytes(), source_path.suffix or ".bin", subfolder)
+
+
 def content_type_for_path(path: str | os.PathLike[str], fallback: str = "application/octet-stream") -> str:
     return mimetypes.guess_type(str(path))[0] or fallback
 

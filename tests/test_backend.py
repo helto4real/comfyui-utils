@@ -9,6 +9,7 @@ import tempfile
 import types
 import unittest
 from io import BytesIO
+from pathlib import Path
 
 from PIL import Image
 
@@ -416,6 +417,128 @@ class NodeSchemaContractTests(unittest.TestCase):
         )
         self.assertTrue(all(schema.display_name.startswith("Helto ") for schema in schemas))
 
+    def test_save_video_private_preview_only_returns_no_plain_filenames(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        node_cls = extension_module.SaveVideoAdvanced
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            privacy_globals = self._configure_private_video_test_runtime(node_cls, tmpdir)
+            original_save_video = node_cls.__dict__["_save_video"]
+
+            def fake_save_video(cls, frames, audio, save_dir, filename_prefix, counter, **_kwargs):
+                output_path = os.path.join(save_dir, f"{filename_prefix}_{counter:05}.mp4")
+                with open(output_path, "wb") as stream:
+                    stream.write(b"plain preview video")
+                return [output_path]
+
+            node_cls._save_video = classmethod(fake_save_video)
+            node_cls.state["previews"].clear()
+            try:
+                result = node_cls.execute(images=["frame"], save_output=False, privacy_mode=True)
+            finally:
+                node_cls._save_video = original_save_video
+
+            self.assertEqual(result[2], (False, []))
+            preview = result.kwargs["ui"]
+            record = preview.values[0]
+            payload = privacy_globals["verify_media_token"](record["token"])
+            encrypted_path = Path(payload["path"])
+
+            self.assertTrue(record["private"])
+            self.assertTrue(payload["encrypted"])
+            self.assertEqual(record["content_type"], "video/mp4")
+            self.assertTrue(encrypted_path.is_file())
+            self.assertEqual(
+                privacy_globals["decrypt_bytes"](encrypted_path.read_bytes()),
+                b"plain preview video",
+            )
+            plain_mp4s = [
+                path for path in Path(tmpdir).rglob("*.mp4")
+                if "helto_private" not in path.parts
+            ]
+            self.assertEqual(plain_mp4s, [])
+
+    def test_save_video_private_saved_output_keeps_filenames_but_encrypts_preview(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        node_cls = extension_module.SaveVideoAdvanced
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            privacy_globals = self._configure_private_video_test_runtime(node_cls, tmpdir)
+            output_dir = os.path.join(tmpdir, "output")
+            original_save_video = node_cls.__dict__["_save_video"]
+
+            def fake_save_video(cls, frames, audio, save_dir, filename_prefix, counter, **_kwargs):
+                os.makedirs(save_dir, exist_ok=True)
+                output_path = os.path.join(save_dir, f"{filename_prefix}_{counter:05}.mp4")
+                with open(output_path, "wb") as stream:
+                    stream.write(b"saved video")
+                return [output_path]
+
+            node_cls._save_video = classmethod(fake_save_video)
+            node_cls.state["previews"].clear()
+            try:
+                result = node_cls.execute(
+                    images=["frame"],
+                    folder=output_dir,
+                    save_output=True,
+                    privacy_mode=True,
+                )
+            finally:
+                node_cls._save_video = original_save_video
+
+            save_output, output_files = result[2]
+            self.assertTrue(save_output)
+            self.assertEqual(len(output_files), 1)
+            self.assertEqual(Path(output_files[0]).read_bytes(), b"saved video")
+
+            record = result.kwargs["ui"].values[0]
+            payload = privacy_globals["verify_media_token"](record["token"])
+            encrypted_path = Path(payload["path"])
+            self.assertTrue(payload["encrypted"])
+            self.assertNotEqual(encrypted_path, Path(output_files[0]))
+            self.assertEqual(
+                privacy_globals["decrypt_bytes"](encrypted_path.read_bytes()),
+                b"saved video",
+            )
+
+    def test_save_video_non_private_temp_output_keeps_plain_filename(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        node_cls = extension_module.SaveVideoAdvanced
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._configure_private_video_test_runtime(node_cls, tmpdir)
+            original_save_video = node_cls.__dict__["_save_video"]
+
+            def fake_save_video(cls, frames, audio, save_dir, filename_prefix, counter, **_kwargs):
+                output_path = os.path.join(save_dir, f"{filename_prefix}_{counter:05}.mp4")
+                with open(output_path, "wb") as stream:
+                    stream.write(b"plain temp video")
+                return [output_path]
+
+            node_cls._save_video = classmethod(fake_save_video)
+            node_cls.state["previews"].clear()
+            try:
+                result = node_cls.execute(images=["frame"], save_output=False, privacy_mode=False)
+            finally:
+                node_cls._save_video = original_save_video
+
+            self.assertFalse(result[2][0])
+            self.assertEqual(len(result[2][1]), 1)
+            self.assertTrue(os.path.isfile(result[2][1][0]))
+            self.assertEqual(Path(result[2][1][0]).read_bytes(), b"plain temp video")
+
+    @staticmethod
+    def _configure_private_video_test_runtime(node_cls, tmpdir: str) -> dict:
+        module_globals = node_cls.execute.__func__.__globals__
+        module_globals["folder_paths"].get_temp_directory = lambda: tmpdir
+        module_globals["folder_paths"].get_output_directory = lambda: os.path.join(tmpdir, "output")
+
+        privacy_globals = module_globals["write_encrypted_temp_file"].__globals__
+        privacy_globals["folder_paths"].get_temp_directory = lambda: tmpdir
+        privacy_globals["CONFIG_DIR"] = Path(tmpdir) / "config"
+        privacy_globals["KEY_PATH"] = privacy_globals["CONFIG_DIR"] / "privacy_key.bin"
+        return privacy_globals
+
     @staticmethod
     def _import_node_with_fake_comfy_api():
         class FakeSchema:
@@ -581,6 +704,10 @@ class NodeSchemaContractTests(unittest.TestCase):
                 self.args = args
                 self.kwargs = kwargs
 
+        class FakePreviewVideo:
+            def __init__(self, values, **_kwargs):
+                self.values = values
+
         class FakeImageSaveHelper:
             @staticmethod
             def _create_png_metadata(_cls):
@@ -596,6 +723,7 @@ class NodeSchemaContractTests(unittest.TestCase):
 
         class FakeUI:
             SavedResult = FakeSavedResult
+            PreviewVideo = FakePreviewVideo
             ImageSaveHelper = FakeImageSaveHelper
 
         class FakeRoutes:

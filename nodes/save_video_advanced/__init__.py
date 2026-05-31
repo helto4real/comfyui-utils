@@ -21,7 +21,7 @@ from comfy_api.latest import io, ui
 from PIL import Image, ExifTags
 from PIL.PngImagePlugin import PngInfo
 
-from ...shared.privacy import private_media_record
+from ...shared.privacy import content_type_for_path, private_media_record, write_encrypted_temp_file
 
 
 _COUNTER_RE_TEMPLATE = r"^{prefix}_(?P<counter>\d+)(?:-audio)?\.[^.]+$"
@@ -413,8 +413,6 @@ class SaveVideoAdvanced(io.ComfyNode):
 
         if images is None:
             return io.NodeOutput(None, audio, (save_output, []), ui=cached_preview)
-        if privacy_mode and not save_output:
-            raise ValueError("Save Video Advanced privacy mode requires save_output=True because save_output=False writes the output itself to ComfyUI temp.")
 
         decoded_images = cls._prepare_images(images, vae)
         frames = [frame for frame in decoded_images]
@@ -423,6 +421,7 @@ class SaveVideoAdvanced(io.ComfyNode):
         if pingpong:
             frames = _to_pingpong(frames)
 
+        staging_dir = None
         save_dir = (
             cls._resolve_save_dir(
                 folder=folder,
@@ -434,31 +433,48 @@ class SaveVideoAdvanced(io.ComfyNode):
             if save_output
             else folder_paths.get_temp_directory()
         )
+        if privacy_mode and not save_output:
+            staging_dir = tempfile.mkdtemp(
+                prefix="helto_save_video_private_",
+                dir=folder_paths.get_temp_directory(),
+            )
+            save_dir = staging_dir
+
         filename_prefix = cls._normalize_filename_prefix(filename_prefix)
         os.makedirs(save_dir, exist_ok=True)
         counter = cls._next_counter(save_dir, filename_prefix)
 
-        output_files = cls._save_video(
-            frames=frames,
-            audio=audio,
-            save_dir=save_dir,
-            filename_prefix=filename_prefix,
-            counter=counter,
-            frame_rate=float(frame_rate),
-            loop_count=int(loop_count),
-            format=format,
-            save_output=save_output,
-            format_kwargs=kwargs,
-        )
-        final_path = output_files[-1]
-        if privacy_mode:
-            preview = ui.PreviewVideo([private_media_record(final_path, encrypted=False)])
-        else:
-            preview = ui.PreviewVideo([cls._preview_result(final_path)])
-        cls.state["previews"][node_id] = preview
+        try:
+            output_files = cls._save_video(
+                frames=frames,
+                audio=audio,
+                save_dir=save_dir,
+                filename_prefix=filename_prefix,
+                counter=counter,
+                frame_rate=float(frame_rate),
+                loop_count=int(loop_count),
+                format=format,
+                save_output=save_output,
+                format_kwargs=kwargs,
+            )
+            final_path = output_files[-1]
+            if privacy_mode:
+                preview = ui.PreviewVideo([cls._private_preview_record(final_path)])
+            else:
+                preview = ui.PreviewVideo([cls._preview_result(final_path)])
+            cls.state["previews"][node_id] = preview
 
-        print(f"Save Video Advanced saved {len(output_files)} file(s) to: {save_dir}")
-        return io.NodeOutput(decoded_images, audio, (save_output, output_files), ui=preview)
+            returned_files = output_files if save_output or not privacy_mode else []
+            if save_output:
+                print(f"Save Video Advanced saved {len(output_files)} file(s) to: {save_dir}")
+            elif privacy_mode:
+                print("Save Video Advanced created an encrypted private preview without saving output files.")
+            else:
+                print(f"Save Video Advanced saved {len(output_files)} temp file(s) to: {save_dir}")
+            return io.NodeOutput(decoded_images, audio, (save_output, returned_files), ui=preview)
+        finally:
+            if staging_dir is not None:
+                shutil.rmtree(staging_dir, ignore_errors=True)
 
     @classmethod
     def _prepare_images(cls, images, vae):
@@ -836,6 +852,16 @@ class SaveVideoAdvanced(io.ComfyNode):
                 preview_path = os.path.join(preview_dir, f"{stem}_{uuid.uuid4().hex}{suffix}")
             shutil.copy2(path, preview_path)
         return ui.SavedResult(os.path.basename(preview_path), "helto_save_video_advanced", io.FolderType.temp)
+
+    @classmethod
+    def _private_preview_record(cls, path: str) -> dict[str, Any]:
+        encrypted_path = write_encrypted_temp_file(path, "save_video_advanced")
+        return private_media_record(
+            encrypted_path,
+            content_type=content_type_for_path(path),
+            encrypted=True,
+            filename=os.path.basename(path),
+        )
 
     @classmethod
     def _node_id(cls) -> str:

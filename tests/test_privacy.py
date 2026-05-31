@@ -66,6 +66,21 @@ class PrivacyTests(unittest.TestCase):
         decrypted = privacy.decrypt_bytes(encrypted_path.read_bytes())
         self.assertTrue(decrypted.startswith(b"\x89PNG"))
 
+    def test_encrypted_temp_file_decrypts_to_source_bytes(self):
+        from shared import privacy
+
+        privacy.CONFIG_DIR = self.temp_dir / "config"
+        privacy.KEY_PATH = privacy.CONFIG_DIR / "privacy_key.bin"
+
+        source_path = self.temp_dir / "preview.mp4"
+        source_path.write_bytes(b"fake mp4 preview bytes")
+
+        encrypted_path = privacy.write_encrypted_temp_file(source_path, "unit")
+
+        self.assertTrue(encrypted_path.name.endswith(".mp4.enc"))
+        self.assertNotEqual(encrypted_path.read_bytes(), source_path.read_bytes())
+        self.assertEqual(privacy.decrypt_bytes(encrypted_path.read_bytes()), source_path.read_bytes())
+
 
 if __name__ == "__main__":
     unittest.main()
