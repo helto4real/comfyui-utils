@@ -209,6 +209,7 @@ class PrivacyShowAnyCanvasWidget {
         this.cachedLines = null;
         this.statusMessage = "";
         this.statusUntil = 0;
+        this.textHovered = false;
     }
 
     invalidate() {
@@ -318,6 +319,7 @@ class PrivacyShowAnyCanvasWidget {
         const lines = text
             ? this.getWrappedLines(ctx, text, textWidth)
             : ["Run the node to display text."];
+        const shouldDrawText = !text || this.textHovered;
         this.contentHeight = lines.length * lineHeight;
         this.viewportHeight = Math.max(0, textBounds.height - textPad * 2);
         const maxScroll = Math.max(0, this.contentHeight - this.viewportHeight);
@@ -326,11 +328,13 @@ class PrivacyShowAnyCanvasWidget {
         ctx.fillStyle = text ? "rgba(245, 245, 248, 0.94)" : "rgba(220, 220, 226, 0.48)";
         const firstLine = Math.max(0, Math.floor(this.scrollTop / lineHeight) - 1);
         const lastLine = Math.min(lines.length, firstLine + Math.ceil(this.viewportHeight / lineHeight) + 4);
-        for (let i = firstLine; i < lastLine; i++) {
-            const lineY = textBounds.y + textPad + (i * lineHeight) - this.scrollTop;
-            if (lineY > textBounds.y + textBounds.height) break;
-            if (lineY + lineHeight >= textBounds.y) {
-                ctx.fillText(lines[i], textBounds.x + textPad, lineY);
+        if (shouldDrawText) {
+            for (let i = firstLine; i < lastLine; i++) {
+                const lineY = textBounds.y + textPad + (i * lineHeight) - this.scrollTop;
+                if (lineY > textBounds.y + textBounds.height) break;
+                if (lineY + lineHeight >= textBounds.y) {
+                    ctx.fillText(lines[i], textBounds.x + textPad, lineY);
+                }
             }
         }
 
@@ -404,6 +408,31 @@ class PrivacyShowAnyCanvasWidget {
         setCanvasDirty(this.node);
         return true;
     }
+
+    handleMouseMove(pos) {
+        if (!shouldUseLegacyCanvasForNode(this.node)) {
+            return false;
+        }
+
+        const nextHovered = isPointInBounds(pos, this.textBounds);
+        if (nextHovered === this.textHovered) {
+            return false;
+        }
+
+        this.textHovered = nextHovered;
+        setCanvasDirty(this.node);
+        return true;
+    }
+
+    handleMouseLeave() {
+        if (!this.textHovered) {
+            return false;
+        }
+
+        this.textHovered = false;
+        setCanvasDirty(this.node);
+        return true;
+    }
 }
 
 function createDisplayElement(node) {
@@ -438,6 +467,25 @@ function createDisplayElement(node) {
     panel.appendChild(textarea);
     frame.appendChild(panel);
 
+    const display = {
+        node,
+        frame,
+        panel,
+        textarea,
+        status,
+        toolbar,
+        textRevealed: false,
+    };
+
+    textarea.addEventListener("pointerenter", () => {
+        display.textRevealed = true;
+        syncDisplayTextVisibility(display);
+    });
+    textarea.addEventListener("pointerleave", () => {
+        display.textRevealed = false;
+        syncDisplayTextVisibility(display);
+    });
+
     copyButton.onclick = (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -447,7 +495,8 @@ function createDisplayElement(node) {
         });
     };
 
-    return { node, frame, panel, textarea, status, toolbar };
+    syncDisplayTextVisibility(display);
+    return display;
 }
 
 async function copyText(text, textarea) {
@@ -455,12 +504,28 @@ async function copyText(text, textarea) {
         await navigator.clipboard.writeText(text);
         return true;
     } catch (_err) {
+        const doc = textarea?.ownerDocument ?? document;
+        let fallbackTextarea = textarea;
+        let shouldRemoveFallback = false;
         try {
-            textarea.focus();
-            textarea.select();
+            if (!fallbackTextarea || fallbackTextarea.value !== text) {
+                fallbackTextarea = doc.createElement("textarea");
+                fallbackTextarea.value = text;
+                fallbackTextarea.style.position = "fixed";
+                fallbackTextarea.style.left = "-9999px";
+                fallbackTextarea.style.top = "0";
+                doc.body.appendChild(fallbackTextarea);
+                shouldRemoveFallback = true;
+            }
+            fallbackTextarea.focus();
+            fallbackTextarea.select();
             return document.execCommand("copy");
         } catch (_fallbackErr) {
             return false;
+        } finally {
+            if (shouldRemoveFallback) {
+                fallbackTextarea.remove();
+            }
         }
     }
 }
@@ -470,13 +535,21 @@ function updateStatus(status, text) {
     status.textContent = length ? `${length.toLocaleString()} chars` : "No text";
 }
 
+function syncDisplayTextVisibility(display) {
+    if (!display?.textarea) return;
+
+    const text = String(display.node?.[DISPLAY_TEXT_KEY] ?? "");
+    display.textarea.value = display.textRevealed ? text : "";
+    display.textarea.placeholder = text ? "" : "Run the node to display text.";
+}
+
 function setDisplayText(node, text, persist = true) {
     const plain = String(text ?? "");
     node[DISPLAY_TEXT_KEY] = plain;
     node[CANVAS_WIDGET_KEY]?.invalidate?.();
     const widget = node[DISPLAY_WIDGET_KEY];
     if (widget?.textarea) {
-        widget.textarea.value = plain;
+        syncDisplayTextVisibility(widget);
         updateStatus(widget.status, plain);
     }
     if (persist) {
@@ -708,6 +781,9 @@ function installLegacyCanvasInteractions(node) {
     if (node[CANVAS_INTERACTION_PATCHED_KEY]) return;
     const originalOnMouseDown = node.onMouseDown;
     const originalOnMouseWheel = node.onMouseWheel;
+    const originalOnMouseEnter = node.onMouseEnter;
+    const originalOnMouseMove = node.onMouseMove;
+    const originalOnMouseLeave = node.onMouseLeave;
 
     node.onMouseDown = function (event, localPos, ...args) {
         const pos = getLocalMousePos(this, event, localPos);
@@ -723,6 +799,23 @@ function installLegacyCanvasInteractions(node) {
             return true;
         }
         return originalOnMouseWheel?.call(this, event, localPos, ...args);
+    };
+
+    node.onMouseEnter = function (event, localPos, ...args) {
+        const pos = getLocalMousePos(this, event, localPos);
+        this[CANVAS_WIDGET_KEY]?.handleMouseMove(pos);
+        return originalOnMouseEnter?.call(this, event, localPos, ...args);
+    };
+
+    node.onMouseMove = function (event, localPos, ...args) {
+        const pos = getLocalMousePos(this, event, localPos);
+        this[CANVAS_WIDGET_KEY]?.handleMouseMove(pos);
+        return originalOnMouseMove?.call(this, event, localPos, ...args);
+    };
+
+    node.onMouseLeave = function (...args) {
+        this[CANVAS_WIDGET_KEY]?.handleMouseLeave();
+        return originalOnMouseLeave?.apply(this, args);
     };
 
     node[CANVAS_INTERACTION_PATCHED_KEY] = true;
