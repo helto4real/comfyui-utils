@@ -354,7 +354,7 @@ test("prompt enhancer settings read and write serialized widgets", () => {
         privacyMode: false,
         ollamaUrl: "http://localhost:11434",
         keepAlive: 2,
-        keepAliveUnit: "hours",
+        keepAliveUnit: "seconds",
         timeout: 45,
     });
 
@@ -363,7 +363,7 @@ test("prompt enhancer settings read and write serialized widgets", () => {
         privacyMode: false,
         ollamaUrl: "http://localhost:11434",
         keepAlive: 2,
-        keepAliveUnit: "hours",
+        keepAliveUnit: "seconds",
         timeout: 45,
     });
 });

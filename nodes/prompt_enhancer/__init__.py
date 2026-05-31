@@ -54,7 +54,7 @@ class PromptEnhancer(io.ComfyNode):
                 io.Boolean.Input("privacy_mode", default=True),
                 io.String.Input("ollama_url", default=DEFAULT_OLLAMA_URL),
                 io.Int.Input("ollama_keep_alive", default=DEFAULT_OLLAMA_KEEP_ALIVE, min=-1, max=120, step=1),
-                io.Combo.Input("ollama_keep_alive_unit", options=["minutes", "hours"], default="minutes"),
+                io.Combo.Input("ollama_keep_alive_unit", options=["seconds", "minutes", "hours"], default="minutes"),
                 io.Int.Input("ollama_timeout", default=DEFAULT_OLLAMA_TIMEOUT, min=1, max=3600, step=1),
             ],
             outputs=[

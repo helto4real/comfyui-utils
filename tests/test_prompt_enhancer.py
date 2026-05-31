@@ -19,6 +19,7 @@ from shared.prompt_enhancer.provider import (
     PromptEnhancerSettings,
     build_system_prompt,
     encode_images_for_ollama,
+    ollama_keep_alive,
     resolve_seed,
 )
 
@@ -49,6 +50,14 @@ class PromptEnhancerProviderTests(unittest.TestCase):
         self.assertEqual(len(encoded), MAX_PROMPT_IMAGES)
         self.assertTrue(all(isinstance(item, str) and item for item in encoded))
 
+    def test_ollama_keep_alive_supports_seconds_and_zero_release(self):
+        self.assertEqual(ollama_keep_alive(3, "seconds"), "3s")
+        self.assertEqual(ollama_keep_alive(2, "minutes"), "2m")
+        self.assertEqual(ollama_keep_alive(1, "hours"), "1h")
+        self.assertEqual(ollama_keep_alive(0, "seconds"), "0s")
+        self.assertEqual(ollama_keep_alive(0, "minutes"), "0s")
+        self.assertEqual(ollama_keep_alive(0, "hours"), "0s")
+
     def test_list_models_reads_ollama_tags_payload(self):
         with patch("shared.prompt_enhancer.provider._json_request") as request:
             request.return_value = {"models": [{"model": "b:latest"}, {"name": "a:latest"}, {"model": "b:latest"}]}
@@ -78,6 +87,7 @@ class PromptEnhancerProviderTests(unittest.TestCase):
             result = OllamaPromptProvider().generate(prompt_request)
 
         self.assertEqual(result, "enhanced prompt")
+        request.assert_called_once()
         payload = request.call_args.args[1]
         self.assertEqual(payload["model"], "llava:latest")
         self.assertEqual(payload["system"], "system text")
@@ -87,6 +97,31 @@ class PromptEnhancerProviderTests(unittest.TestCase):
         self.assertEqual(payload["images"], ["abc"])
         self.assertFalse(payload["stream"])
         self.assertEqual(request.call_args.args[2], 9)
+
+    def test_generate_waits_for_zero_keep_alive_unload_before_returning(self):
+        settings = PromptEnhancerSettings(ollama_url=DEFAULT_OLLAMA_URL, keep_alive=0, keep_alive_unit="minutes", timeout=9)
+        prompt_request = PromptEnhancerRequest(
+            model="llava:latest",
+            prompt_type="image",
+            prompt="make it cinematic",
+            system_prompt="system text",
+            seed=123,
+            images=[],
+            settings=settings,
+        )
+
+        with patch("shared.prompt_enhancer.provider._json_request") as request:
+            request.side_effect = [{"response": " enhanced prompt "}, {"done": True}]
+
+            result = OllamaPromptProvider().generate(prompt_request)
+
+        self.assertEqual(result, "enhanced prompt")
+        self.assertEqual(request.call_count, 2)
+        generate_payload = request.call_args_list[0].args[1]
+        unload_payload = request.call_args_list[1].args[1]
+        self.assertEqual(generate_payload["keep_alive"], "0s")
+        self.assertEqual(unload_payload, {"model": "llava:latest", "keep_alive": 0, "stream": False})
+        self.assertEqual(request.call_args_list[1].args[2], 9)
 
 
 class PromptEnhancerRouteTests(unittest.TestCase):

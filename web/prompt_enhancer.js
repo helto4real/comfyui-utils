@@ -116,6 +116,7 @@ function openSettingsModal(node) {
     const settings = readPromptEnhancerSettings(node);
     const hideChecked = settings.hideMode ? "checked" : "";
     const privacyChecked = settings.privacyMode ? "checked" : "";
+    const secondsSelected = settings.keepAliveUnit === "seconds" ? "selected" : "";
     const minutesSelected = settings.keepAliveUnit === "minutes" ? "selected" : "";
     const hoursSelected = settings.keepAliveUnit === "hours" ? "selected" : "";
 
@@ -157,6 +158,7 @@ function openSettingsModal(node) {
                 </label>
                 <input class="helto-prompt-enhancer-number" id="helto-pe-keep-alive" type="number" min="-1" max="120" value="${settings.keepAlive}">
                 <select class="helto-select" id="helto-pe-keep-alive-unit">
+                    <option value="seconds" ${secondsSelected}>seconds</option>
                     <option value="minutes" ${minutesSelected}>minutes</option>
                     <option value="hours" ${hoursSelected}>hours</option>
                 </select>

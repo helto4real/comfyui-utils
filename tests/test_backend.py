@@ -421,7 +421,11 @@ class NodeSchemaContractTests(unittest.TestCase):
         self.assertTrue(all(name.startswith("Helto ") or name == "Prompt enhancer" for name in display_names))
         prompt_enhancer_schema = next(schema for schema in schemas if schema.node_id == "HeltoPromptEnhancer")
         prompt_enhancer_model_input = next(input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "model")
+        prompt_enhancer_keep_alive_unit_input = next(
+            input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "ollama_keep_alive_unit"
+        )
         self.assertEqual(prompt_enhancer_model_input.kwargs["io_kind"], "String")
+        self.assertEqual(prompt_enhancer_keep_alive_unit_input.kwargs["options"], ["seconds", "minutes", "hours"])
 
     def test_save_video_private_preview_only_returns_no_plain_filenames(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()

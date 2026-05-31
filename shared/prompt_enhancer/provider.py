@@ -297,8 +297,16 @@ def ollama_keep_alive(value: int | str | None, unit: str | None) -> str:
         keep_alive = int(value if value is not None else DEFAULT_OLLAMA_KEEP_ALIVE)
     except (TypeError, ValueError):
         keep_alive = DEFAULT_OLLAMA_KEEP_ALIVE
+    if keep_alive == 0:
+        return "0s"
+
     unit_value = str(unit or DEFAULT_OLLAMA_KEEP_ALIVE_UNIT).lower()
-    suffix = "h" if unit_value.startswith("hour") else "m"
+    if unit_value.startswith("second"):
+        suffix = "s"
+    elif unit_value.startswith("hour"):
+        suffix = "h"
+    else:
+        suffix = "m"
     return f"{keep_alive}{suffix}"
 
 
@@ -394,12 +402,13 @@ class OllamaPromptProvider:
 
     def generate(self, request: PromptEnhancerRequest) -> str:
         endpoint = urllib.parse.urljoin(f"{normalize_ollama_url(request.settings.ollama_url)}/", "api/generate")
+        keep_alive = ollama_keep_alive(request.settings.keep_alive, request.settings.keep_alive_unit)
         payload: dict[str, Any] = {
             "model": request.model,
             "system": request.system_prompt,
             "prompt": request.prompt,
             "stream": False,
-            "keep_alive": ollama_keep_alive(request.settings.keep_alive, request.settings.keep_alive_unit),
+            "keep_alive": keep_alive,
             "options": {"seed": request.seed},
         }
         if request.images:
@@ -408,4 +417,7 @@ class OllamaPromptProvider:
         response = _json_request(endpoint, payload, request.settings.timeout)
         if not isinstance(response, dict) or "response" not in response:
             raise RuntimeError("Ollama response did not include generated text.")
-        return str(response.get("response") or "").strip()
+        generated_prompt = str(response.get("response") or "").strip()
+        if keep_alive == "0s":
+            _json_request(endpoint, {"model": request.model, "keep_alive": 0, "stream": False}, request.settings.timeout)
+        return generated_prompt
