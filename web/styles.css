@@ -935,6 +935,41 @@
     border-color: var(--border-active);
 }
 
+.helto-prompt-enhancer-section {
+    display: grid;
+    gap: 12px;
+    margin-bottom: 16px;
+}
+.helto-prompt-enhancer-section:last-child {
+    margin-bottom: 0;
+}
+.helto-prompt-enhancer-field-row {
+    gap: 10px;
+}
+.helto-prompt-enhancer-input,
+.helto-prompt-enhancer-number {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    box-sizing: border-box;
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: 12px;
+    outline: none;
+    padding: 6px 10px;
+}
+.helto-prompt-enhancer-input {
+    min-width: 260px;
+    width: min(360px, 42vw);
+}
+.helto-prompt-enhancer-number {
+    width: 74px;
+}
+.helto-prompt-enhancer-input:focus,
+.helto-prompt-enhancer-number:focus {
+    border-color: var(--border-active);
+}
+
 /* --- High-Res Image Preview Popup --- */
 .helto-preview-overlay {
     position: fixed;

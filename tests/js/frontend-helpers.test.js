@@ -26,6 +26,14 @@ import {
     runWithPreviewPriming,
     storeOutputForPreviewKeys,
 } from "../../web/hide_mode_helpers.js";
+import {
+    hideSerializedSettingsWidgets,
+    readPromptEnhancerSettings,
+    setGenerateNewEachPrompt,
+    setNewFixedPromptSeed,
+    updateModelOptions,
+    writePromptEnhancerSettings,
+} from "../../web/prompt_enhancer_helpers.js";
 
 function appWithSettings(settings) {
     return {
@@ -304,6 +312,89 @@ test("layout controller does not expose size callbacks during ambiguous Vue moun
 
     assert.equal(element.style.height, "404px");
     assert.equal(containerEl.style.height, "778px");
+});
+
+test("prompt enhancer seed buttons update seed widget", () => {
+    const callbacks = [];
+    const node = {
+        widgets: [
+            {
+                name: "seed",
+                value: 5,
+                callback(value) {
+                    callbacks.push(value);
+                },
+            },
+        ],
+    };
+
+    assert.equal(setGenerateNewEachPrompt(node), -1);
+    assert.equal(node.widgets[0].value, -1);
+
+    assert.equal(setNewFixedPromptSeed(node, () => 0.5), 1073741823);
+    assert.equal(node.widgets[0].value, 1073741823);
+    assert.deepEqual(callbacks, [-1, 1073741823]);
+});
+
+test("prompt enhancer settings read and write serialized widgets", () => {
+    const node = {
+        widgets: [
+            { name: "hide_mode", value: false },
+            { name: "privacy_mode", value: true },
+            { name: "ollama_url", value: "http://127.0.0.1:11434" },
+            { name: "ollama_keep_alive", value: 5 },
+            { name: "ollama_keep_alive_unit", value: "minutes" },
+            { name: "ollama_timeout", value: 120 },
+        ],
+    };
+
+    writePromptEnhancerSettings(node, {
+        hideMode: true,
+        privacyMode: false,
+        ollamaUrl: "http://localhost:11434",
+        keepAlive: 2,
+        keepAliveUnit: "hours",
+        timeout: 45,
+    });
+
+    assert.deepEqual(readPromptEnhancerSettings(node), {
+        hideMode: true,
+        privacyMode: false,
+        ollamaUrl: "http://localhost:11434",
+        keepAlive: 2,
+        keepAliveUnit: "hours",
+        timeout: 45,
+    });
+});
+
+test("prompt enhancer model options update keeps existing value when possible", () => {
+    const modelWidget = { value: "b", options: { values: ["a"] } };
+
+    assert.equal(updateModelOptions(modelWidget, ["b", "c"]), true);
+    assert.equal(modelWidget.value, "b");
+    assert.deepEqual(modelWidget.options.values, ["b", "c"]);
+
+    assert.equal(updateModelOptions(modelWidget, ["c", "d"]), true);
+    assert.equal(modelWidget.value, "c");
+});
+
+test("prompt enhancer hides serialized settings widgets", () => {
+    const node = {
+        widgets: [
+            { name: "hide_mode" },
+            { name: "privacy_mode" },
+            { name: "prompt" },
+        ],
+    };
+    const collapsed = [];
+
+    hideSerializedSettingsWidgets(node, (widget) => collapsed.push(widget.name));
+
+    assert.equal(node.widgets[0].hidden, true);
+    assert.equal(node.widgets[0].type, "hidden");
+    assert.equal(node.widgets[1].hidden, true);
+    assert.equal(node.widgets[2].hidden, undefined);
+    assert.deepEqual(collapsed, ["hide_mode", "privacy_mode"]);
 });
 
 test("legacy sizing stays static instead of deriving from current node height", () => {

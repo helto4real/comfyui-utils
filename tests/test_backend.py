@@ -399,7 +399,7 @@ class NodeSchemaContractTests(unittest.TestCase):
         node_classes = asyncio.run(extension_module.HeltoUtilsExtension().get_node_list())
         schemas = [node_cls.define_schema() for node_cls in node_classes]
 
-        self.assertEqual(len(schemas), 10)
+        self.assertEqual(len(schemas), 11)
         self.assertEqual(
             [schema.node_id for schema in schemas],
             [
@@ -407,6 +407,7 @@ class NodeSchemaContractTests(unittest.TestCase):
                 "HeltoVideoParamsLTX",
                 "AspectRatioCalculator",
                 "ModelAutoRouter",
+                "HeltoPromptEnhancer",
                 "HeltoImageComparer",
                 "HeltoVideoComparer",
                 "HeltoLoadVideo",
@@ -415,7 +416,9 @@ class NodeSchemaContractTests(unittest.TestCase):
                 "HeltoSaveVideoAdvanced",
             ],
         )
-        self.assertTrue(all(schema.display_name.startswith("Helto ") for schema in schemas))
+        display_names = [schema.display_name for schema in schemas]
+        self.assertIn("Prompt enhancer", display_names)
+        self.assertTrue(all(name.startswith("Helto ") or name == "Prompt enhancer" for name in display_names))
 
     def test_save_video_private_preview_only_returns_no_plain_filenames(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()
@@ -869,6 +872,7 @@ class NodeSchemaContractTests(unittest.TestCase):
             ComfyNode = object
             Schema = FakeSchema
             NodeOutput = FakeNodeOutput
+            NumberDisplay = types.SimpleNamespace(number="number")
             String = FakeSocket
             Image = FakeSocket
             Int = FakeSocket
