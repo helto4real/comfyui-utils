@@ -690,8 +690,7 @@ class SaveVideoAdvanced(io.ComfyNode):
         if stderr:
             print(stderr.decode("utf-8", "replace"), end="")
 
-        output_files = [video_path]
-        muxed_path = cls._mux_audio_if_needed(
+        cls._replace_with_audio_mux_if_needed(
             audio=audio,
             video_path=video_path,
             save_dir=save_dir,
@@ -703,10 +702,8 @@ class SaveVideoAdvanced(io.ComfyNode):
             video_format=video_format,
             env=env,
         )
-        if muxed_path is not None:
-            output_files.append(muxed_path)
 
-        return output_files
+        return [video_path]
 
     @classmethod
     def _pad_frames(cls, frames: list[torch.Tensor], dim_alignment: int) -> tuple[list[torch.Tensor], tuple[int, int]]:
@@ -732,7 +729,7 @@ class SaveVideoAdvanced(io.ComfyNode):
         return padded, (width + pad_width, height + pad_height)
 
     @classmethod
-    def _mux_audio_if_needed(
+    def _replace_with_audio_mux_if_needed(
         cls,
         audio,
         video_path: str,
@@ -744,13 +741,13 @@ class SaveVideoAdvanced(io.ComfyNode):
         frame_count: int,
         video_format: dict[str, Any],
         env: dict[str, str],
-    ) -> str | None:
+    ) -> None:
         if audio is None or "waveform" not in audio:
-            return None
+            return
 
         ffmpeg = _find_ffmpeg()
         if ffmpeg is None:
-            return None
+            return
 
         waveform = audio["waveform"]
         if waveform.ndim == 3:
@@ -758,7 +755,7 @@ class SaveVideoAdvanced(io.ComfyNode):
         channels = waveform.shape[0]
         sample_rate = audio["sample_rate"]
         audio_data = waveform.transpose(0, 1).contiguous().cpu().numpy().astype(np.float32).tobytes()
-        output_path = os.path.join(save_dir, f"{filename_prefix}_{counter:05}-audio.{extension}")
+        output_path = os.path.join(save_dir, f"{filename_prefix}_{counter:05}.audio_mux.{uuid.uuid4().hex}.{extension}")
         audio_pass = video_format.get("audio_pass", ["-c:a", "libopus"])
         apad = []
         if str(video_format.get("trim_to_audio", "False")) == "False":
@@ -785,11 +782,17 @@ class SaveVideoAdvanced(io.ComfyNode):
         _merge_filter_args(command, "-af")
 
         result = subprocess.run(command, input=audio_data, env=env, capture_output=True, check=False)
-        if result.returncode != 0:
-            raise RuntimeError("Save Video Advanced audio mux failed:\n" + result.stderr.decode("utf-8", "replace"))
-        if result.stderr:
-            print(result.stderr.decode("utf-8", "replace"), end="")
-        return output_path
+        try:
+            if result.returncode != 0:
+                raise RuntimeError("Save Video Advanced audio mux failed:\n" + result.stderr.decode("utf-8", "replace"))
+            if result.stderr:
+                print(result.stderr.decode("utf-8", "replace"), end="")
+            os.replace(output_path, video_path)
+        finally:
+            try:
+                os.unlink(output_path)
+            except FileNotFoundError:
+                pass
 
     @classmethod
     def _ffmpeg_metadata(cls, video_format: dict[str, Any]) -> dict[str, str]:

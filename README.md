@@ -249,7 +249,7 @@ Inputs:
 
 Outputs: `images`, `audio`, and `filenames` as `VHS_FILENAMES`.
 
-The `filenames` output is a tuple of `(save_output, output_files)`, matching VideoHelperSuite-style filename consumers. When audio is muxed, the node can return both the silent video path and an `-audio` muxed path.
+The `filenames` output is a tuple of `(save_output, output_files)`, matching VideoHelperSuite-style filename consumers. Video outputs return one final path; when audio is muxed, it replaces the silent intermediate at the normal numbered filename.
 
 Formats come from VideoHelperSuite-compatible JSON presets when they are available, with built-in fallbacks for `video/h264-mp4`, `video/webm`, and `video/ffmpeg-gif`. The frontend extension shows extra format-specific widgets after the `format` selector.
 

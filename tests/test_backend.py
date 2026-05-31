@@ -585,6 +585,160 @@ class NodeSchemaContractTests(unittest.TestCase):
             self.assertTrue(os.path.isfile(result[2][1][0]))
             self.assertEqual(Path(result[2][1][0]).read_bytes(), b"plain temp video")
 
+    def test_save_video_audio_mux_replaces_silent_file_without_audio_postfix(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        node_cls = extension_module.SaveVideoAdvanced
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            module_globals = self._configure_ffmpeg_video_test_runtime(node_cls)
+            original_popen = module_globals["subprocess"].Popen
+            original_run = module_globals["subprocess"].run
+            original_find_ffmpeg = module_globals["_find_ffmpeg"]
+            frames = [module_globals["torch"].zeros((2, 2, 3))]
+            audio = {
+                "waveform": module_globals["torch"].zeros((1, 2, 4)),
+                "sample_rate": 44100,
+            }
+
+            class FakeProcess:
+                def __init__(self, command, **_kwargs):
+                    self.stdin = types.SimpleNamespace(write=lambda _data: None, close=lambda: None)
+                    self.stderr = types.SimpleNamespace(read=lambda: b"")
+                    Path(command[-1]).write_bytes(b"silent video")
+
+                def wait(self):
+                    return 0
+
+            def fake_run(command, **_kwargs):
+                Path(command[-1]).write_bytes(b"muxed video")
+                return types.SimpleNamespace(returncode=0, stderr=b"")
+
+            module_globals["_find_ffmpeg"] = lambda: "ffmpeg"
+            module_globals["subprocess"].Popen = FakeProcess
+            module_globals["subprocess"].run = fake_run
+            try:
+                output_files = node_cls._save_ffmpeg_video(
+                    frames=frames,
+                    audio=audio,
+                    save_dir=tmpdir,
+                    filename_prefix="video",
+                    counter=1,
+                    frame_rate=24.0,
+                    loop_count=0,
+                    format_ext="h264-mp4",
+                    save_output=True,
+                    format_kwargs={},
+                )
+            finally:
+                module_globals["subprocess"].Popen = original_popen
+                module_globals["subprocess"].run = original_run
+                module_globals["_find_ffmpeg"] = original_find_ffmpeg
+
+            self.assertEqual(output_files, [os.path.join(tmpdir, "video_00001.mp4")])
+            self.assertEqual(Path(output_files[0]).read_bytes(), b"muxed video")
+            self.assertFalse(any("-audio" in path.name for path in Path(tmpdir).iterdir()))
+            self.assertFalse(any(".audio_mux." in path.name for path in Path(tmpdir).iterdir()))
+
+    def test_save_video_without_audio_does_not_call_mux_run(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        node_cls = extension_module.SaveVideoAdvanced
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            module_globals = self._configure_ffmpeg_video_test_runtime(node_cls)
+            original_popen = module_globals["subprocess"].Popen
+            original_run = module_globals["subprocess"].run
+            original_find_ffmpeg = module_globals["_find_ffmpeg"]
+            frames = [module_globals["torch"].zeros((2, 2, 3))]
+
+            class FakeProcess:
+                def __init__(self, command, **_kwargs):
+                    self.stdin = types.SimpleNamespace(write=lambda _data: None, close=lambda: None)
+                    self.stderr = types.SimpleNamespace(read=lambda: b"")
+                    Path(command[-1]).write_bytes(b"silent video")
+
+                def wait(self):
+                    return 0
+
+            def fake_run(*_args, **_kwargs):
+                raise AssertionError("audio mux should not run without audio")
+
+            module_globals["_find_ffmpeg"] = lambda: "ffmpeg"
+            module_globals["subprocess"].Popen = FakeProcess
+            module_globals["subprocess"].run = fake_run
+            try:
+                output_files = node_cls._save_ffmpeg_video(
+                    frames=frames,
+                    audio=None,
+                    save_dir=tmpdir,
+                    filename_prefix="video",
+                    counter=1,
+                    frame_rate=24.0,
+                    loop_count=0,
+                    format_ext="h264-mp4",
+                    save_output=True,
+                    format_kwargs={},
+                )
+            finally:
+                module_globals["subprocess"].Popen = original_popen
+                module_globals["subprocess"].run = original_run
+                module_globals["_find_ffmpeg"] = original_find_ffmpeg
+
+            self.assertEqual(output_files, [os.path.join(tmpdir, "video_00001.mp4")])
+            self.assertEqual(Path(output_files[0]).read_bytes(), b"silent video")
+
+    def test_save_video_audio_mux_failure_cleans_temp_file(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        node_cls = extension_module.SaveVideoAdvanced
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            module_globals = self._configure_ffmpeg_video_test_runtime(node_cls)
+            original_popen = module_globals["subprocess"].Popen
+            original_run = module_globals["subprocess"].run
+            original_find_ffmpeg = module_globals["_find_ffmpeg"]
+            frames = [module_globals["torch"].zeros((2, 2, 3))]
+            audio = {
+                "waveform": module_globals["torch"].zeros((1, 2, 4)),
+                "sample_rate": 44100,
+            }
+
+            class FakeProcess:
+                def __init__(self, command, **_kwargs):
+                    self.stdin = types.SimpleNamespace(write=lambda _data: None, close=lambda: None)
+                    self.stderr = types.SimpleNamespace(read=lambda: b"")
+                    Path(command[-1]).write_bytes(b"silent video")
+
+                def wait(self):
+                    return 0
+
+            def fake_run(command, **_kwargs):
+                Path(command[-1]).write_bytes(b"partial mux")
+                return types.SimpleNamespace(returncode=1, stderr=b"bad mux")
+
+            module_globals["_find_ffmpeg"] = lambda: "ffmpeg"
+            module_globals["subprocess"].Popen = FakeProcess
+            module_globals["subprocess"].run = fake_run
+            try:
+                with self.assertRaisesRegex(RuntimeError, "bad mux"):
+                    node_cls._save_ffmpeg_video(
+                        frames=frames,
+                        audio=audio,
+                        save_dir=tmpdir,
+                        filename_prefix="video",
+                        counter=1,
+                        frame_rate=24.0,
+                        loop_count=0,
+                        format_ext="h264-mp4",
+                        save_output=True,
+                        format_kwargs={},
+                    )
+            finally:
+                module_globals["subprocess"].Popen = original_popen
+                module_globals["subprocess"].run = original_run
+                module_globals["_find_ffmpeg"] = original_find_ffmpeg
+
+            self.assertEqual((Path(tmpdir) / "video_00001.mp4").read_bytes(), b"silent video")
+            self.assertFalse(any(".audio_mux." in path.name for path in Path(tmpdir).iterdir()))
+
     @staticmethod
     def _configure_private_video_test_runtime(node_cls, tmpdir: str) -> dict:
         module_globals = node_cls.execute.__func__.__globals__
@@ -596,6 +750,12 @@ class NodeSchemaContractTests(unittest.TestCase):
         privacy_globals["CONFIG_DIR"] = Path(tmpdir) / "config"
         privacy_globals["KEY_PATH"] = privacy_globals["CONFIG_DIR"] / "privacy_key.bin"
         return privacy_globals
+
+    @staticmethod
+    def _configure_ffmpeg_video_test_runtime(node_cls) -> dict:
+        module_globals = node_cls.execute.__func__.__globals__
+        module_globals["ProgressBar"] = lambda _total: types.SimpleNamespace(update=lambda _amount: None)
+        return module_globals
 
     @staticmethod
     def _import_node_with_fake_comfy_api():
