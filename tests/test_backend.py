@@ -458,6 +458,64 @@ class NodeSchemaContractTests(unittest.TestCase):
             ]
             self.assertEqual(plain_mp4s, [])
 
+    def test_save_video_private_preview_names_are_unique_per_node(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        node_cls = extension_module.SaveVideoAdvanced
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            privacy_globals = self._configure_private_video_test_runtime(node_cls, tmpdir)
+            module_globals = node_cls.execute.__func__.__globals__
+            safe_node_id = module_globals["_safe_node_id"]
+            original_save_video = node_cls.__dict__["_save_video"]
+            original_hidden = getattr(node_cls, "hidden", None)
+
+            def fake_save_video(cls, frames, audio, save_dir, filename_prefix, counter, **_kwargs):
+                output_path = os.path.join(save_dir, f"{filename_prefix}_{counter:05}.mp4")
+                with open(output_path, "wb") as stream:
+                    stream.write(f"preview for {cls._node_id()}".encode("utf-8"))
+                return [output_path]
+
+            node_cls._save_video = classmethod(fake_save_video)
+            node_cls.state["previews"].clear()
+            records = []
+            node_ids = ["raw output", "upscaled/2", "interpolate:3"]
+            try:
+                for node_id in node_ids:
+                    node_cls.hidden = types.SimpleNamespace(unique_id=node_id)
+                    result = node_cls.execute(
+                        images=["frame"],
+                        filename_prefix="video",
+                        save_output=False,
+                        privacy_mode=True,
+                    )
+                    records.append(result.kwargs["ui"].values[0])
+            finally:
+                node_cls._save_video = original_save_video
+                node_cls.hidden = original_hidden
+
+            filenames = [record["filename"] for record in records]
+            token_paths = []
+            for node_id, record in zip(node_ids, records):
+                payload = privacy_globals["verify_media_token"](record["token"])
+                encrypted_path = Path(payload["path"])
+                token_paths.append(payload["path"])
+
+                self.assertTrue(payload["encrypted"])
+                self.assertTrue(record["filename"].startswith(f"video_{safe_node_id(node_id)}_"))
+                self.assertTrue(record["filename"].endswith(".mp4"))
+                self.assertEqual(
+                    privacy_globals["decrypt_bytes"](encrypted_path.read_bytes()),
+                    f"preview for {node_id}".encode("utf-8"),
+                )
+
+            self.assertEqual(len(set(filenames)), len(filenames))
+            self.assertEqual(len(set(token_paths)), len(token_paths))
+            plain_mp4s = [
+                path for path in Path(tmpdir).rglob("*.mp4")
+                if "helto_private" not in path.parts
+            ]
+            self.assertEqual(plain_mp4s, [])
+
     def test_save_video_private_saved_output_keeps_filenames_but_encrypts_preview(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()
         node_cls = extension_module.SaveVideoAdvanced

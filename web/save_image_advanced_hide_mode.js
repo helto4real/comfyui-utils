@@ -1,5 +1,10 @@
 import { app } from "/scripts/app.js";
 import { api } from "/scripts/api.js";
+import {
+    previewKeysForNode,
+    runWithPreviewPriming,
+    storeOutputForPreviewKeys,
+} from "./hide_mode_helpers.js";
 
 const NODE_CLASSES = new Map([
     ["HeltoSaveImageAdvanced", "Save Image Advanced"],
@@ -144,15 +149,6 @@ function privatePreviewUrls(output) {
         return [];
     }
     return output.images.map(privateRecordToUrl).filter(Boolean);
-}
-
-function previewKeysForNode(node) {
-    const keys = [String(node.id)];
-    const graphId = node.graph?.id;
-    if (graphId && !node.graph?.isRootGraph) {
-        keys.push(`${graphId}:${node.id}`);
-    }
-    return keys;
 }
 
 function syncPrivatePreviewUrls(node, output) {
@@ -1495,6 +1491,7 @@ function scheduleHideModeSync(node) {
     requestAnimationFrame(() => syncHideOutputImages(node, { force: true }));
     setTimeout(() => syncHideOutputImages(node, { force: true }), 100);
     setTimeout(() => syncHideOutputImages(node, { force: true }), 500);
+    setTimeout(() => syncHideOutputImages(node, { force: true }), 1000);
 }
 
 function refreshRestoredVueOutput(node, { force = false } = {}) {
@@ -1667,9 +1664,10 @@ function setupVideoHideMode(node) {
 
     const originalOnExecuted = node.onExecuted;
     node.onExecuted = function (output, ...args) {
+        storeOutputForPreviewKeys(app, this, output);
         syncPrivatePreviewUrls(this, output);
         ensureVideoPreviewMediaType(this);
-        const result = originalOnExecuted?.call(this, output, ...args);
+        const result = runWithPreviewPriming(this, () => originalOnExecuted?.call(this, output, ...args));
         scheduleHideModeSync(this);
         return result;
     };

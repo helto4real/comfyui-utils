@@ -21,6 +21,11 @@ import {
     normalizeFilterPath,
     sortImagesInPlace,
 } from "../../web/state.js";
+import {
+    previewKeysForNode,
+    runWithPreviewPriming,
+    storeOutputForPreviewKeys,
+} from "../../web/hide_mode_helpers.js";
 
 function appWithSettings(settings) {
     return {
@@ -178,6 +183,43 @@ test("legacy and Vue sizing helpers keep current height floors", () => {
         window: {},
         getComputedStyle: () => ({ getPropertyValue: () => "" }),
     }), 404);
+});
+
+test("hide mode helpers store outputs for node and graph preview keys", () => {
+    const app = {};
+    const output = { images: [{ filename: "preview.mp4" }], animated: [true] };
+    const node = { id: 12, graph: { id: "subgraph", isRootGraph: false } };
+
+    assert.deepEqual(previewKeysForNode(node), ["12", "subgraph:12"]);
+
+    storeOutputForPreviewKeys(app, node, output);
+
+    assert.equal(app.nodeOutputs["12"], output);
+    assert.equal(app.nodeOutputs["subgraph:12"], output);
+});
+
+test("hide mode helpers prime native preview execution then restore hidden state", () => {
+    const node = { hideOutputImages: true };
+    let observedDuringExecution = null;
+
+    const result = runWithPreviewPriming(node, () => {
+        observedDuringExecution = node.hideOutputImages;
+        return "created";
+    });
+
+    assert.equal(result, "created");
+    assert.equal(observedDuringExecution, false);
+    assert.equal(node.hideOutputImages, true);
+});
+
+test("hide mode helpers remove temporary hidden state when none existed", () => {
+    const node = {};
+
+    runWithPreviewPriming(node, () => {
+        assert.equal(node.hideOutputImages, false);
+    });
+
+    assert.equal(Object.hasOwn(node, "hideOutputImages"), false);
 });
 
 test("layout controller does not expose size callbacks during ambiguous Vue mount", () => {

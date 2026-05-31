@@ -106,6 +106,12 @@ _FALLBACK_FORMATS: dict[str, dict[str, Any]] = {
 }
 
 
+def _safe_node_id(value: Any) -> str:
+    if value is None:
+        return "default"
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value))[:80] or "default"
+
+
 def _tensor_to_int(tensor: torch.Tensor, bits: int) -> np.ndarray:
     array = tensor.detach().cpu().numpy() * (2**bits - 1) + 0.5
     return np.clip(array, 0, (2**bits - 1))
@@ -856,11 +862,12 @@ class SaveVideoAdvanced(io.ComfyNode):
     @classmethod
     def _private_preview_record(cls, path: str) -> dict[str, Any]:
         encrypted_path = write_encrypted_temp_file(path, "save_video_advanced")
+        preview_filename = f"video_{_safe_node_id(cls._node_id())}_{uuid.uuid4().hex}{Path(path).suffix or '.bin'}"
         return private_media_record(
             encrypted_path,
             content_type=content_type_for_path(path),
             encrypted=True,
-            filename=os.path.basename(path),
+            filename=preview_filename,
         )
 
     @classmethod
