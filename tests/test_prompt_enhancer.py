@@ -12,6 +12,7 @@ import torch
 
 from shared.prompt_enhancer.provider import (
     DEFAULT_OLLAMA_URL,
+    IMAGE_SYSTEM_PROMPT,
     MAX_PROMPT_IMAGES,
     OllamaPromptProvider,
     PromptEnhancerRequest,
@@ -33,7 +34,9 @@ class PromptEnhancerProviderTests(unittest.TestCase):
         video_prompt = build_system_prompt("video", has_video=True)
         multi_prompt = build_system_prompt("multi scene video", has_audio=True)
 
-        self.assertIn("single high-quality image", image_prompt)
+        self.assertEqual(image_prompt, IMAGE_SYSTEM_PROMPT)
+        self.assertIn("expert prompt enhancer for ComfyUI image generation workflows", image_prompt)
+        self.assertIn("Only output the prompt itself.", image_prompt)
         self.assertIn("video generation prompt", video_prompt)
         self.assertIn("does not send video bytes", video_prompt)
         self.assertIn("multi-scene video prompt", multi_prompt)
