@@ -1,6 +1,7 @@
 import { app } from "../../scripts/app.js";
 
 import { selectorApi } from "./api.js";
+import { STOP_EVENTS } from "./constants.js";
 import { getCanvasRendererLayoutMode, getGraphRendererMode } from "./layout.js";
 import { collapseHiddenWidgetLayout, containPointerEvents, setWidgetHeight } from "./ui.js";
 import {
@@ -28,6 +29,8 @@ const RESIZE_PATCHED_KEY = "__heltoPrivacyShowAnyResizePatched";
 const SIZE_SYNC_PATCHED_KEY = "__heltoPrivacyShowAnySizeSyncPatched";
 const CANVAS_INTERACTION_PATCHED_KEY = "__heltoPrivacyShowAnyCanvasInteractionPatched";
 const DOM_LAYOUT_STATE_KEY = "__heltoPrivacyShowAnyDomLayoutState";
+const STATE_WIDGET_KEY = "__heltoPrivacyShowAnyStateWidget";
+const SERIALIZATION_PATCHED_KEY = "__heltoPrivacyShowAnySerializationPatched";
 
 ensureStylesheet();
 
@@ -191,6 +194,34 @@ function normalizeWheelDelta(event) {
         return -event.wheelDelta;
     }
     return 0;
+}
+
+function consumeDomEvent(event, preventDefault = false) {
+    if (preventDefault) {
+        event.preventDefault();
+    }
+    event.stopPropagation();
+    event.stopImmediatePropagation?.();
+}
+
+function installDomEventGuard(element, {
+    preventDefault = () => false,
+    shouldHandle = () => true,
+    onClick = null,
+} = {}) {
+    if (!element) return;
+
+    for (const eventName of STOP_EVENTS) {
+        const consume = (event) => {
+            if (!shouldHandle(event)) return;
+            if (event.type === "click") {
+                onClick?.(event);
+            }
+            consumeDomEvent(event, preventDefault(event));
+        };
+        element.addEventListener(eventName, consume, true);
+        element.addEventListener(eventName, consume);
+    }
 }
 
 class PrivacyShowAnyCanvasWidget {
@@ -467,6 +498,24 @@ function createDisplayElement(node) {
     panel.appendChild(textarea);
     frame.appendChild(panel);
 
+    installDomEventGuard(panel, {
+        preventDefault: (event) => event.type === "contextmenu",
+        shouldHandle: (event) => !copyButton.contains(event.target),
+    });
+    installDomEventGuard(textarea);
+
+    const copyCurrentText = () => {
+        copyText(node[DISPLAY_TEXT_KEY] || "", textarea).then((ok) => {
+            status.textContent = ok ? "Copied" : "Copy failed";
+            window.setTimeout(() => updateStatus(status, node[DISPLAY_TEXT_KEY] || ""), 900);
+        });
+    };
+
+    installDomEventGuard(copyButton, {
+        preventDefault: () => true,
+        onClick: copyCurrentText,
+    });
+
     const display = {
         node,
         frame,
@@ -485,15 +534,6 @@ function createDisplayElement(node) {
         display.textRevealed = false;
         syncDisplayTextVisibility(display);
     });
-
-    copyButton.onclick = (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        copyText(node[DISPLAY_TEXT_KEY] || "", textarea).then((ok) => {
-            status.textContent = ok ? "Copied" : "Copy failed";
-            window.setTimeout(() => updateStatus(status, node[DISPLAY_TEXT_KEY] || ""), 900);
-        });
-    };
 
     syncDisplayTextVisibility(display);
     return display;
@@ -535,6 +575,23 @@ function updateStatus(status, text) {
     status.textContent = length ? `${length.toLocaleString()} chars` : "No text";
 }
 
+function getStateWidget(node) {
+    const widget = getWidget(node, PRIVACY_SHOW_ANY_STATE_WIDGET) ?? node?.[STATE_WIDGET_KEY] ?? null;
+    if (widget) {
+        node[STATE_WIDGET_KEY] = widget;
+    }
+    return widget;
+}
+
+function detachStateWidgetFromInteractiveList(node, stateWidget) {
+    if (!stateWidget || !Array.isArray(node?.widgets)) return;
+
+    const index = node.widgets.indexOf(stateWidget);
+    if (index >= 0) {
+        node.widgets.splice(index, 1);
+    }
+}
+
 function syncDisplayTextVisibility(display) {
     if (!display?.textarea) return;
 
@@ -559,7 +616,7 @@ function setDisplayText(node, text, persist = true) {
 }
 
 async function persistEncryptedState(node, text) {
-    const stateWidget = getWidget(node, PRIVACY_SHOW_ANY_STATE_WIDGET);
+    const stateWidget = getStateWidget(node);
     if (!stateWidget) return "";
     try {
         stateWidget.value = await encryptTextState(text, selectorApi);
@@ -571,7 +628,7 @@ async function persistEncryptedState(node, text) {
 }
 
 async function restoreEncryptedState(node) {
-    const stateWidget = getWidget(node, PRIVACY_SHOW_ANY_STATE_WIDGET);
+    const stateWidget = getStateWidget(node);
     const encrypted = stateWidget?.value || "";
     if (!encrypted) {
         setDisplayText(node, "", false);
@@ -587,14 +644,39 @@ async function restoreEncryptedState(node) {
 }
 
 function ensureStateSerialization(node) {
-    const stateWidget = hidePrivacyShowAnyStateWidget(node, collapseHiddenWidgetLayout);
+    const existingStateWidget = getStateWidget(node);
+    const stateWidget = existingStateWidget
+        ? hidePrivacyShowAnyStateWidget({ widgets: [existingStateWidget] }, collapseHiddenWidgetLayout)
+        : hidePrivacyShowAnyStateWidget(node, collapseHiddenWidgetLayout);
     if (!stateWidget) return;
+    node[STATE_WIDGET_KEY] = stateWidget;
+    stateWidget.serialize = true;
+    stateWidget.options ??= {};
+    stateWidget.options.serialize = true;
+    stateWidget.options.hidden = true;
     stateWidget.serializeValue = async () => {
         if (node[ENCRYPT_PROMISE_KEY]) {
             await node[ENCRYPT_PROMISE_KEY];
         }
         return serializedEncryptedWidgetValue(stateWidget);
     };
+    detachStateWidgetFromInteractiveList(node, stateWidget);
+}
+
+function installPrivacyShowAnySerialization(node) {
+    if (node[SERIALIZATION_PATCHED_KEY]) return;
+    const originalOnSerialize = node.onSerialize;
+
+    node.onSerialize = function (info) {
+        const result = originalOnSerialize?.apply(this, arguments);
+        const stateWidget = getStateWidget(this);
+        if (info && stateWidget) {
+            info.widgets_values = [serializedEncryptedWidgetValue(stateWidget)];
+        }
+        return result;
+    };
+
+    node[SERIALIZATION_PATCHED_KEY] = true;
 }
 
 function rendererMode() {
@@ -896,6 +978,7 @@ function getCurrentPrivacyShowAnyHeight(node, domWidget, display) {
 
 function ensurePrivacyShowAnyUi(node) {
     ensureStateSerialization(node);
+    installPrivacyShowAnySerialization(node);
     if (node.inputs) {
         node.inputs = node.inputs.filter((input) => input.name !== PRIVACY_SHOW_ANY_STATE_WIDGET);
     }
