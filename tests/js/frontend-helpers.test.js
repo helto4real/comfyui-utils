@@ -27,9 +27,12 @@ import {
     storeOutputForPreviewKeys,
 } from "../../web/hide_mode_helpers.js";
 import {
+    fetchSystemPrompt,
     hideSerializedSettingsWidgets,
     modelOptionsWithCurrentValue,
     readPromptEnhancerSettings,
+    resetSystemPrompt,
+    saveSystemPrompt,
     setGenerateNewEachPrompt,
     setNewFixedPromptSeed,
     updateModelOptions,
@@ -52,6 +55,15 @@ function documentWithVueNode(found = false) {
     return {
         querySelector(selector) {
             return selector === ".lg-node" && found ? {} : null;
+        },
+    };
+}
+
+function jsonResponse(payload, ok = true) {
+    return {
+        ok,
+        async json() {
+            return payload;
         },
     };
 }
@@ -390,6 +402,64 @@ test("prompt enhancer model selector mirrors hidden serialized model", () => {
     assert.equal(modelWidget.value, "c");
     assert.equal(selectorWidget.value, "c");
     assert.deepEqual(callbacks, ["c"]);
+});
+
+test("prompt enhancer system prompt helpers fetch save and reset prompts", async () => {
+    const calls = [];
+    const fetchImpl = async (url, options = {}) => {
+        calls.push({ url, options });
+        if (url.startsWith("/helto_prompt_enhancer/system_prompt?")) {
+            return jsonResponse({
+                kind: "image",
+                prompt: "active",
+                default_prompt: "default",
+                is_default: false,
+            });
+        }
+        if (url === "/helto_prompt_enhancer/system_prompt") {
+            return jsonResponse({
+                kind: "image",
+                prompt: JSON.parse(options.body).prompt,
+                default_prompt: "default",
+                is_default: false,
+            });
+        }
+        if (url === "/helto_prompt_enhancer/system_prompt/reset") {
+            return jsonResponse({
+                kind: "image",
+                prompt: "default",
+                default_prompt: "default",
+                is_default: true,
+            });
+        }
+        return jsonResponse({ error: "unexpected" }, false);
+    };
+
+    assert.deepEqual(await fetchSystemPrompt("image", fetchImpl), {
+        kind: "image",
+        prompt: "active",
+        default_prompt: "default",
+        is_default: false,
+    });
+    assert.deepEqual(await saveSystemPrompt("image", "edited", fetchImpl), {
+        kind: "image",
+        prompt: "edited",
+        default_prompt: "default",
+        is_default: false,
+    });
+    assert.deepEqual(await resetSystemPrompt("image", fetchImpl), {
+        kind: "image",
+        prompt: "default",
+        default_prompt: "default",
+        is_default: true,
+    });
+
+    assert.equal(calls[0].url, "/helto_prompt_enhancer/system_prompt?kind=image");
+    assert.equal(calls[1].url, "/helto_prompt_enhancer/system_prompt");
+    assert.equal(calls[1].options.method, "POST");
+    assert.deepEqual(JSON.parse(calls[1].options.body), { kind: "image", prompt: "edited" });
+    assert.equal(calls[2].url, "/helto_prompt_enhancer/system_prompt/reset");
+    assert.deepEqual(JSON.parse(calls[2].options.body), { kind: "image" });
 });
 
 test("prompt enhancer hides serialized model and settings widgets", () => {

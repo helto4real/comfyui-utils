@@ -4,9 +4,12 @@ import { collapseHiddenWidgetLayout, createModal } from "./ui.js";
 import {
     PROMPT_ENHANCER_NODE_CLASS,
     getWidget,
+    fetchSystemPrompt,
     hideSerializedSettingsWidgets,
     keepFixedPromptSeed,
     readPromptEnhancerSettings,
+    resetSystemPrompt,
+    saveSystemPrompt,
     setGenerateNewEachPrompt,
     setNewFixedPromptSeed,
     updateModelOptions,
@@ -112,6 +115,45 @@ function settingsSection(title, rows) {
     `;
 }
 
+function promptKindLabel(kind) {
+    return kind === "image" ? "image" : "video";
+}
+
+async function openSystemPromptEditor(kind) {
+    const label = promptKindLabel(kind);
+    const data = await fetchSystemPrompt(kind);
+    const content = `
+        <textarea class="helto-prompt-enhancer-textarea" id="helto-pe-system-prompt-editor">${escapeHtml(data.prompt || "")}</textarea>
+    `;
+    const modal = createModal(`Edit ${label} system prompt`, content, async (body) => {
+        await saveSystemPrompt(kind, body.querySelector("#helto-pe-system-prompt-editor").value);
+        return true;
+    }, {
+        actionText: "Save",
+        cardClass: "helto-prompt-enhancer-editor-card",
+        bodyClass: "helto-prompt-enhancer-editor-body",
+    });
+
+    const resetButton = document.createElement("button");
+    resetButton.className = "helto-modal-btn btn-secondary";
+    resetButton.innerText = "Reset to default";
+    resetButton.onclick = async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        resetButton.disabled = true;
+        try {
+            const resetData = await resetSystemPrompt(kind);
+            modal.body.querySelector("#helto-pe-system-prompt-editor").value = resetData.prompt || resetData.default_prompt || "";
+        } catch (err) {
+            console.error("Prompt enhancer system prompt reset failed:", err);
+            alert(err.message || "Reset failed.");
+        } finally {
+            resetButton.disabled = false;
+        }
+    };
+    modal.footer.insertBefore(resetButton, modal.actionBtn);
+}
+
 function openSettingsModal(node) {
     const settings = readPromptEnhancerSettings(node);
     const hideChecked = settings.hideMode ? "checked" : "";
@@ -141,6 +183,12 @@ function openSettingsModal(node) {
                     <input type="checkbox" id="helto-pe-privacy-mode" ${privacyChecked}>
                     <span class="helto-switch-slider"></span>
                 </label>
+            </div>
+        `)}
+        ${settingsSection("System prompts", `
+            <div class="settings-modal-row helto-prompt-enhancer-prompt-actions">
+                <button type="button" class="helto-modal-btn btn-secondary" id="helto-pe-edit-image-prompt">edit image system prompt</button>
+                <button type="button" class="helto-modal-btn btn-secondary" id="helto-pe-edit-video-prompt">edit video system prompt</button>
             </div>
         `)}
         ${settingsSection("Ollama settings", `
@@ -173,7 +221,7 @@ function openSettingsModal(node) {
         `)}
     `;
 
-    createModal("Prompt enhancer settings", content, async (body) => {
+    const modal = createModal("Prompt enhancer settings", content, async (body) => {
         writePromptEnhancerSettings(node, {
             hideMode: body.querySelector("#helto-pe-hide-mode").checked,
             privacyMode: body.querySelector("#helto-pe-privacy-mode").checked,
@@ -185,6 +233,23 @@ function openSettingsModal(node) {
         await refreshModels(node);
         return true;
     });
+
+    modal.body.querySelector("#helto-pe-edit-image-prompt").onclick = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openSystemPromptEditor("image").catch((err) => {
+            console.error("Prompt enhancer image prompt editor failed:", err);
+            alert(err.message || "Failed to open system prompt editor.");
+        });
+    };
+    modal.body.querySelector("#helto-pe-edit-video-prompt").onclick = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openSystemPromptEditor("video").catch((err) => {
+            console.error("Prompt enhancer video prompt editor failed:", err);
+            alert(err.message || "Failed to open system prompt editor.");
+        });
+    };
 }
 
 function escapeHtml(value) {

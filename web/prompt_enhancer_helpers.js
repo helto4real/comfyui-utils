@@ -86,6 +86,41 @@ export function updateModelOptions(selectorWidget, modelWidget, models) {
     return true;
 }
 
+async function parsePromptEnhancerResponse(response, fallbackMessage) {
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+        throw new Error(data.error || fallbackMessage);
+    }
+    return data;
+}
+
+export async function fetchSystemPrompt(kind, fetchImpl = fetch) {
+    const query = new URLSearchParams({ kind: String(kind || "") });
+    const response = await fetchImpl(`/helto_prompt_enhancer/system_prompt?${query.toString()}`);
+    return parsePromptEnhancerResponse(response, "Failed to load system prompt.");
+}
+
+export async function saveSystemPrompt(kind, prompt, fetchImpl = fetch) {
+    const response = await fetchImpl("/helto_prompt_enhancer/system_prompt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            kind,
+            prompt,
+        }),
+    });
+    return parsePromptEnhancerResponse(response, "Failed to save system prompt.");
+}
+
+export async function resetSystemPrompt(kind, fetchImpl = fetch) {
+    const response = await fetchImpl("/helto_prompt_enhancer/system_prompt/reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind }),
+    });
+    return parsePromptEnhancerResponse(response, "Failed to reset system prompt.");
+}
+
 export function hideSerializedSettingsWidgets(node, collapseWidgetLayout) {
     for (const name of HIDDEN_WIDGET_NAMES) {
         const widget = getWidget(node, name);

@@ -4,12 +4,15 @@ import asyncio
 import importlib
 import random
 import sys
+import tempfile
 import types
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import torch
 
+from shared.prompt_enhancer import prompts
 from shared.prompt_enhancer.provider import (
     DEFAULT_OLLAMA_URL,
     IMAGE_SYSTEM_PROMPT,
@@ -42,6 +45,52 @@ class PromptEnhancerProviderTests(unittest.TestCase):
         self.assertIn("does not send video bytes", video_prompt)
         self.assertIn("multi-scene video prompt", multi_prompt)
         self.assertIn("does not send audio bytes", multi_prompt)
+
+    def test_system_prompt_override_and_reset_uses_user_config(self):
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(prompts, "USER_PROMPT_DIR", Path(tmpdir)):
+            self.assertEqual(prompts.load_system_prompt("image"), IMAGE_SYSTEM_PROMPT)
+            default_payload = prompts.system_prompt_payload("image")
+            self.assertEqual(default_payload["prompt"], IMAGE_SYSTEM_PROMPT)
+            self.assertTrue(default_payload["is_default"])
+
+            saved_payload = prompts.save_system_prompt("image", "custom image prompt")
+
+            self.assertEqual(saved_payload["prompt"], "custom image prompt")
+            self.assertFalse(saved_payload["is_default"])
+            self.assertEqual(build_system_prompt("image"), "custom image prompt")
+            self.assertTrue(prompts.user_prompt_path("image").exists())
+
+            reset_payload = prompts.reset_system_prompt("image")
+
+            self.assertEqual(reset_payload["prompt"], IMAGE_SYSTEM_PROMPT)
+            self.assertTrue(reset_payload["is_default"])
+            self.assertFalse(prompts.user_prompt_path("image").exists())
+
+    def test_video_system_prompt_template_is_editable_and_falls_back_on_invalid_placeholders(self):
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(prompts, "USER_PROMPT_DIR", Path(tmpdir)):
+            prompts.save_system_prompt("video", "Custom video: {focus}. Note: {media_note}")
+
+            video_prompt = build_system_prompt("video", has_video=True)
+            multi_prompt = build_system_prompt("multi scene video", has_audio=True)
+
+            self.assertIn("Custom video: a concise video generation prompt", video_prompt)
+            self.assertIn("does not send video bytes", video_prompt)
+            self.assertIn("Custom video: a multi-scene video prompt", multi_prompt)
+            self.assertIn("does not send audio bytes", multi_prompt)
+
+            prompts.save_system_prompt("video", "Broken {missing}")
+
+            fallback_prompt = build_system_prompt("video")
+
+            self.assertIn("a concise video generation prompt", fallback_prompt)
+            self.assertNotIn("Broken", fallback_prompt)
+
+    def test_system_prompt_save_rejects_blank_or_unknown_kind(self):
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(prompts, "USER_PROMPT_DIR", Path(tmpdir)):
+            with self.assertRaisesRegex(ValueError, "blank"):
+                prompts.save_system_prompt("image", "   ")
+            with self.assertRaisesRegex(ValueError, "Unknown"):
+                prompts.system_prompt_payload("audio")
 
     def test_image_encoding_samples_at_most_eight_pngs(self):
         images = torch.zeros((12, 4, 4, 3), dtype=torch.float32)
@@ -180,6 +229,33 @@ class PromptEnhancerRouteTests(unittest.TestCase):
         self.assertEqual(response.status, 400)
         self.assertIn('"error": "offline"', response.text)
         self.assertIn('"models": []', response.text)
+
+    def test_system_prompt_routes_get_save_and_reset(self):
+        routes = importlib.import_module("shared.prompt_enhancer.routes")
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(prompts, "USER_PROMPT_DIR", Path(tmpdir)):
+            get_response = asyncio.run(routes._request_system_prompt("image"))
+            save_response = asyncio.run(routes._save_system_prompt({"kind": "image", "prompt": "route custom prompt"}))
+            reset_response = asyncio.run(routes._reset_system_prompt({"kind": "image"}))
+
+        self.assertEqual(get_response.status, 200)
+        self.assertIn('"is_default": true', get_response.text)
+        self.assertEqual(save_response.status, 200)
+        self.assertIn('"prompt": "route custom prompt"', save_response.text)
+        self.assertIn('"is_default": false', save_response.text)
+        self.assertEqual(reset_response.status, 200)
+        self.assertIn('"is_default": true', reset_response.text)
+
+    def test_system_prompt_routes_return_errors(self):
+        routes = importlib.import_module("shared.prompt_enhancer.routes")
+
+        blank_response = asyncio.run(routes._save_system_prompt({"kind": "image", "prompt": " "}))
+        unknown_response = asyncio.run(routes._request_system_prompt("audio"))
+
+        self.assertEqual(blank_response.status, 400)
+        self.assertIn("System prompt cannot be blank", blank_response.text)
+        self.assertEqual(unknown_response.status, 400)
+        self.assertIn("Unknown system prompt kind", unknown_response.text)
 
 
 def json_dumps(payload):

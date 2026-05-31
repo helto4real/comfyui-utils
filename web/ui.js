@@ -37,7 +37,7 @@ export function createModal(titleText, contentHTML, onSave = null, options = {})
     overlay.className = "helto-modal-overlay";
 
     const card = document.createElement("div");
-    card.className = "helto-modal-card";
+    card.className = `helto-modal-card ${options.cardClass || ""}`.trim();
 
     const header = document.createElement("div");
     header.className = "helto-modal-header";
@@ -55,7 +55,7 @@ export function createModal(titleText, contentHTML, onSave = null, options = {})
     card.appendChild(header);
 
     const body = document.createElement("div");
-    body.className = "helto-modal-body";
+    body.className = `helto-modal-body ${options.bodyClass || ""}`.trim();
     body.innerHTML = contentHTML;
     card.appendChild(body);
 
@@ -118,5 +118,13 @@ export function createModal(titleText, contentHTML, onSave = null, options = {})
         if (e.target === overlay) destroy();
     };
 
-    return { body, destroy };
+    return {
+        overlay,
+        card,
+        body,
+        footer,
+        cancelBtn,
+        actionBtn,
+        destroy,
+    };
 }
