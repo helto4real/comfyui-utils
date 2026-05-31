@@ -419,6 +419,9 @@ class NodeSchemaContractTests(unittest.TestCase):
         display_names = [schema.display_name for schema in schemas]
         self.assertIn("Prompt enhancer", display_names)
         self.assertTrue(all(name.startswith("Helto ") or name == "Prompt enhancer" for name in display_names))
+        prompt_enhancer_schema = next(schema for schema in schemas if schema.node_id == "HeltoPromptEnhancer")
+        prompt_enhancer_model_input = next(input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "model")
+        self.assertEqual(prompt_enhancer_model_input.kwargs["io_kind"], "String")
 
     def test_save_video_private_preview_only_returns_no_plain_filenames(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()
@@ -854,9 +857,18 @@ class NodeSchemaContractTests(unittest.TestCase):
                 output.kwargs = kwargs
                 return output
 
-        class FakeSocket:
-            Input = FakeField
-            Output = FakeField
+        def fake_socket(kind):
+            class FakeInput(FakeField):
+                def __init__(self, id=None, *args, **kwargs):
+                    super().__init__(id, *args, io_kind=kind, **kwargs)
+
+            class FakeOutput(FakeField):
+                def __init__(self, id=None, *args, **kwargs):
+                    super().__init__(id, *args, io_kind=kind, **kwargs)
+
+            return types.SimpleNamespace(Input=FakeInput, Output=FakeOutput)
+
+        FakeSocket = fake_socket("Generic")
 
         class FakeMultiType:
             Input = FakeField
@@ -873,17 +885,17 @@ class NodeSchemaContractTests(unittest.TestCase):
             Schema = FakeSchema
             NodeOutput = FakeNodeOutput
             NumberDisplay = types.SimpleNamespace(number="number")
-            String = FakeSocket
-            Image = FakeSocket
-            Int = FakeSocket
-            Float = FakeSocket
-            Combo = FakeSocket
-            Boolean = FakeSocket
-            Model = FakeSocket
-            Audio = FakeSocket
-            Vae = FakeSocket
-            Latent = FakeSocket
-            Video = FakeSocket
+            String = fake_socket("String")
+            Image = fake_socket("Image")
+            Int = fake_socket("Int")
+            Float = fake_socket("Float")
+            Combo = fake_socket("Combo")
+            Boolean = fake_socket("Boolean")
+            Model = fake_socket("Model")
+            Audio = fake_socket("Audio")
+            Vae = fake_socket("Vae")
+            Latent = fake_socket("Latent")
+            Video = fake_socket("Video")
             MultiType = FakeMultiType
             Hidden = FakeHidden
             FolderType = FakeFolderType

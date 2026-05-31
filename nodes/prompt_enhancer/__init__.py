@@ -41,7 +41,7 @@ class PromptEnhancer(io.ComfyNode):
                     step=1,
                     display_mode=io.NumberDisplay.number,
                 ),
-                io.Combo.Input("model", options=[DEFAULT_OLLAMA_MODEL], default=DEFAULT_OLLAMA_MODEL),
+                io.String.Input("model", default=DEFAULT_OLLAMA_MODEL),
                 io.Combo.Input("prompt_type", options=["image", "video", "multi scene video"], default="image"),
                 io.String.Input(
                     "prompt",

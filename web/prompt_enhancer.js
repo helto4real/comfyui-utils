@@ -16,6 +16,7 @@ import {
 const BUTTONS_ADDED = "__heltoPromptEnhancerButtonsAdded";
 const SETTINGS_BUTTON = "__heltoPromptEnhancerSettingsButton";
 const MODELS_BUTTON = "__heltoPromptEnhancerModelsButton";
+const MODEL_SELECTOR = "__heltoPromptEnhancerModelSelector";
 
 function isPromptEnhancerNode(node) {
     return node?.comfyClass === PROMPT_ENHANCER_NODE_CLASS || node?.constructor?.comfyClass === PROMPT_ENHANCER_NODE_CLASS;
@@ -36,6 +37,29 @@ function addButton(node, key, label, callback) {
         widget.options ??= {};
         widget.options.serialize = false;
         node[key] = widget;
+    }
+    return widget;
+}
+
+function ensureModelSelector(node) {
+    if (node[MODEL_SELECTOR]) {
+        return node[MODEL_SELECTOR];
+    }
+    const modelWidget = getWidget(node, "model");
+    const current = String(modelWidget?.value || "llava:latest").trim() || "llava:latest";
+    const widget = node.addWidget?.("combo", "model selector", current, (value) => {
+        const selected = String(value || "").trim();
+        if (selected && modelWidget) {
+            modelWidget.value = selected;
+            modelWidget.callback?.(selected);
+            setCanvasDirty(node);
+        }
+    }, { values: [current] });
+    if (widget) {
+        widget.serialize = false;
+        widget.options ??= {};
+        widget.options.serialize = false;
+        node[MODEL_SELECTOR] = widget;
     }
     return widget;
 }
@@ -64,7 +88,7 @@ async function refreshModels(node) {
     setCanvasDirty(node);
     try {
         const models = await fetchOllamaModels(node);
-        updateModelOptions(getWidget(node, "model"), models);
+        updateModelOptions(ensureModelSelector(node), getWidget(node, "model"), models);
     } catch (err) {
         console.warn("Prompt enhancer model refresh failed:", err);
         app.extensionManager?.toast?.add?.({
@@ -174,6 +198,7 @@ function ensurePromptEnhancerUi(node) {
         return;
     }
     hideSerializedSettingsWidgets(node, collapseHiddenWidgetLayout);
+    ensureModelSelector(node);
 
     if (node[BUTTONS_ADDED]) {
         return;

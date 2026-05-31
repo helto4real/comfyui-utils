@@ -10,6 +10,11 @@ export const SETTINGS_WIDGET_NAMES = Object.freeze([
     "ollama_timeout",
 ]);
 
+export const HIDDEN_WIDGET_NAMES = Object.freeze([
+    "model",
+    ...SETTINGS_WIDGET_NAMES,
+]);
+
 export function getWidget(node, name) {
     return node?.widgets?.find((widget) => widget?.name === name) ?? null;
 }
@@ -56,22 +61,33 @@ export function writePromptEnhancerSettings(node, settings) {
     setWidgetValue(getWidget(node, "ollama_timeout"), Number(settings.timeout ?? 120));
 }
 
-export function updateModelOptions(modelWidget, models) {
-    if (!modelWidget || !Array.isArray(models) || models.length === 0) {
+export function modelOptionsWithCurrentValue(modelWidget, models) {
+    const current = String(modelWidget?.value || "").trim();
+    const values = Array.isArray(models) ? models.map((model) => String(model || "").trim()).filter(Boolean) : [];
+    const uniqueValues = [...new Set(values)];
+    if (current && !uniqueValues.includes(current)) {
+        uniqueValues.unshift(current);
+    }
+    return uniqueValues;
+}
+
+export function updateModelOptions(selectorWidget, modelWidget, models) {
+    const values = modelOptionsWithCurrentValue(modelWidget, models);
+    if (!selectorWidget || !modelWidget || values.length === 0) {
         return false;
     }
-    modelWidget.options ??= {};
-    modelWidget.options.values = models;
-    const previous = modelWidget.value;
-    if (!models.includes(previous)) {
-        modelWidget.value = models[0];
-        modelWidget.callback?.(modelWidget.value);
+    selectorWidget.options ??= {};
+    selectorWidget.options.values = values;
+    const current = String(modelWidget.value || "").trim();
+    selectorWidget.value = values.includes(current) ? current : values[0];
+    if (!current) {
+        setWidgetValue(modelWidget, selectorWidget.value);
     }
     return true;
 }
 
 export function hideSerializedSettingsWidgets(node, collapseWidgetLayout) {
-    for (const name of SETTINGS_WIDGET_NAMES) {
+    for (const name of HIDDEN_WIDGET_NAMES) {
         const widget = getWidget(node, name);
         if (!widget) continue;
         widget.hidden = true;

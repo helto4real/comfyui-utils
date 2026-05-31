@@ -28,6 +28,7 @@ import {
 } from "../../web/hide_mode_helpers.js";
 import {
     hideSerializedSettingsWidgets,
+    modelOptionsWithCurrentValue,
     readPromptEnhancerSettings,
     setGenerateNewEachPrompt,
     setNewFixedPromptSeed,
@@ -367,20 +368,34 @@ test("prompt enhancer settings read and write serialized widgets", () => {
     });
 });
 
-test("prompt enhancer model options update keeps existing value when possible", () => {
-    const modelWidget = { value: "b", options: { values: ["a"] } };
+test("prompt enhancer model selector mirrors hidden serialized model", () => {
+    const callbacks = [];
+    const modelWidget = {
+        value: "custom:latest",
+        callback(value) {
+            callbacks.push(value);
+        },
+    };
+    const selectorWidget = { value: "", options: { values: [] } };
 
-    assert.equal(updateModelOptions(modelWidget, ["b", "c"]), true);
-    assert.equal(modelWidget.value, "b");
-    assert.deepEqual(modelWidget.options.values, ["b", "c"]);
+    assert.deepEqual(modelOptionsWithCurrentValue(modelWidget, ["b", "c"]), ["custom:latest", "b", "c"]);
+    assert.equal(updateModelOptions(selectorWidget, modelWidget, ["b", "c"]), true);
+    assert.equal(modelWidget.value, "custom:latest");
+    assert.equal(selectorWidget.value, "custom:latest");
+    assert.deepEqual(selectorWidget.options.values, ["custom:latest", "b", "c"]);
+    assert.deepEqual(callbacks, []);
 
-    assert.equal(updateModelOptions(modelWidget, ["c", "d"]), true);
+    modelWidget.value = "";
+    assert.equal(updateModelOptions(selectorWidget, modelWidget, ["c", "d"]), true);
     assert.equal(modelWidget.value, "c");
+    assert.equal(selectorWidget.value, "c");
+    assert.deepEqual(callbacks, ["c"]);
 });
 
-test("prompt enhancer hides serialized settings widgets", () => {
+test("prompt enhancer hides serialized model and settings widgets", () => {
     const node = {
         widgets: [
+            { name: "model" },
             { name: "hide_mode" },
             { name: "privacy_mode" },
             { name: "prompt" },
@@ -393,8 +408,9 @@ test("prompt enhancer hides serialized settings widgets", () => {
     assert.equal(node.widgets[0].hidden, true);
     assert.equal(node.widgets[0].type, "hidden");
     assert.equal(node.widgets[1].hidden, true);
-    assert.equal(node.widgets[2].hidden, undefined);
-    assert.deepEqual(collapsed, ["hide_mode", "privacy_mode"]);
+    assert.equal(node.widgets[2].hidden, true);
+    assert.equal(node.widgets[3].hidden, undefined);
+    assert.deepEqual(collapsed, ["model", "hide_mode", "privacy_mode"]);
 });
 
 test("legacy sizing stays static instead of deriving from current node height", () => {
