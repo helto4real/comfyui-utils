@@ -25,7 +25,7 @@ from shared.prompt_enhancer.provider import (
     ollama_keep_alive,
     resolve_seed,
 )
-from shared.prompt_enhancer.variables import parse_prompt_variables, substitute_prompt_variables
+from shared.prompt_enhancer.variables import decrypt_prompt_text, parse_prompt_variables, substitute_prompt_variables
 from helto_selector_backend.crypto import encrypt_selection
 
 
@@ -212,6 +212,13 @@ class PromptEnhancerProviderTests(unittest.TestCase):
     def test_prompt_variables_ignore_invalid_payloads(self):
         self.assertEqual(parse_prompt_variables("not-json"), [])
         self.assertEqual(substitute_prompt_variables("keep {{style}}", "not-json", 1), "keep {{style}}")
+
+    def test_encrypted_prompt_text_decrypts_and_invalid_values_fail_closed(self):
+        encrypted = encrypt_selection("secret prompt")
+
+        self.assertEqual(decrypt_prompt_text("plain prompt"), "plain prompt")
+        self.assertEqual(decrypt_prompt_text(encrypted), "secret prompt")
+        self.assertEqual(decrypt_prompt_text("__HELTO_ENC__:not-valid"), "")
 
 
 class PromptEnhancerRouteTests(unittest.TestCase):

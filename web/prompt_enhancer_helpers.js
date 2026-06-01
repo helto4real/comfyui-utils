@@ -41,6 +41,50 @@ export function writePromptValue(node, value) {
     setWidgetValue(getWidget(node, "prompt"), String(value ?? ""));
 }
 
+export function serializedPromptValue(node) {
+    return String(getWidget(node, "prompt")?.value || "");
+}
+
+export function isEncryptedText(value) {
+    return String(value || "").startsWith(ENCRYPTED_PREFIX);
+}
+
+export async function decryptPromptText(value, selectorApi) {
+    const serialized = String(value || "");
+    if (!isEncryptedText(serialized)) {
+        return serialized;
+    }
+    const response = await selectorApi.decrypt(serialized);
+    const data = typeof response?.data === "string" ? response.data : "";
+    return data === "[]" ? "" : data;
+}
+
+export async function readPromptText(node, selectorApi) {
+    return decryptPromptText(serializedPromptValue(node), selectorApi);
+}
+
+export async function writePromptText(node, prompt, privacyMode, selectorApi) {
+    const plain = String(prompt ?? "");
+    if (!privacyMode) {
+        writePromptValue(node, plain);
+        return plain;
+    }
+    if (!plain) {
+        writePromptValue(node, "");
+        return "";
+    }
+    if (!isEncryptedText(serializedPromptValue(node))) {
+        writePromptValue(node, "");
+    }
+    const response = await selectorApi.encrypt(plain);
+    const encrypted = String(response?.encrypted || "");
+    if (!isEncryptedText(encrypted)) {
+        throw new Error("Failed to encrypt Prompt enhancer prompt.");
+    }
+    writePromptValue(node, encrypted);
+    return encrypted;
+}
+
 export function serializedPromptVariablesValue(node) {
     return String(getWidget(node, "variables")?.value || "[]");
 }
@@ -171,7 +215,7 @@ export function shouldHidePromptWidget(node, promptHovered = false) {
 }
 
 export function isEncryptedVariables(value) {
-    return String(value || "").startsWith(ENCRYPTED_PREFIX);
+    return isEncryptedText(value);
 }
 
 export function normalizePromptVariables(rawVariables) {
@@ -233,7 +277,7 @@ export async function writePromptVariables(node, variables, privacyMode, selecto
     }
     const response = await selectorApi.encrypt(plainJson);
     const encrypted = String(response?.encrypted || "");
-    if (!encrypted.startsWith(ENCRYPTED_PREFIX)) {
+    if (!isEncryptedText(encrypted)) {
         throw new Error("Failed to encrypt Prompt enhancer variables.");
     }
     setWidgetValue(widget, encrypted);

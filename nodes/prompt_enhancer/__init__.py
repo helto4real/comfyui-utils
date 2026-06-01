@@ -15,6 +15,7 @@ from ...shared.prompt_enhancer import (
     PromptEnhancerRequest,
     PromptEnhancerSettings,
     build_system_prompt,
+    decrypt_prompt_text,
     resolve_seed,
     substitute_prompt_variables,
 )
@@ -98,7 +99,8 @@ class PromptEnhancer(io.ComfyNode):
             keep_alive_unit=ollama_keep_alive_unit or "minutes",
             timeout=max(1, _as_int(ollama_timeout, DEFAULT_OLLAMA_TIMEOUT)),
         )
-        resolved_prompt = substitute_prompt_variables((prompt or "").strip(), variables, resolved_seed)
+        plain_prompt = decrypt_prompt_text(prompt)
+        resolved_prompt = substitute_prompt_variables(plain_prompt.strip(), variables, resolved_seed)
         request = PromptEnhancerRequest(
             model=(model or DEFAULT_OLLAMA_MODEL).strip() or DEFAULT_OLLAMA_MODEL,
             prompt_type=prompt_type or "image",

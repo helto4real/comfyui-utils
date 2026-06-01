@@ -72,6 +72,16 @@ def substitute_prompt_variables(prompt: str, raw_variables: Any, seed: int) -> s
     return VARIABLE_TOKEN_RE.sub(replacement, prompt or "")
 
 
+def decrypt_prompt_text(raw_prompt: Any) -> str:
+    if raw_prompt is None:
+        return ""
+    prompt = str(raw_prompt)
+    if not prompt.startswith(ENC_PREFIX):
+        return prompt
+    decrypted = decrypt_selection(prompt)
+    return "" if decrypted == "[]" else decrypted
+
+
 def _decode_variables_payload(raw_variables: Any) -> Any:
     if raw_variables is None or raw_variables == "":
         return []

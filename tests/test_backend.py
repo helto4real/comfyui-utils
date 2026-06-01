@@ -482,7 +482,7 @@ class NodeSchemaContractTests(unittest.TestCase):
         try:
             result = prompt_node.execute(
                 seed=11,
-                prompt="A {{style}} portrait",
+                prompt=encrypt_selection("A {{style}} portrait"),
                 variables=json.dumps([
                     {"name": "style", "mode": "fixed", "values": ["documentary"], "fixed_index": 0}
                 ]),

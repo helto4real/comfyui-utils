@@ -29,9 +29,11 @@ import {
 import {
     addPromptVariable,
     autocompleteStateForPrompt,
+    decryptPromptText,
     insertVariableSuggestion,
     fetchSystemPrompt,
     hideSerializedSettingsWidgets,
+    isEncryptedText,
     isEncryptedVariables,
     isPointInPromptWidget,
     isPromptHideModeEnabled,
@@ -41,6 +43,7 @@ import {
     parsePromptVariablesJson,
     promptEditorLayout,
     promptWidgetBounds,
+    readPromptText,
     readPromptVariables,
     readPromptEnhancerSettings,
     resetSystemPrompt,
@@ -53,6 +56,7 @@ import {
     shouldHidePromptWidget,
     updatePromptVariable,
     updateModelOptions,
+    writePromptText,
     writePromptVariables,
     writePromptEnhancerSettings,
 } from "../../web/prompt_enhancer_helpers.js";
@@ -68,7 +72,7 @@ import {
     getVuePrivacyShowAnyLayoutHeight,
     getVuePrivacyShowAnyVisualHeight,
     hidePrivacyShowAnyStateWidget,
-    isEncryptedText,
+    isEncryptedText as isPrivacyEncryptedText,
     serializedEncryptedWidgetValue,
 } from "../../web/privacy_show_any_helpers.js";
 
@@ -646,6 +650,49 @@ test("prompt enhancer variable config encrypts only when privacy mode is enabled
     assert.deepEqual(JSON.parse(plain), variables);
 });
 
+test("prompt enhancer prompt config encrypts only when privacy mode is enabled", async () => {
+    let resolveEncryption;
+    const selectorApi = {
+        async encrypt(text) {
+            if (text === "pending secret") {
+                await new Promise((resolve) => {
+                    resolveEncryption = resolve;
+                });
+            }
+            return { encrypted: `__HELTO_ENC__:${Buffer.from(text).toString("base64")}` };
+        },
+        async decrypt(encrypted) {
+            return { data: Buffer.from(encrypted.slice("__HELTO_ENC__:".length), "base64").toString("utf8") };
+        },
+    };
+    const node = {
+        widgets: [
+            { name: "prompt", value: "" },
+        ],
+    };
+    const secret = "secret phrase for workflow search";
+
+    const encrypted = await writePromptText(node, secret, true, selectorApi);
+
+    assert.equal(isEncryptedText(encrypted), true);
+    assert.equal(node.widgets[0].value.includes(secret), false);
+    assert.equal(JSON.stringify([node.widgets[0].value]).includes(secret), false);
+    assert.equal(await readPromptText(node, selectorApi), secret);
+    assert.equal(await decryptPromptText("__HELTO_ENC__:bad", { decrypt: async () => ({ data: "[]" }) }), "");
+
+    const plain = await writePromptText(node, secret, false, selectorApi);
+
+    assert.equal(plain, secret);
+    assert.equal(node.widgets[0].value, secret);
+
+    node.widgets[0].value = "pending secret";
+    const pending = writePromptText(node, "pending secret", true, selectorApi);
+
+    assert.equal(node.widgets[0].value, "");
+    resolveEncryption();
+    assert.equal(isEncryptedText(await pending), true);
+});
+
 test("prompt enhancer detects serialized variable widget changes for autocomplete refresh", () => {
     const node = {
         widgets: [
@@ -717,7 +764,7 @@ test("privacy show any serializes only encrypted text state", async () => {
 
     const encrypted = await encryptTextState("private", selectorApi);
 
-    assert.equal(isEncryptedText(encrypted), true);
+    assert.equal(isPrivacyEncryptedText(encrypted), true);
     assert.equal(await decryptTextState(encrypted, selectorApi), "private");
     assert.equal(serializedEncryptedWidgetValue({ value: encrypted }), encrypted);
     assert.equal(serializedEncryptedWidgetValue({ value: "private" }), "");

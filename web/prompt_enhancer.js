@@ -16,12 +16,13 @@ import {
     PROMPT_EDITOR_HEIGHT,
     PROMPT_EDITOR_WIDGET_NAME,
     promptEditorLayout,
-    readPromptValue,
     readPromptEnhancerSettings,
+    readPromptText,
     readPromptVariables,
     removePromptVariable,
     resetSystemPrompt,
     saveSystemPrompt,
+    serializedPromptValue,
     serializedPromptVariablesValue,
     setGenerateNewEachPrompt,
     setNewFixedPromptSeed,
@@ -30,7 +31,7 @@ import {
     updatePromptVariable,
     updateModelOptions,
     writePromptEnhancerSettings,
-    writePromptValue,
+    writePromptText,
     writePromptVariables,
 } from "./prompt_enhancer_helpers.js";
 
@@ -42,6 +43,7 @@ const MODEL_SELECTOR = "__heltoPromptEnhancerModelSelector";
 const PROMPT_HOVER_STATE = "__heltoPromptEnhancerPromptHover";
 const PROMPT_DOM_ELEMENTS = "__heltoPromptEnhancerPromptDomElements";
 const PROMPT_EDITOR_STATE = "__heltoPromptEnhancerPromptEditor";
+const PROMPT_PRIVACY_SERIALIZATION = "__heltoPromptEnhancerPromptPrivacySerialization";
 
 function isPromptEnhancerNode(node) {
     return node?.comfyClass === PROMPT_ENHANCER_NODE_CLASS || node?.constructor?.comfyClass === PROMPT_ENHANCER_NODE_CLASS;
@@ -151,6 +153,73 @@ async function refreshPromptEditorVariables(node, force = false) {
     return variables;
 }
 
+async function loadPromptEditorText(node, force = false) {
+    const state = getPromptEditorState(node);
+    if (!state) return "";
+    const serializedValue = serializedPromptValue(node);
+    if (!force && serializedValue === state.promptWidgetValue) {
+        return state.promptText;
+    }
+
+    const loadId = (state.promptLoadId ?? 0) + 1;
+    state.promptLoadId = loadId;
+    const text = await readPromptText(node, selectorApi);
+    if (state.promptLoadId !== loadId) {
+        return state.promptText;
+    }
+
+    state.promptText = text;
+    state.promptWidgetValue = serializedValue;
+    if (document.activeElement !== state.textarea && state.textarea.value !== text) {
+        state.textarea.value = text;
+    }
+    if (readPromptEnhancerSettings(node).privacyMode && text && serializedValue === text) {
+        persistPromptEditorText(node, text, true);
+    }
+    return text;
+}
+
+function persistPromptEditorText(node, text, privacyMode = readPromptEnhancerSettings(node).privacyMode) {
+    const state = getPromptEditorState(node);
+    const plain = String(text ?? "");
+    if (state) {
+        state.promptText = plain;
+        state.promptSaveId = (state.promptSaveId ?? 0) + 1;
+    }
+    const saveId = state?.promptSaveId ?? 0;
+    const persistPromise = writePromptText(node, plain, privacyMode, selectorApi).then((serialized) => {
+        const activeState = getPromptEditorState(node);
+        if (!activeState || activeState.promptSaveId === saveId) {
+            if (activeState) activeState.promptWidgetValue = serializedPromptValue(node);
+        }
+        return serialized;
+    }).catch((err) => {
+        console.error("Prompt enhancer prompt encryption failed:", err);
+        return serializedPromptValue(node);
+    });
+    if (state) {
+        state.promptPersistPromise = persistPromise;
+    }
+    return persistPromise;
+}
+
+function installPromptPrivacySerialization(node) {
+    if (node[PROMPT_PRIVACY_SERIALIZATION]) return;
+    const promptWidget = getWidget(node, "prompt");
+    if (!promptWidget) return;
+    promptWidget.serialize = true;
+    promptWidget.options ??= {};
+    promptWidget.options.serialize = true;
+    promptWidget.serializeValue = async () => {
+        const state = getPromptEditorState(node);
+        if (state?.promptPersistPromise) {
+            await state.promptPersistPromise.catch(() => {});
+        }
+        return serializedPromptValue(node);
+    };
+    node[PROMPT_PRIVACY_SERIALIZATION] = true;
+}
+
 function ensurePromptEditor(node) {
     if (node[PROMPT_EDITOR_STATE]) {
         syncPromptEditorFromWidget(node);
@@ -169,7 +238,7 @@ function ensurePromptEditor(node) {
     textarea.placeholder = "Describe the result you want. Use {{variable_name}} for variables.";
     textarea.spellcheck = false;
     textarea.wrap = "soft";
-    textarea.value = readPromptValue(node);
+    textarea.value = "";
     const suggestions = document.createElement("div");
     suggestions.className = "helto-prompt-enhancer-suggestions";
     suggestions.hidden = true;
@@ -180,6 +249,11 @@ function ensurePromptEditor(node) {
         frame,
         textarea,
         suggestions,
+        promptText: "",
+        promptWidgetValue: null,
+        promptLoadId: 0,
+        promptSaveId: 0,
+        promptPersistPromise: null,
         variables: [],
         variablesWidgetValue: null,
         variablesLoadId: 0,
@@ -199,7 +273,7 @@ function ensurePromptEditor(node) {
     };
 
     textarea.addEventListener("input", () => {
-        writePromptValue(node, textarea.value);
+        persistPromptEditorText(node, textarea.value);
         refreshAutocomplete(0);
         setCanvasDirty(node);
     });
@@ -256,6 +330,10 @@ function ensurePromptEditor(node) {
     state.domWidget = domWidget;
     node[PROMPT_EDITOR_STATE] = state;
     applyPromptEditorLayout(node);
+    installPromptPrivacySerialization(node);
+    loadPromptEditorText(node, true).then(() => {
+        refreshAutocomplete();
+    });
     refreshPromptEditorVariables(node, true).then(() => {
         renderPromptSuggestions(node);
     });
@@ -266,10 +344,7 @@ function syncPromptEditorFromWidget(node) {
     const state = getPromptEditorState(node);
     if (!state) return;
     applyPromptEditorLayout(node);
-    const value = readPromptValue(node);
-    if (state.textarea.value !== value && document.activeElement !== state.textarea) {
-        state.textarea.value = value;
-    }
+    loadPromptEditorText(node);
 }
 
 function renderPromptSuggestions(node) {
@@ -301,7 +376,7 @@ function acceptPromptSuggestion(node, explicitName = null) {
     const result = insertVariableSuggestion(state.textarea.value, state.autocomplete, explicitName);
     state.textarea.value = result.text;
     state.textarea.setSelectionRange(result.cursor, result.cursor);
-    writePromptValue(node, result.text);
+    persistPromptEditorText(node, result.text);
     state.autocomplete = { active: false, options: [], selectedIndex: 0 };
     renderPromptSuggestions(node);
     setCanvasDirty(node);
@@ -659,6 +734,8 @@ function openSettingsModal(node) {
 
     const modal = createModal("Prompt enhancer settings", content, async (body) => {
         const variables = await readPromptVariables(node, selectorApi);
+        const editorState = getPromptEditorState(node);
+        const promptText = editorState?.textarea?.value ?? await readPromptText(node, selectorApi);
         const privacyMode = body.querySelector("#helto-pe-privacy-mode").checked;
         writePromptEnhancerSettings(node, {
             hideMode: body.querySelector("#helto-pe-hide-mode").checked,
@@ -668,9 +745,12 @@ function openSettingsModal(node) {
             keepAliveUnit: body.querySelector("#helto-pe-keep-alive-unit").value,
             timeout: body.querySelector("#helto-pe-timeout").value,
         });
+        await persistPromptEditorText(node, promptText, privacyMode);
         await writePromptVariables(node, variables, privacyMode, selectorApi);
         const state = getPromptEditorState(node);
         if (state) {
+            state.promptText = promptText;
+            state.promptWidgetValue = serializedPromptValue(node);
             state.variables = variables;
             state.variablesWidgetValue = serializedPromptVariablesValue(node);
         }
@@ -711,6 +791,7 @@ function ensurePromptEnhancerUi(node) {
         return;
     }
     hideSerializedSettingsWidgets(node, collapseHiddenWidgetLayout);
+    installPromptPrivacySerialization(node);
     ensurePromptEditor(node);
     ensureModelSelector(node);
     node[PROMPT_HOVER_STATE] ??= false;
