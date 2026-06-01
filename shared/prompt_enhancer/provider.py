@@ -284,6 +284,8 @@ def encode_images_for_ollama(
             if progress is not None:
                 progress.phase_fraction("media", position / len(indices))
 
+    if progress is not None:
+        progress.phase_done("media")
     return encoded
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import Any
 
 
@@ -18,6 +19,8 @@ class PromptEnhancerProgress:
     def __init__(self, unique_id: str | None = None, progress_bar: Any | None = None, enabled: bool = True):
         self.enabled = enabled
         self._last_value = 0
+        self._model_call_total = 0
+        self._model_call_index = 0
         self._bar = progress_bar if progress_bar is not None else self._create_progress_bar(unique_id)
         self.update_absolute(0)
 
@@ -62,6 +65,36 @@ class PromptEnhancerProgress:
         generated = round((current_generated / phase_width) * max(1, expected)) + 1
         self.generation_tokens(generated, expected)
 
+    def begin_model_calls(self, total: int) -> None:
+        self._model_call_total = max(0, int(total))
+        self._model_call_index = 0
+
+    @contextmanager
+    def model_call(self):
+        if self._model_call_total <= 0:
+            yield self
+            return
+
+        call_index = self._model_call_index
+        self._model_call_index = min(self._model_call_index + 1, self._model_call_total)
+        proxy = _PromptEnhancerModelCallProgress(self, call_index, self._model_call_total)
+        try:
+            yield proxy
+        except Exception:
+            raise
+        else:
+            proxy.complete_call()
+
+    def model_call_fraction(self, call_index: int, call_total: int, fraction: float) -> None:
+        if call_total <= 0:
+            self.phase_fraction("generate", fraction)
+            return
+        start, end = PHASE_RANGES["generate"]
+        call_width = (end - start) / max(1, call_total)
+        safe_index = max(0, min(call_total - 1, int(call_index)))
+        safe_fraction = max(0.0, min(1.0, float(fraction)))
+        self.update_absolute(round(start + (call_width * safe_index) + (call_width * safe_fraction)))
+
     def complete(self) -> None:
         self.update_absolute(PROGRESS_TOTAL)
 
@@ -74,3 +107,50 @@ class PromptEnhancerProgress:
         interrupt = getattr(model_management, "throw_exception_if_processing_interrupted", None)
         if callable(interrupt):
             interrupt()
+
+
+class _PromptEnhancerModelCallProgress:
+    def __init__(self, parent: PromptEnhancerProgress, call_index: int, call_total: int):
+        self.enabled = parent.enabled
+        self._parent = parent
+        self._call_index = call_index
+        self._call_total = call_total
+        self._last_fraction = 0.0
+        self._update_fraction(0.0)
+
+    def _update_fraction(self, fraction: float) -> None:
+        safe_fraction = max(self._last_fraction, min(1.0, max(0.0, float(fraction))))
+        self._last_fraction = safe_fraction
+        self._parent.model_call_fraction(self._call_index, self._call_total, safe_fraction)
+
+    def phase_fraction(self, phase: str, fraction: float) -> None:
+        start, end = PHASE_RANGES.get(phase, (0, PROGRESS_TOTAL))
+        safe_fraction = max(0.0, min(1.0, float(fraction)))
+        self._update_fraction((start + ((end - start) * safe_fraction)) / PROGRESS_TOTAL)
+
+    def phase_start(self, phase: str) -> None:
+        self.phase_fraction(phase, 0.0)
+
+    def phase_done(self, phase: str) -> None:
+        self.phase_fraction(phase, 1.0)
+
+    def generation_tokens(self, generated: int, expected: int) -> None:
+        if expected <= 0:
+            self.phase_fraction("generate", 0.0)
+            return
+        self.phase_fraction("generate", min(0.98, max(0.0, generated / expected)))
+
+    def generation_step(self, expected: int) -> None:
+        generate_start = PHASE_RANGES["generate"][0] / PROGRESS_TOTAL
+        generate_end = PHASE_RANGES["generate"][1] / PROGRESS_TOTAL
+        generate_width = max(0.001, generate_end - generate_start)
+        current_generated = max(0.0, self._last_fraction - generate_start)
+        generated = round((current_generated / generate_width) * max(1, expected)) + 1
+        self.generation_tokens(generated, expected)
+
+    def complete_call(self) -> None:
+        self._update_fraction(1.0)
+
+    @staticmethod
+    def check_interrupted() -> None:
+        PromptEnhancerProgress.check_interrupted()

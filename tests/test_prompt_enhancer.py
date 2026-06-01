@@ -57,6 +57,52 @@ class PromptEnhancerProviderTests(unittest.TestCase):
         self.assertEqual([value for value, _total in updates], sorted(value for value, _total in updates))
         self.assertGreaterEqual(interrupted.call_count, 4)
 
+    def test_progress_helper_maps_multiple_model_calls_monotonically(self):
+        updates = []
+
+        class FakeProgressBar:
+            def update_absolute(self, value, total=None):
+                updates.append((value, total))
+
+        with patch.object(PromptEnhancerProgress, "check_interrupted"):
+            progress = PromptEnhancerProgress("12", FakeProgressBar())
+            progress.phase_done("media")
+            progress.begin_model_calls(3)
+            for _index in range(3):
+                with progress.model_call() as call_progress:
+                    call_progress.phase_start("generate")
+                    call_progress.generation_tokens(50, 100)
+                    call_progress.phase_done("generate")
+            before_cleanup = updates[-1][0]
+            progress.phase_done("cleanup")
+            progress.complete()
+
+        values = [value for value, _total in updates]
+        self.assertEqual(values, sorted(values))
+        self.assertEqual(before_cleanup, 930)
+        self.assertEqual(updates[-1], (1000, 1000))
+
+    def test_progress_model_call_slice_streaming_stays_inside_active_call(self):
+        updates = []
+
+        class FakeProgressBar:
+            def update_absolute(self, value, total=None):
+                updates.append((value, total))
+
+        with patch.object(PromptEnhancerProgress, "check_interrupted"):
+            progress = PromptEnhancerProgress("12", FakeProgressBar())
+            progress.begin_model_calls(2)
+            with progress.model_call() as call_progress:
+                call_progress.phase_start("generate")
+                call_progress.generation_tokens(50, 100)
+                mid_call_value = updates[-1][0]
+                call_progress.phase_done("generate")
+            first_call_done = updates[-1][0]
+
+        self.assertLess(mid_call_value, first_call_done)
+        self.assertLessEqual(first_call_done, 690)
+        self.assertEqual([value for value, _total in updates], sorted(value for value, _total in updates))
+
     def test_resolve_seed_keeps_fixed_and_randomizes_negative(self):
         self.assertEqual(resolve_seed(42), 42)
         self.assertEqual(resolve_seed("7"), 7)

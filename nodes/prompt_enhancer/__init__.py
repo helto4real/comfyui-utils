@@ -195,6 +195,7 @@ class PromptEnhancer(io.ComfyNode):
             generated_prompts: list[str] = []
             visual_contexts: list[str] = []
             extra_warnings: list[str] = []
+            segment_run_plan = []
             for segment_variables in segment_variables_list:
                 selected_images = _selected_segment_images(encoded_images, segment_variables.get("image_references", []))
                 selected_mode, mode_warnings = _resolve_vision_mode(
@@ -206,23 +207,36 @@ class PromptEnhancer(io.ComfyNode):
                     vision_config,
                 )
                 extra_warnings.extend(mode_warnings)
+                segment_run_plan.append(
+                    {
+                        "variables": segment_variables,
+                        "selected_images": selected_images,
+                        "selected_mode": selected_mode,
+                    }
+                )
+            progress.begin_model_calls(_model_call_count(segment_run_plan))
+            for segment_plan in segment_run_plan:
+                segment_variables = segment_plan["variables"]
+                selected_images = segment_plan["selected_images"]
+                selected_mode = segment_plan["selected_mode"]
                 direct_images = selected_images if selected_mode == VISION_DIRECT_MODE else []
                 visual_context = ""
                 if selected_mode == VISION_SEPARATE_MODE and selected_images:
-                    visual_context = _generate_visual_context(
-                        registry=registry,
-                        prompt_kind=prompt_kind,
-                        prompt=str(segment_variables.get("direction") or ""),
-                        image_notes=str(segment_variables.get("image_notes") or ""),
-                        reference_mode=str(segment_variables.get("reference_mode") or ""),
-                        selected_images=selected_images,
-                        settings=settings,
-                        seed=resolved_seed,
-                        vision_config=vision_config,
-                        progress=progress,
-                        segment_index=_as_int(segment_variables.get("segment_index"), 0),
-                        segment_total=_as_int(segment_variables.get("segment_total"), 0),
-                    )
+                    with progress.model_call() as call_progress:
+                        visual_context = _generate_visual_context(
+                            registry=registry,
+                            prompt_kind=prompt_kind,
+                            prompt=str(segment_variables.get("direction") or ""),
+                            image_notes=str(segment_variables.get("image_notes") or ""),
+                            reference_mode=str(segment_variables.get("reference_mode") or ""),
+                            selected_images=selected_images,
+                            settings=settings,
+                            seed=resolved_seed,
+                            vision_config=vision_config,
+                            progress=call_progress,
+                            segment_index=_as_int(segment_variables.get("segment_index"), 0),
+                            segment_total=_as_int(segment_variables.get("segment_total"), 0),
+                        )
                 segment_variables["visual_context"] = visual_context
                 system_prompt_for_segment = build_system_prompt(
                     prompt_kind,
@@ -245,7 +259,8 @@ class PromptEnhancer(io.ComfyNode):
                     model_id=model_identifier,
                     model_backend=writer_backend,
                 )
-                generated_prompts.append(registry.generate(request, progress))
+                with progress.model_call() as call_progress:
+                    generated_prompts.append(registry.generate(request, call_progress))
                 visual_contexts.append(visual_context)
 
             generated_prompt = _join_blocks(generated_prompts)
@@ -270,18 +285,22 @@ class PromptEnhancer(io.ComfyNode):
             )
             visual_context = ""
             if selected_mode == VISION_SEPARATE_MODE and encoded_images:
-                visual_context = _generate_visual_context(
-                    registry=registry,
-                    prompt_kind=prompt_kind,
-                    prompt=resolved_script,
-                    image_notes="",
-                    reference_mode="",
-                    selected_images=encoded_images,
-                    settings=settings,
-                    seed=resolved_seed,
-                    vision_config=vision_config,
-                    progress=progress,
-                )
+                progress.begin_model_calls(2)
+                with progress.model_call() as call_progress:
+                    visual_context = _generate_visual_context(
+                        registry=registry,
+                        prompt_kind=prompt_kind,
+                        prompt=resolved_script,
+                        image_notes="",
+                        reference_mode="",
+                        selected_images=encoded_images,
+                        settings=settings,
+                        seed=resolved_seed,
+                        vision_config=vision_config,
+                        progress=call_progress,
+                    )
+            else:
+                progress.begin_model_calls(1)
             direct_images = encoded_images if selected_mode == VISION_DIRECT_MODE else []
             system_prompt = build_system_prompt(prompt_kind, has_video=video is not None, has_audio=audio is not None)
             resolved_prompt = _resolved_prompt_with_visual_context(resolved_script, visual_context)
@@ -303,7 +322,8 @@ class PromptEnhancer(io.ComfyNode):
                 model_id=model_identifier,
                 model_backend=writer_backend,
             )
-            generated_prompt = registry.generate(request, progress)
+            with progress.model_call() as call_progress:
+                generated_prompt = registry.generate(request, call_progress)
         progress.phase_done("cleanup")
         progress.complete()
         return io.NodeOutput(
@@ -348,6 +368,15 @@ def _selected_segment_images(encoded_images: list[str], image_references: Any) -
         if 0 <= encoded_index < len(encoded_images):
             selected.append(encoded_images[encoded_index])
     return selected
+
+
+def _model_call_count(segment_run_plan: list[dict[str, Any]]) -> int:
+    count = 0
+    for segment_plan in segment_run_plan:
+        count += 1
+        if segment_plan.get("selected_mode") == VISION_SEPARATE_MODE and segment_plan.get("selected_images"):
+            count += 1
+    return count
 
 
 def _resolve_vision_mode(

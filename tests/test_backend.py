@@ -654,6 +654,219 @@ Second beat moves toward the doorway. @image1:end
         self.assertEqual(result[7], "")
         self.assertEqual(result[8], 2)
 
+    def test_prompt_enhancer_progress_counts_all_segment_writer_calls(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        prompt_node = next(
+            node_cls
+            for node_cls in asyncio.run(extension_module.HeltoUtilsExtension().get_node_list())
+            if node_cls.define_schema().node_id == "HeltoPromptEnhancer"
+        )
+        globals_ = prompt_node.execute.__func__.__globals__
+        original_provider = globals_["PromptProviderRegistry"]
+        original_progress = globals_["PromptEnhancerProgress"]
+        progress_instances = []
+
+        class TrackingProgress:
+            def __init__(self, unique_id=None):
+                self.unique_id = unique_id
+                self.model_call_total = None
+                self.model_calls = 0
+                self.completed = False
+                progress_instances.append(self)
+
+            def phase_start(self, phase):
+                pass
+
+            def phase_done(self, phase):
+                pass
+
+            def begin_model_calls(self, total):
+                self.model_call_total = total
+
+            def model_call(self):
+                return self
+
+            def __enter__(self):
+                self.model_calls += 1
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+            def complete(self):
+                self.completed = True
+
+        class FakeRegistry:
+            def generate(self, request, progress=None):
+                return request.prompt
+
+        globals_["PromptProviderRegistry"] = FakeRegistry
+        globals_["PromptEnhancerProgress"] = TrackingProgress
+        try:
+            prompt_node.execute(
+                seed=7,
+                prompt_type="video",
+                segment_generation_mode="all segments",
+                vision_context_mode="off",
+                script="First beat.\n---\nSecond beat.\n---\nThird beat.",
+            )
+        finally:
+            globals_["PromptProviderRegistry"] = original_provider
+            globals_["PromptEnhancerProgress"] = original_progress
+
+        progress = progress_instances[0]
+        self.assertEqual(progress.model_call_total, 3)
+        self.assertEqual(progress.model_calls, 3)
+        self.assertTrue(progress.completed)
+
+    def test_prompt_enhancer_progress_counts_separate_vision_and_writer_calls(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        prompt_node = next(
+            node_cls
+            for node_cls in asyncio.run(extension_module.HeltoUtilsExtension().get_node_list())
+            if node_cls.define_schema().node_id == "HeltoPromptEnhancer"
+        )
+        globals_ = prompt_node.execute.__func__.__globals__
+        original_provider = globals_["PromptProviderRegistry"]
+        original_progress = globals_["PromptEnhancerProgress"]
+        original_encode = globals_["encode_images_for_ollama"]
+        original_support = globals_["provider_model_supports_images"]
+        progress_instances = []
+
+        class TrackingProgress:
+            def __init__(self, unique_id=None):
+                self.model_call_total = None
+                self.model_calls = 0
+                progress_instances.append(self)
+
+            def phase_start(self, phase):
+                pass
+
+            def phase_done(self, phase):
+                pass
+
+            def begin_model_calls(self, total):
+                self.model_call_total = total
+
+            def model_call(self):
+                return self
+
+            def __enter__(self):
+                self.model_calls += 1
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+            def complete(self):
+                pass
+
+        class FakeRegistry:
+            def generate(self, request, progress=None):
+                return request.prompt
+
+            def generate_visual_context(self, request, progress=None):
+                return "visual context"
+
+        globals_["PromptProviderRegistry"] = FakeRegistry
+        globals_["PromptEnhancerProgress"] = TrackingProgress
+        globals_["encode_images_for_ollama"] = lambda *args, **kwargs: ["encoded-image-1", "encoded-image-2"]
+        globals_["provider_model_supports_images"] = lambda provider, model_id, backend="": model_id == "qwen3_vl_4b_fast"
+        try:
+            prompt_node.execute(
+                seed=7,
+                images=[object(), object()],
+                prompt_type="video",
+                segment_generation_mode="all segments",
+                vision_context_mode="separate vision model",
+                script="First beat. @image1\n---\nSecond beat. @image2\n---\nThird beat. @image1",
+                vision_provider="local_transformers_vlm",
+                vision_model_id="qwen3_vl_4b_fast",
+                vision_model_backend="qwen",
+            )
+        finally:
+            globals_["PromptProviderRegistry"] = original_provider
+            globals_["PromptEnhancerProgress"] = original_progress
+            globals_["encode_images_for_ollama"] = original_encode
+            globals_["provider_model_supports_images"] = original_support
+
+        progress = progress_instances[0]
+        self.assertEqual(progress.model_call_total, 6)
+        self.assertEqual(progress.model_calls, 6)
+
+    def test_prompt_enhancer_progress_counts_image_mode_vision_once(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        prompt_node = next(
+            node_cls
+            for node_cls in asyncio.run(extension_module.HeltoUtilsExtension().get_node_list())
+            if node_cls.define_schema().node_id == "HeltoPromptEnhancer"
+        )
+        globals_ = prompt_node.execute.__func__.__globals__
+        original_provider = globals_["PromptProviderRegistry"]
+        original_progress = globals_["PromptEnhancerProgress"]
+        original_encode = globals_["encode_images_for_ollama"]
+        original_support = globals_["provider_model_supports_images"]
+        progress_instances = []
+
+        class TrackingProgress:
+            def __init__(self, unique_id=None):
+                self.model_call_total = None
+                self.model_calls = 0
+                progress_instances.append(self)
+
+            def phase_start(self, phase):
+                pass
+
+            def phase_done(self, phase):
+                pass
+
+            def begin_model_calls(self, total):
+                self.model_call_total = total
+
+            def model_call(self):
+                return self
+
+            def __enter__(self):
+                self.model_calls += 1
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+            def complete(self):
+                pass
+
+        class FakeRegistry:
+            def generate(self, request, progress=None):
+                return request.prompt
+
+            def generate_visual_context(self, request, progress=None):
+                return "visual context"
+
+        globals_["PromptProviderRegistry"] = FakeRegistry
+        globals_["PromptEnhancerProgress"] = TrackingProgress
+        globals_["encode_images_for_ollama"] = lambda *args, **kwargs: ["encoded-image-1", "encoded-image-2"]
+        globals_["provider_model_supports_images"] = lambda provider, model_id, backend="": model_id == "qwen3_vl_4b_fast"
+        try:
+            prompt_node.execute(
+                images=[object(), object()],
+                prompt_type="image",
+                vision_context_mode="separate vision model",
+                script="Create a polished portrait",
+                provider="ollama",
+                model="mistral:latest",
+                model_id="mistral:latest",
+            )
+        finally:
+            globals_["PromptProviderRegistry"] = original_provider
+            globals_["PromptEnhancerProgress"] = original_progress
+            globals_["encode_images_for_ollama"] = original_encode
+            globals_["provider_model_supports_images"] = original_support
+
+        progress = progress_instances[0]
+        self.assertEqual(progress.model_call_total, 2)
+        self.assertEqual(progress.model_calls, 2)
+
     def test_prompt_enhancer_video_single_segment_validates_active_index(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()
         prompt_node = next(
