@@ -22,6 +22,7 @@ DEFAULT_OLLAMA_KEEP_ALIVE_UNIT = "minutes"
 DEFAULT_OLLAMA_TIMEOUT = 120
 MAX_PROMPT_IMAGES = 8
 MAX_SEED = 2_147_483_647
+PROVIDER_OLLAMA = "ollama"
 
 PROMPT_TYPES = ("image", "video", "multi scene video")
 IMAGE_SYSTEM_PROMPT = load_default_system_prompt("image")
@@ -45,6 +46,9 @@ class PromptEnhancerRequest:
     seed: int
     images: list[str]
     settings: PromptEnhancerSettings
+    provider: str = PROVIDER_OLLAMA
+    model_id: str = ""
+    model_backend: str = ""
 
 
 class PromptProvider(Protocol):
@@ -197,3 +201,13 @@ class OllamaPromptProvider:
         if keep_alive == "0s":
             _json_request(endpoint, {"model": request.model, "keep_alive": 0, "stream": False}, request.settings.timeout)
         return generated_prompt
+
+
+class PromptProviderRegistry:
+    def generate(self, request: PromptEnhancerRequest) -> str:
+        provider = (request.provider or PROVIDER_OLLAMA).strip() or PROVIDER_OLLAMA
+        if provider == PROVIDER_OLLAMA:
+            return OllamaPromptProvider().generate(request)
+        from .local_provider import LocalPromptProvider
+
+        return LocalPromptProvider().generate(request)

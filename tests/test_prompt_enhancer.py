@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 import torch
 
+from shared.prompt_enhancer import local_provider
 from shared.prompt_enhancer import prompts
 from shared.prompt_enhancer.provider import (
     DEFAULT_OLLAMA_URL,
@@ -20,6 +21,7 @@ from shared.prompt_enhancer.provider import (
     OllamaPromptProvider,
     PromptEnhancerRequest,
     PromptEnhancerSettings,
+    PromptProviderRegistry,
     build_system_prompt,
     encode_images_for_ollama,
     ollama_keep_alive,
@@ -220,6 +222,89 @@ class PromptEnhancerProviderTests(unittest.TestCase):
         self.assertEqual(decrypt_prompt_text(encrypted), "secret prompt")
         self.assertEqual(decrypt_prompt_text("__HELTO_ENC__:not-valid"), "")
 
+    def test_provider_catalog_combines_ollama_and_local_models(self):
+        catalog = local_provider.provider_catalog(["llava:latest"], "offline")
+
+        self.assertTrue(catalog["ok"])
+        self.assertEqual(catalog["ollama_error"], "offline")
+        models = {(model["provider"], model["model_id"]): model for model in catalog["models"]}
+        self.assertIn(("ollama", "llava:latest"), models)
+        self.assertIn((local_provider.PROVIDER_FALLBACK, "fallback_text_backend"), models)
+        self.assertEqual(models[(local_provider.PROVIDER_LOCAL_TEXT_GENERATOR, "gemma4_e4b_it_fp8_scaled")]["status"], "unsupported_generator")
+
+    def test_fallback_local_provider_generates_without_external_runtime(self):
+        request = PromptEnhancerRequest(
+            model="fallback_text_backend",
+            prompt_type="video",
+            prompt="A dancer spins",
+            system_prompt="system",
+            seed=1,
+            images=[],
+            settings=PromptEnhancerSettings(),
+            provider=local_provider.PROVIDER_FALLBACK,
+            model_id="fallback_text_backend",
+            model_backend="fallback",
+        )
+
+        result = local_provider.LocalPromptProvider().generate(request)
+
+        self.assertIn("A dancer spins", result)
+        self.assertIn("video prompt", result)
+
+    def test_local_text_encoder_checkpoint_reports_unsupported_generator(self):
+        request = PromptEnhancerRequest(
+            model="gemma4_e4b_it_fp8_scaled",
+            prompt_type="image",
+            prompt="A quiet forest",
+            system_prompt="system",
+            seed=1,
+            images=[],
+            settings=PromptEnhancerSettings(),
+            provider=local_provider.PROVIDER_LOCAL_TEXT_GENERATOR,
+            model_id="gemma4_e4b_it_fp8_scaled",
+            model_backend="gemma_safetensors",
+        )
+
+        with self.assertRaisesRegex(local_provider.LocalProviderError, "not a standalone prompt-generating model"):
+            local_provider.LocalPromptProvider().generate(request)
+
+    def test_provider_registry_keeps_ollama_default_and_routes_local(self):
+        ollama_request = PromptEnhancerRequest(
+            model="llava:latest",
+            prompt_type="image",
+            prompt="hello",
+            system_prompt="system",
+            seed=1,
+            images=[],
+            settings=PromptEnhancerSettings(),
+        )
+        local_request = PromptEnhancerRequest(
+            model="fallback_text_backend",
+            prompt_type="image",
+            prompt="hello",
+            system_prompt="system",
+            seed=1,
+            images=[],
+            settings=PromptEnhancerSettings(),
+            provider=local_provider.PROVIDER_FALLBACK,
+            model_id="fallback_text_backend",
+        )
+
+        with patch("shared.prompt_enhancer.provider.OllamaPromptProvider.generate", return_value="ollama"):
+            self.assertEqual(PromptProviderRegistry().generate(ollama_request), "ollama")
+        self.assertIn("hello", PromptProviderRegistry().generate(local_request))
+
+    def test_provider_settings_store_hf_token_privately(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            saved = local_provider.save_hf_token("token-value", tmpdir)
+
+            self.assertTrue(saved["tokenConfigured"])
+            self.assertEqual(local_provider.configured_hf_token(tmpdir), "token-value")
+
+            cleared = local_provider.clear_hf_token(tmpdir)
+
+            self.assertFalse(cleared["tokenConfigured"])
+
 
 class PromptEnhancerRouteTests(unittest.TestCase):
     def setUp(self):
@@ -277,6 +362,47 @@ class PromptEnhancerRouteTests(unittest.TestCase):
         self.assertEqual(response.status, 400)
         self.assertIn('"error": "offline"', response.text)
         self.assertIn('"models": []', response.text)
+
+    def test_provider_model_route_returns_local_models_when_ollama_is_offline(self):
+        routes = importlib.import_module("shared.prompt_enhancer.routes")
+
+        async def fake_to_thread(func, *args):
+            return func(*args)
+
+        with patch.object(routes.asyncio, "to_thread", fake_to_thread), patch.object(routes.OllamaPromptProvider, "list_models", side_effect=RuntimeError("offline")):
+            response = asyncio.run(routes._request_provider_models({"url": "http://localhost:11434"}))
+
+        self.assertEqual(response.status, 200)
+        self.assertIn('"ollama_error": "offline"', response.text)
+        self.assertIn('"model_id": "fallback_text_backend"', response.text)
+
+    def test_provider_model_routes_download_unload_and_settings(self):
+        routes = importlib.import_module("shared.prompt_enhancer.routes")
+
+        async def fake_to_thread(func, *args):
+            return func(*args)
+
+        with patch.object(routes.asyncio, "to_thread", fake_to_thread), \
+                patch.object(routes, "download_local_model", return_value={"ok": True, "model": "fallback_text_backend"}), \
+                patch.object(routes, "unload_local_model", return_value={"ok": True, "unloaded": ["fallback_text_backend"]}):
+            download_response = asyncio.run(routes._download_provider_model({"model_id": "fallback_text_backend"}))
+            unload_response = asyncio.run(routes._unload_provider_model({"model_id": "fallback_text_backend"}))
+
+        self.assertEqual(download_response.status, 200)
+        self.assertIn('"model": "fallback_text_backend"', download_response.text)
+        self.assertEqual(unload_response.status, 200)
+        self.assertIn('"unloaded": ["fallback_text_backend"]', unload_response.text)
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(routes, "provider_settings_status", lambda: local_provider.provider_settings_status(tmpdir)), \
+                patch.object(routes, "save_hf_token", lambda token: local_provider.save_hf_token(token, tmpdir)), \
+                patch.object(routes, "clear_hf_token", lambda: local_provider.clear_hf_token(tmpdir)):
+            settings_response = asyncio.run(routes._save_provider_settings({"hf_token": "secret"}))
+            clear_response = asyncio.run(routes._save_provider_settings({"clear": True}))
+
+        self.assertEqual(settings_response.status, 200)
+        self.assertIn('"tokenConfigured": true', settings_response.text)
+        self.assertEqual(clear_response.status, 200)
+        self.assertIn('"tokenConfigured": false', clear_response.text)
 
     def test_system_prompt_routes_get_save_and_reset(self):
         routes = importlib.import_module("shared.prompt_enhancer.routes")

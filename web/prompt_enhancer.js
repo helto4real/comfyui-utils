@@ -16,6 +16,7 @@ import {
     PROMPT_EDITOR_HEIGHT,
     PROMPT_EDITOR_WIDGET_NAME,
     promptEditorLayout,
+    readPromptEnhancerModelConfig,
     readPromptEnhancerSettings,
     readPromptText,
     readPromptVariables,
@@ -29,7 +30,8 @@ import {
     shouldRefreshPromptVariables,
     shouldHidePromptWidget,
     updatePromptVariable,
-    updateModelOptions,
+    updateProviderModelOptions,
+    writePromptEnhancerModelConfig,
     writePromptEnhancerSettings,
     writePromptText,
     writePromptVariables,
@@ -38,8 +40,12 @@ import {
 const BUTTONS_ADDED = "__heltoPromptEnhancerButtonsAdded";
 const SETTINGS_BUTTON = "__heltoPromptEnhancerSettingsButton";
 const MODELS_BUTTON = "__heltoPromptEnhancerModelsButton";
+const DOWNLOAD_MODEL_BUTTON = "__heltoPromptEnhancerDownloadModelButton";
+const UNLOAD_MODEL_BUTTON = "__heltoPromptEnhancerUnloadModelButton";
 const VARIABLES_BUTTON = "__heltoPromptEnhancerVariablesButton";
+const PROVIDER_SELECTOR = "__heltoPromptEnhancerProviderSelector";
 const MODEL_SELECTOR = "__heltoPromptEnhancerModelSelector";
+const PROVIDER_CATALOG = "__heltoPromptEnhancerProviderCatalog";
 const PROMPT_HOVER_STATE = "__heltoPromptEnhancerPromptHover";
 const PROMPT_DOM_ELEMENTS = "__heltoPromptEnhancerPromptDomElements";
 const PROMPT_EDITOR_STATE = "__heltoPromptEnhancerPromptEditor";
@@ -387,13 +393,24 @@ function ensureModelSelector(node) {
     if (node[MODEL_SELECTOR]) {
         return node[MODEL_SELECTOR];
     }
+    const config = readPromptEnhancerModelConfig(node);
+    const providerWidget = getWidget(node, "provider");
+    const modelIdWidget = getWidget(node, "model_id");
     const modelWidget = getWidget(node, "model");
-    const current = String(modelWidget?.value || "llava:latest").trim() || "llava:latest";
+    const current = config.modelId;
     const widget = node.addWidget?.("combo", "model selector", current, (value) => {
         const selected = String(value || "").trim();
-        if (selected && modelWidget) {
-            modelWidget.value = selected;
-            modelWidget.callback?.(selected);
+        if (selected) {
+            const provider = String(node[PROVIDER_SELECTOR]?.value || providerWidget?.value || "ollama");
+            const catalog = node[PROVIDER_CATALOG] || { models: [] };
+            const selectedModel = catalog.models?.find?.((model) => model.provider === provider && model.model_id === selected);
+            writePromptEnhancerModelConfig(node, {
+                provider,
+                modelId: selected,
+                modelBackend: selectedModel?.backend || (provider === "ollama" ? "ollama" : ""),
+            });
+            modelIdWidget?.callback?.(selected);
+            modelWidget?.callback?.(selected);
             setCanvasDirty(node);
         }
     }, { values: [current] });
@@ -406,9 +423,34 @@ function ensureModelSelector(node) {
     return widget;
 }
 
-async function fetchOllamaModels(node) {
+function ensureProviderSelector(node) {
+    if (node[PROVIDER_SELECTOR]) {
+        return node[PROVIDER_SELECTOR];
+    }
+    const config = readPromptEnhancerModelConfig(node);
+    const widget = node.addWidget?.("combo", "provider", config.provider, (value) => {
+        const provider = String(value || "ollama").trim() || "ollama";
+        const catalog = node[PROVIDER_CATALOG] || { providers: [{ id: provider }], models: [] };
+        writePromptEnhancerModelConfig(node, {
+            provider,
+            modelId: "",
+            modelBackend: provider === "ollama" ? "ollama" : "",
+        });
+        updateProviderModelOptions(widget, ensureModelSelector(node), node, catalog);
+        setCanvasDirty(node);
+    }, { values: [config.provider] });
+    if (widget) {
+        widget.serialize = false;
+        widget.options ??= {};
+        widget.options.serialize = false;
+        node[PROVIDER_SELECTOR] = widget;
+    }
+    return widget;
+}
+
+async function fetchProviderModels(node) {
     const settings = readPromptEnhancerSettings(node);
-    const response = await fetch("/helto_prompt_enhancer/models", {
+    const response = await fetch("/helto_prompt_enhancer/providers/models", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -418,9 +460,9 @@ async function fetchOllamaModels(node) {
     });
     const data = await response.json();
     if (!response.ok) {
-        throw new Error(data.error || "Failed to fetch Ollama models.");
+        throw new Error(data.error || "Failed to fetch Prompt Enhancer models.");
     }
-    return Array.isArray(data.models) ? data.models : [];
+    return data;
 }
 
 async function refreshModels(node) {
@@ -429,18 +471,100 @@ async function refreshModels(node) {
     if (button) button.name = "refreshing models";
     setCanvasDirty(node);
     try {
-        const models = await fetchOllamaModels(node);
-        updateModelOptions(ensureModelSelector(node), getWidget(node, "model"), models);
+        const catalog = await fetchProviderModels(node);
+        node[PROVIDER_CATALOG] = catalog;
+        updateProviderModelOptions(ensureProviderSelector(node), ensureModelSelector(node), node, catalog);
+        if (catalog.ollama_error) {
+            console.warn("Prompt enhancer Ollama model refresh failed:", catalog.ollama_error);
+        }
     } catch (err) {
         console.warn("Prompt enhancer model refresh failed:", err);
         app.extensionManager?.toast?.add?.({
             severity: "error",
-            summary: "Ollama connection error",
-            detail: err.message || "Failed to fetch Ollama models.",
+            summary: "Model refresh error",
+            detail: err.message || "Failed to fetch Prompt Enhancer models.",
             life: 5000,
         });
     } finally {
         if (button) button.name = previousName || "refresh models";
+        setCanvasDirty(node);
+    }
+}
+
+async function postProviderAction(path, payload) {
+    const response = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload || {}),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+        throw new Error(data.error || "Prompt Enhancer provider action failed.");
+    }
+    return data;
+}
+
+async function fetchProviderSettings() {
+    const response = await fetch("/helto_prompt_enhancer/providers/settings");
+    const data = await response.json();
+    if (!response.ok) {
+        throw new Error(data.error || "Failed to fetch Prompt Enhancer provider settings.");
+    }
+    return data;
+}
+
+async function saveProviderSettings(payload) {
+    return postProviderAction("/helto_prompt_enhancer/providers/settings", payload);
+}
+
+async function downloadSelectedModel(node) {
+    const config = readPromptEnhancerModelConfig(node);
+    if (config.provider === "ollama") {
+        app.extensionManager?.toast?.add?.({
+            severity: "info",
+            summary: "Ollama model",
+            detail: "Ollama models are managed by Ollama.",
+            life: 4000,
+        });
+        return;
+    }
+    const button = node[DOWNLOAD_MODEL_BUTTON];
+    const previousName = button?.name;
+    if (button) button.name = "downloading model";
+    try {
+        await postProviderAction("/helto_prompt_enhancer/providers/download", { model_id: config.modelId });
+        await refreshModels(node);
+    } catch (err) {
+        console.error("Prompt enhancer model download failed:", err);
+        alert(err.message || "Failed to download model.");
+    } finally {
+        if (button) button.name = previousName || "download model";
+        setCanvasDirty(node);
+    }
+}
+
+async function unloadSelectedModel(node) {
+    const config = readPromptEnhancerModelConfig(node);
+    if (config.provider === "ollama") {
+        app.extensionManager?.toast?.add?.({
+            severity: "info",
+            summary: "Ollama model",
+            detail: "Use keep alive 0 seconds to unload Ollama models after generation.",
+            life: 4000,
+        });
+        return;
+    }
+    const button = node[UNLOAD_MODEL_BUTTON];
+    const previousName = button?.name;
+    if (button) button.name = "unloading model";
+    try {
+        await postProviderAction("/helto_prompt_enhancer/providers/unload", { model_id: config.modelId });
+        await refreshModels(node);
+    } catch (err) {
+        console.error("Prompt enhancer model unload failed:", err);
+        alert(err.message || "Failed to unload model.");
+    } finally {
+        if (button) button.name = previousName || "unload model";
         setCanvasDirty(node);
     }
 }
@@ -730,6 +854,25 @@ function openSettingsModal(node) {
                 <input class="helto-prompt-enhancer-number" id="helto-pe-timeout" type="number" min="1" max="3600" value="${settings.timeout}">
             </div>
         `)}
+        ${settingsSection("Local model settings", `
+            <div class="settings-modal-row helto-prompt-enhancer-field-row">
+                <label class="settings-modal-text" for="helto-pe-hf-token">
+                    <div class="settings-title">Hugging Face token</div>
+                    <div class="settings-desc" id="helto-pe-hf-status">Checking token status...</div>
+                </label>
+                <input class="helto-prompt-enhancer-input" id="helto-pe-hf-token" type="password" value="" placeholder="leave blank to keep current token">
+            </div>
+            <div class="settings-modal-row">
+                <div class="settings-modal-text">
+                    <div class="settings-title">Clear stored token</div>
+                    <div class="settings-desc">Remove the locally saved Hugging Face token.</div>
+                </div>
+                <label class="helto-switch">
+                    <input type="checkbox" id="helto-pe-hf-clear">
+                    <span class="helto-switch-slider"></span>
+                </label>
+            </div>
+        `)}
     `;
 
     const modal = createModal("Prompt enhancer settings", content, async (body) => {
@@ -745,6 +888,11 @@ function openSettingsModal(node) {
             keepAliveUnit: body.querySelector("#helto-pe-keep-alive-unit").value,
             timeout: body.querySelector("#helto-pe-timeout").value,
         });
+        const hfToken = body.querySelector("#helto-pe-hf-token")?.value || "";
+        const clearToken = Boolean(body.querySelector("#helto-pe-hf-clear")?.checked);
+        if (clearToken || hfToken.trim()) {
+            await saveProviderSettings(clearToken ? { clear: true } : { hf_token: hfToken });
+        }
         await persistPromptEditorText(node, promptText, privacyMode);
         await writePromptVariables(node, variables, privacyMode, selectorApi);
         const state = getPromptEditorState(node);
@@ -776,6 +924,15 @@ function openSettingsModal(node) {
             alert(err.message || "Failed to open system prompt editor.");
         });
     };
+    fetchProviderSettings().then((status) => {
+        const statusEl = modal.body.querySelector("#helto-pe-hf-status");
+        if (statusEl) {
+            statusEl.innerText = `Auth source: ${status.authSource || "anonymous"}. Stored token: ${status.tokenConfigured ? "yes" : "no"}.`;
+        }
+    }).catch((err) => {
+        const statusEl = modal.body.querySelector("#helto-pe-hf-status");
+        if (statusEl) statusEl.innerText = err.message || "Could not read token status.";
+    });
 }
 
 function escapeHtml(value) {
@@ -793,6 +950,7 @@ function ensurePromptEnhancerUi(node) {
     hideSerializedSettingsWidgets(node, collapseHiddenWidgetLayout);
     installPromptPrivacySerialization(node);
     ensurePromptEditor(node);
+    ensureProviderSelector(node);
     ensureModelSelector(node);
     node[PROMPT_HOVER_STATE] ??= false;
     applyPromptDomHideMode(node);
@@ -822,6 +980,8 @@ function ensurePromptEnhancerUi(node) {
         });
     });
     addButton(node, MODELS_BUTTON, "refresh models", () => refreshModels(node));
+    addButton(node, DOWNLOAD_MODEL_BUTTON, "download model", () => downloadSelectedModel(node));
+    addButton(node, UNLOAD_MODEL_BUTTON, "unload model", () => unloadSelectedModel(node));
 
     refreshModels(node);
 }

@@ -11,9 +11,9 @@ from ...shared.prompt_enhancer import (
     DEFAULT_OLLAMA_TIMEOUT,
     DEFAULT_OLLAMA_URL,
     MAX_PROMPT_IMAGES,
-    OllamaPromptProvider,
     PromptEnhancerRequest,
     PromptEnhancerSettings,
+    PromptProviderRegistry,
     build_system_prompt,
     decrypt_prompt_text,
     resolve_seed,
@@ -59,6 +59,9 @@ class PromptEnhancer(io.ComfyNode):
                 io.Int.Input("ollama_keep_alive", default=DEFAULT_OLLAMA_KEEP_ALIVE, min=-1, max=120, step=1),
                 io.Combo.Input("ollama_keep_alive_unit", options=["seconds", "minutes", "hours"], default="minutes"),
                 io.Int.Input("ollama_timeout", default=DEFAULT_OLLAMA_TIMEOUT, min=1, max=3600, step=1),
+                io.String.Input("provider", default="ollama"),
+                io.String.Input("model_id", default=""),
+                io.String.Input("model_backend", default="ollama"),
             ],
             outputs=[
                 io.String.Output("prompt"),
@@ -80,6 +83,9 @@ class PromptEnhancer(io.ComfyNode):
         video=None,
         audio=None,
         seed: int = -1,
+        provider: str = "ollama",
+        model_id: str = "",
+        model_backend: str = "ollama",
         model: str = DEFAULT_OLLAMA_MODEL,
         prompt_type: str = "image",
         prompt: str = "",
@@ -109,8 +115,11 @@ class PromptEnhancer(io.ComfyNode):
             seed=resolved_seed,
             images=encode_images_for_ollama(images, MAX_PROMPT_IMAGES),
             settings=settings,
+            provider=provider or "ollama",
+            model_id=(model_id or model or DEFAULT_OLLAMA_MODEL).strip(),
+            model_backend=model_backend or "",
         )
-        generated_prompt = OllamaPromptProvider().generate(request)
+        generated_prompt = PromptProviderRegistry().generate(request)
         return io.NodeOutput(generated_prompt, system_prompt, resolved_prompt)
 
 

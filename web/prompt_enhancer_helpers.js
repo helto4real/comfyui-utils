@@ -17,6 +17,9 @@ export const SETTINGS_WIDGET_NAMES = Object.freeze([
 ]);
 
 export const HIDDEN_WIDGET_NAMES = Object.freeze([
+    "provider",
+    "model_id",
+    "model_backend",
     "model",
     "prompt",
     "variables",
@@ -142,6 +145,30 @@ export function writePromptEnhancerSettings(node, settings) {
     setWidgetValue(getWidget(node, "ollama_timeout"), Number(settings.timeout ?? 120));
 }
 
+export function readPromptEnhancerModelConfig(node) {
+    const legacyModel = String(getWidget(node, "model")?.value || "").trim();
+    const provider = String(getWidget(node, "provider")?.value || "ollama").trim() || "ollama";
+    const defaultModel = provider === "ollama" ? "llava:latest" : "";
+    const modelId = String(getWidget(node, "model_id")?.value || legacyModel || defaultModel).trim();
+    return {
+        provider,
+        modelId,
+        modelBackend: String(getWidget(node, "model_backend")?.value || (provider === "ollama" ? "ollama" : "")).trim(),
+        legacyModel,
+    };
+}
+
+export function writePromptEnhancerModelConfig(node, config) {
+    const provider = String(config?.provider || "ollama").trim() || "ollama";
+    const modelId = String(config?.modelId || config?.model_id || config?.model || "").trim();
+    const backend = String(config?.modelBackend || config?.backend || (provider === "ollama" ? "ollama" : "")).trim();
+    setWidgetValue(getWidget(node, "provider"), provider);
+    setWidgetValue(getWidget(node, "model_id"), modelId);
+    setWidgetValue(getWidget(node, "model_backend"), backend);
+    setWidgetValue(getWidget(node, "model"), modelId);
+    return { provider, modelId, modelBackend: backend };
+}
+
 export function modelOptionsWithCurrentValue(modelWidget, models) {
     const current = String(modelWidget?.value || "").trim();
     const values = Array.isArray(models) ? models.map((model) => String(model || "").trim()).filter(Boolean) : [];
@@ -164,6 +191,88 @@ export function updateModelOptions(selectorWidget, modelWidget, models) {
     if (!current) {
         setWidgetValue(modelWidget, selectorWidget.value);
     }
+    return true;
+}
+
+export function normalizeProviderCatalog(payload) {
+    const models = Array.isArray(payload?.models)
+        ? payload.models
+            .filter((model) => model && typeof model === "object")
+            .map((model) => ({
+                provider: String(model.provider || "ollama").trim() || "ollama",
+                model_id: String(model.model_id || model.alias || model.label || "").trim(),
+                alias: String(model.alias || model.model_id || model.label || "").trim(),
+                label: String(model.label || model.alias || model.model_id || "").trim(),
+                backend: String(model.backend || "").trim(),
+                status: String(model.status || "").trim(),
+                downloaded: Boolean(model.downloaded),
+                loaded: Boolean(model.loaded),
+                local_path: String(model.local_path || ""),
+                missing_dependencies: Array.isArray(model.missing_dependencies) ? model.missing_dependencies.map(String) : [],
+            }))
+            .filter((model) => model.model_id)
+        : [];
+    const providerIds = new Set(models.map((model) => model.provider));
+    const providers = Array.isArray(payload?.providers)
+        ? payload.providers
+            .filter((provider) => provider && provider.id)
+            .map((provider) => ({ id: String(provider.id), label: String(provider.label || provider.id) }))
+        : [];
+    if (providers.length === 0) {
+        providers.push({ id: "ollama", label: "Ollama" });
+    }
+    for (const providerId of providerIds) {
+        if (!providers.some((provider) => provider.id === providerId)) {
+            providers.push({ id: providerId, label: providerId });
+        }
+    }
+    return {
+        ok: Boolean(payload?.ok ?? true),
+        providers,
+        models,
+        ollama_error: String(payload?.ollama_error || ""),
+    };
+}
+
+export function modelOptionsForProvider(catalog, provider, currentModelId = "") {
+    const providerId = String(provider || "ollama");
+    const current = String(currentModelId || "").trim();
+    const values = normalizeProviderCatalog(catalog).models
+        .filter((model) => model.provider === providerId)
+        .map((model) => model.model_id);
+    const uniqueValues = [...new Set(values)];
+    if (current && !uniqueValues.includes(current)) {
+        uniqueValues.unshift(current);
+    }
+    return uniqueValues;
+}
+
+export function updateProviderModelOptions(providerSelector, modelSelector, node, catalogPayload) {
+    const catalog = normalizeProviderCatalog(catalogPayload);
+    const config = readPromptEnhancerModelConfig(node);
+    const providerValues = catalog.providers.map((provider) => provider.id);
+    if (!providerValues.includes(config.provider)) {
+        providerValues.unshift(config.provider);
+    }
+    if (providerSelector) {
+        providerSelector.options ??= {};
+        providerSelector.options.values = providerValues;
+        providerSelector.value = providerValues.includes(config.provider) ? config.provider : providerValues[0];
+    }
+    const provider = String(providerSelector?.value || config.provider || "ollama");
+    const modelValues = modelOptionsForProvider(catalog, provider, config.modelId);
+    if (!modelSelector || modelValues.length === 0) {
+        return false;
+    }
+    modelSelector.options ??= {};
+    modelSelector.options.values = modelValues;
+    modelSelector.value = modelValues.includes(config.modelId) ? config.modelId : modelValues[0];
+    const selectedModel = catalog.models.find((model) => model.provider === provider && model.model_id === modelSelector.value);
+    writePromptEnhancerModelConfig(node, {
+        provider,
+        modelId: modelSelector.value,
+        modelBackend: selectedModel?.backend || (provider === "ollama" ? "ollama" : ""),
+    });
     return true;
 }
 

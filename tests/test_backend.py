@@ -422,11 +422,15 @@ class NodeSchemaContractTests(unittest.TestCase):
         self.assertTrue(all(name.startswith("Helto ") or name == "Prompt enhancer" for name in display_names))
         prompt_enhancer_schema = next(schema for schema in schemas if schema.node_id == "HeltoPromptEnhancer")
         prompt_enhancer_model_input = next(input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "model")
+        prompt_enhancer_provider_input = next(input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "provider")
+        prompt_enhancer_model_id_input = next(input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "model_id")
         prompt_enhancer_variables_input = next(input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "variables")
         prompt_enhancer_keep_alive_unit_input = next(
             input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "ollama_keep_alive_unit"
         )
         self.assertEqual(prompt_enhancer_model_input.kwargs["io_kind"], "String")
+        self.assertEqual(prompt_enhancer_provider_input.kwargs["io_kind"], "String")
+        self.assertEqual(prompt_enhancer_model_id_input.kwargs["io_kind"], "String")
         self.assertEqual(prompt_enhancer_variables_input.kwargs["io_kind"], "String")
         self.assertEqual(prompt_enhancer_keep_alive_unit_input.kwargs["options"], ["seconds", "minutes", "hours"])
         self.assertEqual(
@@ -470,15 +474,15 @@ class NodeSchemaContractTests(unittest.TestCase):
             if node_cls.define_schema().node_id == "HeltoPromptEnhancer"
         )
         globals_ = prompt_node.execute.__func__.__globals__
-        original_provider = globals_["OllamaPromptProvider"]
+        original_provider = globals_["PromptProviderRegistry"]
         requests = []
 
-        class FakeProvider:
+        class FakeRegistry:
             def generate(self, request):
                 requests.append(request)
                 return request.prompt
 
-        globals_["OllamaPromptProvider"] = FakeProvider
+        globals_["PromptProviderRegistry"] = FakeRegistry
         try:
             result = prompt_node.execute(
                 seed=11,
@@ -488,7 +492,7 @@ class NodeSchemaContractTests(unittest.TestCase):
                 ]),
             )
         finally:
-            globals_["OllamaPromptProvider"] = original_provider
+            globals_["PromptProviderRegistry"] = original_provider
 
         self.assertEqual(result[0], "A documentary portrait")
         self.assertEqual(result[2], "A documentary portrait")

@@ -5,6 +5,15 @@ import asyncio
 from aiohttp import web
 import server
 
+from .local_provider import (
+    LocalProviderError,
+    clear_hf_token,
+    download_local_model,
+    provider_catalog,
+    provider_settings_status,
+    save_hf_token,
+    unload_local_model,
+)
 from .provider import DEFAULT_OLLAMA_TIMEOUT, DEFAULT_OLLAMA_URL, OllamaPromptProvider
 from .prompts import reset_system_prompt, save_system_prompt, system_prompt_payload
 
@@ -27,6 +36,51 @@ async def _request_models(data: dict) -> web.Response:
         return web.json_response({"models": models})
     except Exception as exc:
         return web.json_response({"error": str(exc), "models": []}, status=400)
+
+
+async def _request_provider_models(data: dict) -> web.Response:
+    url = data.get("url") or DEFAULT_OLLAMA_URL
+    timeout = _parse_timeout(data.get("timeout"))
+    ollama_models = []
+    ollama_error = ""
+    try:
+        ollama_models = await asyncio.to_thread(OllamaPromptProvider().list_models, url, timeout)
+    except Exception as exc:  # noqa: BLE001 - unified catalog should still show local providers.
+        ollama_error = str(exc)
+    return web.json_response(provider_catalog(ollama_models, ollama_error))
+
+
+async def _download_provider_model(data: dict) -> web.Response:
+    try:
+        result = await asyncio.to_thread(download_local_model, data.get("model_id") or data.get("model"))
+        return web.json_response(result)
+    except LocalProviderError as exc:
+        return web.json_response({"ok": False, "error": str(exc)}, status=400)
+    except Exception as exc:  # noqa: BLE001
+        return web.json_response({"ok": False, "error": str(exc)}, status=500)
+
+
+async def _unload_provider_model(data: dict) -> web.Response:
+    try:
+        result = await asyncio.to_thread(unload_local_model, data.get("model_id") or data.get("model") or None)
+        return web.json_response(result)
+    except LocalProviderError as exc:
+        return web.json_response({"ok": False, "error": str(exc)}, status=400)
+    except Exception as exc:  # noqa: BLE001
+        return web.json_response({"ok": False, "error": str(exc)}, status=500)
+
+
+async def _request_provider_settings() -> web.Response:
+    return web.json_response(provider_settings_status())
+
+
+async def _save_provider_settings(data: dict) -> web.Response:
+    try:
+        if data.get("clear"):
+            return web.json_response(clear_hf_token())
+        return web.json_response(save_hf_token(data.get("hf_token", "")))
+    except Exception as exc:  # noqa: BLE001
+        return web.json_response({"ok": False, "error": str(exc)}, status=400)
 
 
 async def _request_system_prompt(kind: str | None) -> web.Response:
@@ -67,6 +121,57 @@ async def post_models(request):
     except Exception:
         data = {}
     return await _request_models(data if isinstance(data, dict) else {})
+
+
+@server.PromptServer.instance.routes.get(f"{ROUTE_PREFIX}/providers/models")
+async def get_provider_models(request):
+    return await _request_provider_models(
+        {
+            "url": request.query.get("url", DEFAULT_OLLAMA_URL),
+            "timeout": request.query.get("timeout", DEFAULT_OLLAMA_TIMEOUT),
+        }
+    )
+
+
+@server.PromptServer.instance.routes.post(f"{ROUTE_PREFIX}/providers/models")
+async def post_provider_models(request):
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    return await _request_provider_models(data if isinstance(data, dict) else {})
+
+
+@server.PromptServer.instance.routes.post(f"{ROUTE_PREFIX}/providers/download")
+async def post_provider_download(request):
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    return await _download_provider_model(data if isinstance(data, dict) else {})
+
+
+@server.PromptServer.instance.routes.post(f"{ROUTE_PREFIX}/providers/unload")
+async def post_provider_unload(request):
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    return await _unload_provider_model(data if isinstance(data, dict) else {})
+
+
+@server.PromptServer.instance.routes.get(f"{ROUTE_PREFIX}/providers/settings")
+async def get_provider_settings(_request):
+    return await _request_provider_settings()
+
+
+@server.PromptServer.instance.routes.post(f"{ROUTE_PREFIX}/providers/settings")
+async def post_provider_settings(request):
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    return await _save_provider_settings(data if isinstance(data, dict) else {})
 
 
 @server.PromptServer.instance.routes.get(f"{ROUTE_PREFIX}/system_prompt")
