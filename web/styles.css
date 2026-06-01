@@ -1152,12 +1152,16 @@
     border-color: var(--border-active);
 }
 .helto-prompt-enhancer-prompt-hidden {
+    background: #0c0d12 !important;
+    border-color: #0c0d12 !important;
     color: transparent !important;
     -webkit-text-fill-color: transparent !important;
     caret-color: transparent !important;
     text-shadow: none !important;
 }
 .helto-prompt-enhancer-prompt-hidden:hover {
+    background: var(--bg-tertiary) !important;
+    border-color: var(--border-subtle) !important;
     color: inherit !important;
     -webkit-text-fill-color: currentColor !important;
     caret-color: auto !important;

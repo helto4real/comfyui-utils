@@ -16,7 +16,6 @@ import {
     PROMPT_EDITOR_HEIGHT,
     PROMPT_EDITOR_WIDGET_NAME,
     promptEditorLayout,
-    promptWidgetBounds,
     readPromptValue,
     readPromptEnhancerSettings,
     readPromptVariables,
@@ -386,40 +385,6 @@ function applyPromptDomHideMode(node) {
     for (const element of getPromptDomElements(node)) {
         element.classList.toggle("helto-prompt-enhancer-prompt-hidden", shouldHide);
     }
-}
-
-function drawHiddenPromptOverlay(node, ctx) {
-    if (!shouldHidePromptWidget(node, node[PROMPT_HOVER_STATE])) {
-        return;
-    }
-    const bounds = promptWidgetBounds(node);
-    if (!bounds) {
-        return;
-    }
-
-    ctx.save();
-    ctx.fillStyle = "rgba(12, 13, 18, 0.96)";
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.14)";
-    ctx.lineWidth = 1;
-    const radius = 6;
-    const x = bounds.x + 6;
-    const y = bounds.y + 2;
-    const width = Math.max(0, bounds.width - 12);
-    const height = Math.max(0, bounds.height - 4);
-    if (width <= 0 || height <= 0) {
-        ctx.restore();
-        return;
-    }
-    if (typeof ctx.roundRect === "function") {
-        ctx.beginPath();
-        ctx.roundRect(x, y, width, height, radius);
-        ctx.fill();
-        ctx.stroke();
-    } else {
-        ctx.fillRect(x, y, width, height);
-        ctx.strokeRect(x, y, width, height);
-    }
-    ctx.restore();
 }
 
 function promptKindLabel(kind) {
@@ -794,7 +759,6 @@ app.registerExtension({
             const result = onDrawForeground?.apply(this, arguments);
             applyPromptEditorLayout(this);
             applyPromptDomHideMode(this);
-            drawHiddenPromptOverlay(this, ctx);
             return result;
         };
     },
