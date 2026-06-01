@@ -364,6 +364,122 @@ class PromptEnhancerProviderTests(unittest.TestCase):
             ],
         )
 
+    def test_local_provider_zero_keep_alive_unloads_before_returning(self):
+        alias = "qwen3_vl_4b_fast"
+        request = PromptEnhancerRequest(
+            model=alias,
+            prompt_type="image",
+            prompt="A quiet forest",
+            system_prompt="system",
+            seed=1,
+            images=[],
+            settings=PromptEnhancerSettings(keep_alive=0, keep_alive_unit="seconds"),
+            provider=local_provider.PROVIDER_LOCAL_TRANSFORMERS,
+            model_id=alias,
+            model_backend="qwen",
+        )
+        events = []
+
+        class FakeProgress:
+            def phase_done(self, phase):
+                events.append((phase, "done"))
+
+            def phase_start(self, phase):
+                events.append((phase, "start"))
+
+        with patch.object(local_provider, "_LOADED_MODELS", {alias: {"torch": None}}), \
+                patch.object(local_provider, "ensure_model_downloaded", return_value=Path("/tmp/model")), \
+                patch.object(local_provider, "local_vram_preflight"), \
+                patch.object(local_provider, "decode_request_images", return_value=[]), \
+                patch.object(local_provider, "_generate_qwen", return_value=" generated prompt "), \
+                patch.object(local_provider, "unload_local_model", return_value={"ok": True, "unloaded": [alias]}) as unload:
+            result = local_provider.LocalPromptProvider().generate(request, FakeProgress())
+
+        self.assertEqual(result, "generated prompt")
+        unload.assert_called_once_with(alias)
+        self.assertIn(("release", "start"), events)
+        self.assertIn(("release", "done"), events)
+
+    def test_local_provider_nonzero_keep_alive_keeps_model_loaded(self):
+        alias = "qwen3_vl_4b_fast"
+        request = PromptEnhancerRequest(
+            model=alias,
+            prompt_type="image",
+            prompt="A quiet forest",
+            system_prompt="system",
+            seed=1,
+            images=[],
+            settings=PromptEnhancerSettings(keep_alive=5, keep_alive_unit="minutes"),
+            provider=local_provider.PROVIDER_LOCAL_TRANSFORMERS,
+            model_id=alias,
+            model_backend="qwen",
+        )
+
+        with patch.object(local_provider, "_LOADED_MODELS", {alias: {"torch": None}}), \
+                patch.object(local_provider, "ensure_model_downloaded", return_value=Path("/tmp/model")), \
+                patch.object(local_provider, "local_vram_preflight"), \
+                patch.object(local_provider, "decode_request_images", return_value=[]), \
+                patch.object(local_provider, "_generate_qwen", return_value=" generated prompt "), \
+                patch.object(local_provider, "unload_local_model") as unload:
+            result = local_provider.LocalPromptProvider().generate(request)
+
+        self.assertEqual(result, "generated prompt")
+        unload.assert_not_called()
+
+    def test_local_provider_zero_keep_alive_propagates_unload_failure(self):
+        alias = "qwen3_vl_4b_fast"
+        request = PromptEnhancerRequest(
+            model=alias,
+            prompt_type="image",
+            prompt="A quiet forest",
+            system_prompt="system",
+            seed=1,
+            images=[],
+            settings=PromptEnhancerSettings(keep_alive=0, keep_alive_unit="minutes"),
+            provider=local_provider.PROVIDER_LOCAL_TRANSFORMERS,
+            model_id=alias,
+            model_backend="qwen",
+        )
+
+        with patch.object(local_provider, "_LOADED_MODELS", {alias: {"torch": None}}), \
+                patch.object(local_provider, "ensure_model_downloaded", return_value=Path("/tmp/model")), \
+                patch.object(local_provider, "local_vram_preflight"), \
+                patch.object(local_provider, "decode_request_images", return_value=[]), \
+                patch.object(local_provider, "_generate_qwen", return_value=" generated prompt "), \
+                patch.object(local_provider, "unload_local_model", side_effect=RuntimeError("release failed")):
+            with self.assertRaisesRegex(RuntimeError, "release failed"):
+                local_provider.LocalPromptProvider().generate(request)
+
+    def test_fallback_local_provider_zero_keep_alive_does_not_unload_absent_model(self):
+        request = PromptEnhancerRequest(
+            model="fallback_text_backend",
+            prompt_type="image",
+            prompt="A quiet forest",
+            system_prompt="system",
+            seed=1,
+            images=[],
+            settings=PromptEnhancerSettings(keep_alive=0, keep_alive_unit="seconds"),
+            provider=local_provider.PROVIDER_FALLBACK,
+            model_id="fallback_text_backend",
+            model_backend="fallback",
+        )
+        events = []
+
+        class FakeProgress:
+            def phase_done(self, phase):
+                events.append((phase, "done"))
+
+            def phase_start(self, phase):
+                events.append((phase, "start"))
+
+        with patch.object(local_provider, "_LOADED_MODELS", {}), patch.object(local_provider, "unload_local_model") as unload:
+            result = local_provider.LocalPromptProvider().generate(request, FakeProgress())
+
+        self.assertIn("A quiet forest", result)
+        unload.assert_not_called()
+        self.assertIn(("release", "start"), events)
+        self.assertIn(("release", "done"), events)
+
     def test_local_text_encoder_checkpoint_reports_unsupported_generator(self):
         request = PromptEnhancerRequest(
             model="gemma4_e4b_it_fp8_scaled",
