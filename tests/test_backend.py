@@ -422,11 +422,27 @@ class NodeSchemaContractTests(unittest.TestCase):
         self.assertTrue(all(name.startswith("Helto ") or name == "Prompt enhancer" for name in display_names))
         prompt_enhancer_schema = next(schema for schema in schemas if schema.node_id == "HeltoPromptEnhancer")
         prompt_enhancer_model_input = next(input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "model")
+        prompt_enhancer_variables_input = next(input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "variables")
         prompt_enhancer_keep_alive_unit_input = next(
             input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "ollama_keep_alive_unit"
         )
         self.assertEqual(prompt_enhancer_model_input.kwargs["io_kind"], "String")
+        self.assertEqual(prompt_enhancer_variables_input.kwargs["io_kind"], "String")
         self.assertEqual(prompt_enhancer_keep_alive_unit_input.kwargs["options"], ["seconds", "minutes", "hours"])
+        self.assertEqual(
+            [output_def.id for output_def in prompt_enhancer_schema.outputs],
+            ["prompt", "system_prompt", "resolved_prompt"],
+        )
+
+    def test_custom_node_style_import_does_not_require_top_level_selector_package(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime(isolate_custom_node_root=True)
+
+        node_classes = asyncio.run(extension_module.HeltoUtilsExtension().get_node_list())
+
+        self.assertIn(
+            "HeltoPromptEnhancer",
+            [node_cls.define_schema().node_id for node_cls in node_classes],
+        )
 
     def test_privacy_show_any_converts_supported_values_to_text(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()
@@ -445,6 +461,38 @@ class NodeSchemaContractTests(unittest.TestCase):
         self.assertTrue(schema.kwargs["is_output_node"])
         self.assertIn('"prompt": "hello"', result[0])
         self.assertEqual(result.kwargs["ui"]["helto_privacy_show_any"][0]["text"], result[0])
+
+    def test_prompt_enhancer_sends_substituted_prompt_to_provider(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        prompt_node = next(
+            node_cls
+            for node_cls in asyncio.run(extension_module.HeltoUtilsExtension().get_node_list())
+            if node_cls.define_schema().node_id == "HeltoPromptEnhancer"
+        )
+        globals_ = prompt_node.execute.__func__.__globals__
+        original_provider = globals_["OllamaPromptProvider"]
+        requests = []
+
+        class FakeProvider:
+            def generate(self, request):
+                requests.append(request)
+                return request.prompt
+
+        globals_["OllamaPromptProvider"] = FakeProvider
+        try:
+            result = prompt_node.execute(
+                seed=11,
+                prompt="A {{style}} portrait",
+                variables=json.dumps([
+                    {"name": "style", "mode": "fixed", "values": ["documentary"], "fixed_index": 0}
+                ]),
+            )
+        finally:
+            globals_["OllamaPromptProvider"] = original_provider
+
+        self.assertEqual(result[0], "A documentary portrait")
+        self.assertEqual(result[2], "A documentary portrait")
+        self.assertEqual(requests[0].prompt, "A documentary portrait")
 
     def test_privacy_show_any_summarizes_unhelpful_object_values(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()
@@ -861,7 +909,7 @@ class NodeSchemaContractTests(unittest.TestCase):
                 sys.modules["helto_selector_backend.node"] = previous_node
 
     @staticmethod
-    def _import_extension_with_fake_comfy_runtime():
+    def _import_extension_with_fake_comfy_runtime(isolate_custom_node_root=False):
         class FakeSchema:
             def __init__(
                 self,
@@ -1060,11 +1108,26 @@ class NodeSchemaContractTests(unittest.TestCase):
             for name, module in sys.modules.items()
             if name == package_name or name.startswith(f"{package_name}.")
         }
+        previous_selector_modules = {
+            name: module
+            for name, module in sys.modules.items()
+            if name == "helto_selector_backend" or name.startswith("helto_selector_backend.")
+        }
+        previous_sys_path = list(sys.path)
         for name in previous_package_modules:
             sys.modules.pop(name, None)
+        if isolate_custom_node_root:
+            for name in previous_selector_modules:
+                sys.modules.pop(name, None)
 
         sys.modules.update(modules)
         init_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "__init__.py"))
+        repo_root = os.path.dirname(init_path)
+        if isolate_custom_node_root:
+            sys.path[:] = [
+                entry for entry in sys.path
+                if os.path.abspath(entry or os.getcwd()) != repo_root
+            ]
         spec = importlib.util.spec_from_file_location(
             package_name,
             init_path,
@@ -1085,6 +1148,12 @@ class NodeSchemaContractTests(unittest.TestCase):
                 if name == package_name or name.startswith(f"{package_name}."):
                     sys.modules.pop(name, None)
             sys.modules.update(previous_package_modules)
+            if isolate_custom_node_root:
+                for name in list(sys.modules):
+                    if name == "helto_selector_backend" or name.startswith("helto_selector_backend."):
+                        sys.modules.pop(name, None)
+                sys.modules.update(previous_selector_modules)
+                sys.path[:] = previous_sys_path
 
 
 if __name__ == "__main__":

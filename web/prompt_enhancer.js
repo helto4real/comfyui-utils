@@ -1,30 +1,44 @@
 import { app } from "/scripts/app.js";
 
-import { collapseHiddenWidgetLayout, createModal } from "./ui.js";
+import { selectorApi } from "./api.js";
+import { collapseHiddenWidgetLayout, containPointerEvents, createModal } from "./ui.js";
 import {
     PROMPT_ENHANCER_NODE_CLASS,
+    PROMPT_EDITOR_WIDGET_NAME,
+    addPromptVariable,
+    autocompleteStateForPrompt,
     getWidget,
     fetchSystemPrompt,
     hideSerializedSettingsWidgets,
+    insertVariableSuggestion,
     keepFixedPromptSeed,
     isPointInPromptWidget,
+    moveAutocompleteSelection,
     promptWidgetBounds,
+    readPromptValue,
     readPromptEnhancerSettings,
+    readPromptVariables,
+    removePromptVariable,
     resetSystemPrompt,
     saveSystemPrompt,
     setGenerateNewEachPrompt,
     setNewFixedPromptSeed,
     shouldHidePromptWidget,
+    updatePromptVariable,
     updateModelOptions,
     writePromptEnhancerSettings,
+    writePromptValue,
+    writePromptVariables,
 } from "./prompt_enhancer_helpers.js";
 
 const BUTTONS_ADDED = "__heltoPromptEnhancerButtonsAdded";
 const SETTINGS_BUTTON = "__heltoPromptEnhancerSettingsButton";
 const MODELS_BUTTON = "__heltoPromptEnhancerModelsButton";
+const VARIABLES_BUTTON = "__heltoPromptEnhancerVariablesButton";
 const MODEL_SELECTOR = "__heltoPromptEnhancerModelSelector";
 const PROMPT_HOVER_STATE = "__heltoPromptEnhancerPromptHover";
 const PROMPT_DOM_ELEMENTS = "__heltoPromptEnhancerPromptDomElements";
+const PROMPT_EDITOR_STATE = "__heltoPromptEnhancerPromptEditor";
 
 function isPromptEnhancerNode(node) {
     return node?.comfyClass === PROMPT_ENHANCER_NODE_CLASS || node?.constructor?.comfyClass === PROMPT_ENHANCER_NODE_CLASS;
@@ -57,6 +71,158 @@ function addButton(node, key, label, callback) {
         node[key] = widget;
     }
     return widget;
+}
+
+function getPromptEditorState(node) {
+    return node[PROMPT_EDITOR_STATE] ?? null;
+}
+
+function ensurePromptEditor(node) {
+    if (node[PROMPT_EDITOR_STATE]) {
+        syncPromptEditorFromWidget(node);
+        return node[PROMPT_EDITOR_STATE];
+    }
+    if (typeof node.addDOMWidget !== "function") {
+        return null;
+    }
+
+    const frame = document.createElement("div");
+    frame.className = "helto-prompt-enhancer-editor-widget";
+    containPointerEvents(frame);
+    const textarea = document.createElement("textarea");
+    textarea.className = "helto-prompt-enhancer-user-prompt";
+    textarea.placeholder = "Describe the result you want. Use {{variable_name}} for variables.";
+    textarea.spellcheck = false;
+    textarea.value = readPromptValue(node);
+    const suggestions = document.createElement("div");
+    suggestions.className = "helto-prompt-enhancer-suggestions";
+    suggestions.hidden = true;
+    frame.appendChild(textarea);
+    frame.appendChild(suggestions);
+
+    const state = {
+        frame,
+        textarea,
+        suggestions,
+        variables: [],
+        autocomplete: { active: false, options: [], selectedIndex: 0 },
+        domWidget: null,
+    };
+
+    const refreshAutocomplete = (selectedIndex = state.autocomplete.selectedIndex || 0) => {
+        state.autocomplete = autocompleteStateForPrompt(
+            textarea.value,
+            textarea.selectionStart,
+            state.variables,
+            selectedIndex,
+        );
+        renderPromptSuggestions(node);
+    };
+
+    textarea.addEventListener("input", () => {
+        writePromptValue(node, textarea.value);
+        refreshAutocomplete(0);
+        setCanvasDirty(node);
+    });
+    textarea.addEventListener("click", () => refreshAutocomplete());
+    textarea.addEventListener("keyup", (event) => {
+        if (["Control", "Meta", "Alt", "Shift"].includes(event.key)) return;
+        refreshAutocomplete();
+    });
+    textarea.addEventListener("keydown", (event) => {
+        if (!state.autocomplete.active) return;
+        const key = event.key.toLowerCase();
+        if (event.ctrlKey && key === "y") {
+            event.preventDefault();
+            acceptPromptSuggestion(node);
+        } else if (event.ctrlKey && key === "n") {
+            event.preventDefault();
+            state.autocomplete.selectedIndex = moveAutocompleteSelection(state.autocomplete, 1);
+            renderPromptSuggestions(node);
+        } else if (event.ctrlKey && key === "p") {
+            event.preventDefault();
+            state.autocomplete.selectedIndex = moveAutocompleteSelection(state.autocomplete, -1);
+            renderPromptSuggestions(node);
+        } else if (event.key === "Escape") {
+            event.preventDefault();
+            state.autocomplete = { active: false, options: [], selectedIndex: 0 };
+            renderPromptSuggestions(node);
+        }
+    });
+    textarea.addEventListener("mouseenter", () => updatePromptHover(node, true));
+    textarea.addEventListener("mouseleave", () => updatePromptHover(node, false));
+
+    const getEditorHeight = () => 180;
+    const domWidget = node.addDOMWidget(PROMPT_EDITOR_WIDGET_NAME, "prompt", frame, {
+        serialize: false,
+        hideOnZoom: false,
+        getMinHeight: getEditorHeight,
+        getMaxHeight: getEditorHeight,
+        getHeight: getEditorHeight,
+    });
+    if (domWidget) {
+        domWidget.serialize = false;
+        domWidget.options ??= {};
+        domWidget.options.serialize = false;
+        domWidget.options.getMinHeight = getEditorHeight;
+        domWidget.options.getMaxHeight = getEditorHeight;
+        domWidget.options.getHeight = getEditorHeight;
+        domWidget.getMinHeight = getEditorHeight;
+        domWidget.getMaxHeight = getEditorHeight;
+        domWidget.getHeight = getEditorHeight;
+    }
+    state.domWidget = domWidget;
+    node[PROMPT_EDITOR_STATE] = state;
+    readPromptVariables(node, selectorApi).then((variables) => {
+        state.variables = variables;
+        renderPromptSuggestions(node);
+    });
+    return state;
+}
+
+function syncPromptEditorFromWidget(node) {
+    const state = getPromptEditorState(node);
+    if (!state) return;
+    const value = readPromptValue(node);
+    if (state.textarea.value !== value && document.activeElement !== state.textarea) {
+        state.textarea.value = value;
+    }
+}
+
+function renderPromptSuggestions(node) {
+    const state = getPromptEditorState(node);
+    if (!state) return;
+    const { suggestions, autocomplete } = state;
+    suggestions.innerHTML = "";
+    if (!autocomplete.active || autocomplete.options.length === 0) {
+        suggestions.hidden = true;
+        return;
+    }
+    suggestions.hidden = false;
+    autocomplete.options.forEach((name, index) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = index === autocomplete.selectedIndex ? "selected" : "";
+        button.innerText = name;
+        button.onmousedown = (event) => {
+            event.preventDefault();
+            acceptPromptSuggestion(node, name);
+        };
+        suggestions.appendChild(button);
+    });
+}
+
+function acceptPromptSuggestion(node, explicitName = null) {
+    const state = getPromptEditorState(node);
+    if (!state?.autocomplete?.active) return;
+    const result = insertVariableSuggestion(state.textarea.value, state.autocomplete, explicitName);
+    state.textarea.value = result.text;
+    state.textarea.setSelectionRange(result.cursor, result.cursor);
+    writePromptValue(node, result.text);
+    state.autocomplete = { active: false, options: [], selectedIndex: 0 };
+    renderPromptSuggestions(node);
+    setCanvasDirty(node);
+    state.textarea.focus();
 }
 
 function ensureModelSelector(node) {
@@ -138,6 +304,8 @@ function getPromptDomElements(node) {
 
     const widget = getWidget(node, "prompt");
     const candidates = [
+        getPromptEditorState(node)?.textarea,
+        getPromptEditorState(node)?.frame,
         widget?.element,
         widget?.inputEl,
         widget?.input,
@@ -235,6 +403,143 @@ async function openSystemPromptEditor(kind) {
     modal.footer.insertBefore(resetButton, modal.actionBtn);
 }
 
+async function openVariablesEditor(node) {
+    let variables = await readPromptVariables(node, selectorApi);
+    const content = `
+        <div class="helto-prompt-enhancer-variable-toolbar">
+            <button type="button" class="helto-modal-btn btn-secondary" id="helto-pe-add-variable">Add variable</button>
+        </div>
+        <div class="helto-prompt-enhancer-variable-list" id="helto-pe-variable-list"></div>
+    `;
+    const modal = createModal("Prompt enhancer variables", content, async () => {
+        await writePromptVariables(node, variables, readPromptEnhancerSettings(node).privacyMode, selectorApi);
+        const state = getPromptEditorState(node);
+        if (state) {
+            state.variables = variables;
+            renderPromptSuggestions(node);
+        }
+        setCanvasDirty(node);
+        return true;
+    }, {
+        actionText: "Save",
+        cardClass: "helto-prompt-enhancer-variables-card",
+        bodyClass: "helto-prompt-enhancer-variables-body",
+    });
+
+    const list = modal.body.querySelector("#helto-pe-variable-list");
+    const render = () => {
+        list.innerHTML = "";
+        if (variables.length === 0) {
+            const empty = document.createElement("div");
+            empty.className = "helto-prompt-enhancer-empty";
+            empty.innerText = "No variables yet.";
+            list.appendChild(empty);
+            return;
+        }
+        variables.forEach((variable, variableIndex) => {
+            const row = document.createElement("div");
+            row.className = "helto-prompt-enhancer-variable-row";
+
+            const header = document.createElement("div");
+            header.className = "helto-prompt-enhancer-variable-header";
+
+            const nameInput = document.createElement("input");
+            nameInput.className = "helto-prompt-enhancer-input";
+            nameInput.value = variable.name;
+            nameInput.placeholder = "variable_name";
+            nameInput.oninput = () => {
+                variables[variableIndex].name = nameInput.value;
+            };
+
+            const modeSelect = document.createElement("select");
+            modeSelect.className = "helto-select";
+            modeSelect.innerHTML = `
+                <option value="random">random</option>
+                <option value="fixed">fixed</option>
+            `;
+            modeSelect.value = variable.mode;
+            modeSelect.onchange = () => {
+                variables = updatePromptVariable(variables, variableIndex, { mode: modeSelect.value });
+                render();
+            };
+
+            const removeButton = document.createElement("button");
+            removeButton.type = "button";
+            removeButton.className = "helto-modal-btn btn-secondary";
+            removeButton.innerText = "Remove";
+            removeButton.onclick = () => {
+                variables = removePromptVariable(variables, variableIndex);
+                render();
+            };
+
+            header.appendChild(nameInput);
+            header.appendChild(modeSelect);
+            header.appendChild(removeButton);
+            row.appendChild(header);
+
+            const values = document.createElement("div");
+            values.className = "helto-prompt-enhancer-variable-values";
+            variable.values.forEach((value, valueIndex) => {
+                const valueRow = document.createElement("div");
+                valueRow.className = "helto-prompt-enhancer-value-row";
+
+                const fixedRadio = document.createElement("input");
+                fixedRadio.type = "radio";
+                fixedRadio.name = `helto-pe-fixed-${variableIndex}`;
+                fixedRadio.checked = variable.fixed_index === valueIndex;
+                fixedRadio.disabled = variable.mode !== "fixed";
+                fixedRadio.onchange = () => {
+                    variables = updatePromptVariable(variables, variableIndex, { fixed_index: valueIndex });
+                };
+
+                const valueInput = document.createElement("input");
+                valueInput.className = "helto-prompt-enhancer-input";
+                valueInput.value = value;
+                valueInput.placeholder = "value";
+                valueInput.oninput = () => {
+                    const nextValues = [...variable.values];
+                    nextValues[valueIndex] = valueInput.value;
+                    variables = updatePromptVariable(variables, variableIndex, { values: nextValues });
+                    variable = variables[variableIndex] || variable;
+                };
+
+                const removeValueButton = document.createElement("button");
+                removeValueButton.type = "button";
+                removeValueButton.className = "helto-modal-btn btn-secondary";
+                removeValueButton.innerText = "Remove";
+                removeValueButton.onclick = () => {
+                    const nextValues = variable.values.filter((_item, itemIndex) => itemIndex !== valueIndex);
+                    variables = updatePromptVariable(variables, variableIndex, { values: nextValues });
+                    render();
+                };
+
+                valueRow.appendChild(fixedRadio);
+                valueRow.appendChild(valueInput);
+                valueRow.appendChild(removeValueButton);
+                values.appendChild(valueRow);
+            });
+
+            const addValueButton = document.createElement("button");
+            addValueButton.type = "button";
+            addValueButton.className = "helto-modal-btn btn-secondary";
+            addValueButton.innerText = "Add value";
+            addValueButton.onclick = () => {
+                variables = updatePromptVariable(variables, variableIndex, { values: [...variable.values, ""] });
+                render();
+            };
+            values.appendChild(addValueButton);
+            row.appendChild(values);
+            list.appendChild(row);
+        });
+    };
+
+    modal.body.querySelector("#helto-pe-add-variable").onclick = () => {
+        variables = addPromptVariable(variables);
+        render();
+    };
+    render();
+}
+
 function openSettingsModal(node) {
     const settings = readPromptEnhancerSettings(node);
     const hideChecked = settings.hideMode ? "checked" : "";
@@ -303,14 +608,17 @@ function openSettingsModal(node) {
     `;
 
     const modal = createModal("Prompt enhancer settings", content, async (body) => {
+        const variables = await readPromptVariables(node, selectorApi);
+        const privacyMode = body.querySelector("#helto-pe-privacy-mode").checked;
         writePromptEnhancerSettings(node, {
             hideMode: body.querySelector("#helto-pe-hide-mode").checked,
-            privacyMode: body.querySelector("#helto-pe-privacy-mode").checked,
+            privacyMode,
             ollamaUrl: body.querySelector("#helto-pe-ollama-url").value,
             keepAlive: body.querySelector("#helto-pe-keep-alive").value,
             keepAliveUnit: body.querySelector("#helto-pe-keep-alive-unit").value,
             timeout: body.querySelector("#helto-pe-timeout").value,
         });
+        await writePromptVariables(node, variables, privacyMode, selectorApi);
         await refreshModels(node);
         applyPromptDomHideMode(node);
         setCanvasDirty(node);
@@ -348,6 +656,7 @@ function ensurePromptEnhancerUi(node) {
         return;
     }
     hideSerializedSettingsWidgets(node, collapseHiddenWidgetLayout);
+    ensurePromptEditor(node);
     ensureModelSelector(node);
     node[PROMPT_HOVER_STATE] ??= false;
     applyPromptDomHideMode(node);
@@ -370,6 +679,12 @@ function ensurePromptEnhancerUi(node) {
         setCanvasDirty(node);
     });
     addButton(node, SETTINGS_BUTTON, "settings", () => openSettingsModal(node));
+    addButton(node, VARIABLES_BUTTON, "variables", () => {
+        openVariablesEditor(node).catch((err) => {
+            console.error("Prompt enhancer variable editor failed:", err);
+            alert(err.message || "Failed to open variable editor.");
+        });
+    });
     addButton(node, MODELS_BUTTON, "refresh models", () => refreshModels(node));
 
     refreshModels(node);

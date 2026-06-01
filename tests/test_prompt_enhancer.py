@@ -25,6 +25,8 @@ from shared.prompt_enhancer.provider import (
     ollama_keep_alive,
     resolve_seed,
 )
+from shared.prompt_enhancer.variables import parse_prompt_variables, substitute_prompt_variables
+from helto_selector_backend.crypto import encrypt_selection
 
 
 class PromptEnhancerProviderTests(unittest.TestCase):
@@ -171,6 +173,45 @@ class PromptEnhancerProviderTests(unittest.TestCase):
         self.assertEqual(generate_payload["keep_alive"], "0s")
         self.assertEqual(unload_payload, {"model": "llava:latest", "keep_alive": 0, "stream": False})
         self.assertEqual(request.call_args_list[1].args[2], 9)
+
+    def test_prompt_variables_parse_plain_and_encrypted_json(self):
+        plain = json_dumps([
+            {"name": "style", "mode": "random", "values": ["cinematic", "documentary"], "fixed_index": 4},
+            {"name": "bad-name", "values": ["ignored"]},
+        ])
+        encrypted = encrypt_selection(plain)
+
+        expected = [
+            {
+                "name": "style",
+                "mode": "random",
+                "values": ["cinematic", "documentary"],
+                "fixed_index": 1,
+            }
+        ]
+
+        self.assertEqual(parse_prompt_variables(plain), expected)
+        self.assertEqual(parse_prompt_variables(encrypted), expected)
+
+    def test_prompt_variables_substitute_fixed_random_and_unknown_tokens(self):
+        variables = [
+            {"name": "style", "mode": "fixed", "values": ["cinematic", "documentary"], "fixed_index": 1},
+            {"name": "lighting", "mode": "random", "values": ["soft", "hard"], "fixed_index": 0},
+            {"name": "empty", "mode": "random", "values": [], "fixed_index": 0},
+        ]
+
+        prompt = "{{style}} portrait, {{lighting}} light, {{missing}}, {{empty}}"
+        first = substitute_prompt_variables(prompt, variables, 123)
+        second = substitute_prompt_variables(prompt, variables, 123)
+
+        self.assertEqual(first, second)
+        self.assertIn("documentary portrait", first)
+        self.assertIn("{{missing}}", first)
+        self.assertTrue(first.endswith(", "))
+
+    def test_prompt_variables_ignore_invalid_payloads(self):
+        self.assertEqual(parse_prompt_variables("not-json"), [])
+        self.assertEqual(substitute_prompt_variables("keep {{style}}", "not-json", 1), "keep {{style}}")
 
 
 class PromptEnhancerRouteTests(unittest.TestCase):

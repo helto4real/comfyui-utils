@@ -27,19 +27,30 @@ import {
     storeOutputForPreviewKeys,
 } from "../../web/hide_mode_helpers.js";
 import {
+    addPromptVariable,
+    autocompleteStateForPrompt,
+    insertVariableSuggestion,
     fetchSystemPrompt,
     hideSerializedSettingsWidgets,
+    isEncryptedVariables,
     isPointInPromptWidget,
     isPromptHideModeEnabled,
     modelOptionsWithCurrentValue,
+    moveAutocompleteSelection,
+    normalizePromptVariables,
+    parsePromptVariablesJson,
     promptWidgetBounds,
+    readPromptVariables,
     readPromptEnhancerSettings,
     resetSystemPrompt,
     saveSystemPrompt,
+    serializePromptVariables,
     setGenerateNewEachPrompt,
     setNewFixedPromptSeed,
     shouldHidePromptWidget,
+    updatePromptVariable,
     updateModelOptions,
+    writePromptVariables,
     writePromptEnhancerSettings,
 } from "../../web/prompt_enhancer_helpers.js";
 import {
@@ -557,6 +568,7 @@ test("prompt enhancer hides serialized model and settings widgets", () => {
             { name: "hide_mode" },
             { name: "privacy_mode" },
             { name: "prompt" },
+            { name: "variables" },
         ],
     };
     const collapsed = [];
@@ -567,8 +579,74 @@ test("prompt enhancer hides serialized model and settings widgets", () => {
     assert.equal(node.widgets[0].type, "hidden");
     assert.equal(node.widgets[1].hidden, true);
     assert.equal(node.widgets[2].hidden, true);
-    assert.equal(node.widgets[3].hidden, undefined);
-    assert.deepEqual(collapsed, ["model", "hide_mode", "privacy_mode"]);
+    assert.equal(node.widgets[3].hidden, true);
+    assert.equal(node.widgets[4].hidden, true);
+    assert.deepEqual(collapsed, ["model", "prompt", "variables", "hide_mode", "privacy_mode"]);
+});
+
+test("prompt enhancer variable helpers parse update and serialize configs", () => {
+    const variables = normalizePromptVariables([
+        { name: "style", mode: "fixed", values: ["cinematic", "documentary"], fixed_index: 8 },
+        { name: "bad-name", values: ["ignored"] },
+    ]);
+
+    assert.deepEqual(variables, [
+        { name: "style", mode: "fixed", values: ["cinematic", "documentary"], fixed_index: 1 },
+    ]);
+    assert.deepEqual(parsePromptVariablesJson(serializePromptVariables(variables)), variables);
+
+    const added = addPromptVariable(variables, "style");
+    assert.equal(added[1].name, "style_2");
+    const updated = updatePromptVariable(added, 1, { name: "lighting", values: ["soft"] });
+    assert.deepEqual(updated[1], { name: "lighting", mode: "random", values: ["soft"], fixed_index: 0 });
+});
+
+test("prompt enhancer variable config encrypts only when privacy mode is enabled", async () => {
+    const selectorApi = {
+        async encrypt(text) {
+            return { encrypted: `__HELTO_ENC__:${Buffer.from(text).toString("base64")}` };
+        },
+        async decrypt(encrypted) {
+            return { data: Buffer.from(encrypted.slice("__HELTO_ENC__:".length), "base64").toString("utf8") };
+        },
+    };
+    const node = {
+        widgets: [
+            { name: "variables", value: "[]" },
+        ],
+    };
+    const variables = [{ name: "style", mode: "fixed", values: ["cinematic"], fixed_index: 0 }];
+
+    const encrypted = await writePromptVariables(node, variables, true, selectorApi);
+
+    assert.equal(isEncryptedVariables(encrypted), true);
+    assert.deepEqual(await readPromptVariables(node, selectorApi), variables);
+
+    const plain = await writePromptVariables(node, variables, false, selectorApi);
+
+    assert.equal(isEncryptedVariables(plain), false);
+    assert.deepEqual(JSON.parse(plain), variables);
+});
+
+test("prompt enhancer autocomplete filters navigates and inserts variables", () => {
+    const variables = [
+        { name: "style", values: ["cinematic"] },
+        { name: "subject", values: ["forest"] },
+        { name: "lighting", values: ["soft"] },
+    ];
+
+    let state = autocompleteStateForPrompt("A {{s", 5, variables);
+
+    assert.equal(state.active, true);
+    assert.deepEqual(state.options, ["style", "subject"]);
+    assert.equal(moveAutocompleteSelection(state, 1), 1);
+
+    state = { ...state, selectedIndex: 1 };
+    assert.deepEqual(insertVariableSuggestion("A {{s", state), {
+        text: "A {{subject}}",
+        cursor: 13,
+    });
+    assert.equal(autocompleteStateForPrompt("A {{style}}", 11, variables).active, false);
 });
 
 test("privacy show any extracts output text and hides encrypted state widget", () => {

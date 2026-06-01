@@ -18,6 +18,11 @@ from .prompts import (
     save_system_prompt,
     system_prompt_payload,
 )
+from .variables import (
+    is_valid_variable_name,
+    parse_prompt_variables,
+    substitute_prompt_variables,
+)
 
 __all__ = [
     "DEFAULT_OLLAMA_KEEP_ALIVE",
@@ -36,4 +41,7 @@ __all__ = [
     "save_system_prompt",
     "resolve_seed",
     "system_prompt_payload",
+    "is_valid_variable_name",
+    "parse_prompt_variables",
+    "substitute_prompt_variables",
 ]

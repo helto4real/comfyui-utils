@@ -16,6 +16,7 @@ from ...shared.prompt_enhancer import (
     PromptEnhancerSettings,
     build_system_prompt,
     resolve_seed,
+    substitute_prompt_variables,
 )
 from ...shared.prompt_enhancer.provider import encode_images_for_ollama
 from ...shared.prompt_enhancer import routes  # noqa: F401
@@ -50,6 +51,7 @@ class PromptEnhancer(io.ComfyNode):
                     placeholder="Describe the result you want.",
                     dynamic_prompts=False,
                 ),
+                io.String.Input("variables", default="[]", dynamic_prompts=False),
                 io.Boolean.Input("hide_mode", default=False),
                 io.Boolean.Input("privacy_mode", default=True),
                 io.String.Input("ollama_url", default=DEFAULT_OLLAMA_URL),
@@ -60,6 +62,7 @@ class PromptEnhancer(io.ComfyNode):
             outputs=[
                 io.String.Output("prompt"),
                 io.String.Output("system_prompt"),
+                io.String.Output("resolved_prompt"),
             ],
         )
 
@@ -79,6 +82,7 @@ class PromptEnhancer(io.ComfyNode):
         model: str = DEFAULT_OLLAMA_MODEL,
         prompt_type: str = "image",
         prompt: str = "",
+        variables: str = "[]",
         hide_mode: bool = False,
         privacy_mode: bool = True,
         ollama_url: str = DEFAULT_OLLAMA_URL,
@@ -94,17 +98,18 @@ class PromptEnhancer(io.ComfyNode):
             keep_alive_unit=ollama_keep_alive_unit or "minutes",
             timeout=max(1, _as_int(ollama_timeout, DEFAULT_OLLAMA_TIMEOUT)),
         )
+        resolved_prompt = substitute_prompt_variables((prompt or "").strip(), variables, resolved_seed)
         request = PromptEnhancerRequest(
             model=(model or DEFAULT_OLLAMA_MODEL).strip() or DEFAULT_OLLAMA_MODEL,
             prompt_type=prompt_type or "image",
-            prompt=(prompt or "").strip(),
+            prompt=resolved_prompt,
             system_prompt=system_prompt,
             seed=resolved_seed,
             images=encode_images_for_ollama(images, MAX_PROMPT_IMAGES),
             settings=settings,
         )
         generated_prompt = OllamaPromptProvider().generate(request)
-        return io.NodeOutput(generated_prompt, system_prompt)
+        return io.NodeOutput(generated_prompt, system_prompt, resolved_prompt)
 
 
 def _as_int(value: Any, default: int) -> int:

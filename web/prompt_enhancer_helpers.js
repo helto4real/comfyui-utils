@@ -1,5 +1,8 @@
 export const PROMPT_ENHANCER_NODE_CLASS = "HeltoPromptEnhancer";
+export const PROMPT_EDITOR_WIDGET_NAME = "prompt editor";
 export const MAX_FIXED_SEED = 2147483647;
+export const ENCRYPTED_PREFIX = "__HELTO_ENC__:";
+export const VARIABLE_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 export const SETTINGS_WIDGET_NAMES = Object.freeze([
     "hide_mode",
@@ -12,6 +15,8 @@ export const SETTINGS_WIDGET_NAMES = Object.freeze([
 
 export const HIDDEN_WIDGET_NAMES = Object.freeze([
     "model",
+    "prompt",
+    "variables",
     ...SETTINGS_WIDGET_NAMES,
 ]);
 
@@ -23,6 +28,14 @@ export function setWidgetValue(widget, value) {
     if (!widget) return;
     widget.value = value;
     widget.callback?.(value);
+}
+
+export function readPromptValue(node) {
+    return String(getWidget(node, "prompt")?.value ?? "");
+}
+
+export function writePromptValue(node, value) {
+    setWidgetValue(getWidget(node, "prompt"), String(value ?? ""));
 }
 
 export function setGenerateNewEachPrompt(node) {
@@ -91,7 +104,7 @@ export function isPromptHideModeEnabled(node) {
 }
 
 export function promptWidgetBounds(node) {
-    const widget = getWidget(node, "prompt");
+    const widget = getWidget(node, PROMPT_EDITOR_WIDGET_NAME) || getWidget(node, "prompt");
     if (!widget) {
         return null;
     }
@@ -131,6 +144,157 @@ export function isPointInPromptWidget(node, point) {
 
 export function shouldHidePromptWidget(node, promptHovered = false) {
     return isPromptHideModeEnabled(node) && !promptHovered;
+}
+
+export function isEncryptedVariables(value) {
+    return String(value || "").startsWith(ENCRYPTED_PREFIX);
+}
+
+export function normalizePromptVariables(rawVariables) {
+    const variables = Array.isArray(rawVariables) ? rawVariables : [];
+    const normalized = [];
+    const seenNames = new Set();
+    for (const item of variables) {
+        if (!item || typeof item !== "object") continue;
+        const name = String(item.name || "").trim();
+        if (!VARIABLE_NAME_PATTERN.test(name) || seenNames.has(name)) continue;
+        const values = Array.isArray(item.values)
+            ? item.values.filter((value) => value !== null && value !== undefined).map((value) => String(value))
+            : [];
+        const fixedIndex = Math.max(0, Math.min(Number.parseInt(item.fixed_index ?? 0, 10) || 0, Math.max(values.length - 1, 0)));
+        normalized.push({
+            name,
+            mode: item.mode === "fixed" ? "fixed" : "random",
+            values,
+            fixed_index: fixedIndex,
+        });
+        seenNames.add(name);
+    }
+    return normalized;
+}
+
+export function parsePromptVariablesJson(value) {
+    if (!value) return [];
+    try {
+        return normalizePromptVariables(JSON.parse(String(value)));
+    } catch (err) {
+        return [];
+    }
+}
+
+export function serializePromptVariables(variables) {
+    return JSON.stringify(normalizePromptVariables(variables));
+}
+
+export async function readPromptVariables(node, selectorApi) {
+    const widget = getWidget(node, "variables");
+    const value = String(widget?.value || "[]");
+    if (!isEncryptedVariables(value)) {
+        return parsePromptVariablesJson(value);
+    }
+    try {
+        const response = await selectorApi.decrypt(value);
+        return parsePromptVariablesJson(response?.data || "[]");
+    } catch (err) {
+        console.warn("Prompt enhancer variable decrypt failed:", err);
+        return [];
+    }
+}
+
+export async function writePromptVariables(node, variables, privacyMode, selectorApi) {
+    const widget = getWidget(node, "variables");
+    const plainJson = serializePromptVariables(variables);
+    if (!privacyMode) {
+        setWidgetValue(widget, plainJson);
+        return plainJson;
+    }
+    const response = await selectorApi.encrypt(plainJson);
+    const encrypted = String(response?.encrypted || "");
+    if (!encrypted.startsWith(ENCRYPTED_PREFIX)) {
+        throw new Error("Failed to encrypt Prompt enhancer variables.");
+    }
+    setWidgetValue(widget, encrypted);
+    return widget?.value || "";
+}
+
+export function variableNames(variables) {
+    return normalizePromptVariables(variables).map((variable) => variable.name);
+}
+
+export function addPromptVariable(variables, name = "variable") {
+    const existing = new Set(variableNames(variables));
+    let candidate = String(name || "variable").replace(/[^A-Za-z0-9_]/g, "_");
+    if (!/^[A-Za-z_]/.test(candidate)) {
+        candidate = `var_${candidate}`;
+    }
+    candidate = candidate || "variable";
+    let uniqueName = candidate;
+    let counter = 2;
+    while (existing.has(uniqueName)) {
+        uniqueName = `${candidate}_${counter}`;
+        counter += 1;
+    }
+    return [
+        ...normalizePromptVariables(variables),
+        { name: uniqueName, mode: "random", values: [""], fixed_index: 0 },
+    ];
+}
+
+export function updatePromptVariable(variables, index, patch) {
+    const normalized = normalizePromptVariables(variables);
+    if (!normalized[index]) return normalized;
+    const next = [...normalized];
+    next[index] = { ...next[index], ...patch };
+    return normalizePromptVariables(next);
+}
+
+export function removePromptVariable(variables, index) {
+    return normalizePromptVariables(variables).filter((_variable, itemIndex) => itemIndex !== index);
+}
+
+export function autocompleteStateForPrompt(text, cursor, variables, selectedIndex = 0) {
+    const value = String(text ?? "");
+    const safeCursor = Math.max(0, Math.min(Number(cursor) || 0, value.length));
+    const beforeCursor = value.slice(0, safeCursor);
+    const openIndex = beforeCursor.lastIndexOf("{{");
+    if (openIndex < 0) {
+        return { active: false, start: safeCursor, end: safeCursor, prefix: "", options: [], selectedIndex: 0 };
+    }
+    if (beforeCursor.lastIndexOf("}}") > openIndex) {
+        return { active: false, start: safeCursor, end: safeCursor, prefix: "", options: [], selectedIndex: 0 };
+    }
+
+    const prefix = beforeCursor.slice(openIndex + 2);
+    if (!/^[A-Za-z0-9_]*$/.test(prefix)) {
+        return { active: false, start: safeCursor, end: safeCursor, prefix: "", options: [], selectedIndex: 0 };
+    }
+    const names = variableNames(variables);
+    const options = names.filter((name) => name.startsWith(prefix));
+    const boundedIndex = options.length ? ((selectedIndex % options.length) + options.length) % options.length : 0;
+    return {
+        active: true,
+        start: openIndex,
+        end: safeCursor,
+        prefix,
+        options,
+        selectedIndex: boundedIndex,
+    };
+}
+
+export function moveAutocompleteSelection(state, delta) {
+    if (!state?.active || !state.options?.length) return 0;
+    return ((state.selectedIndex + delta) % state.options.length + state.options.length) % state.options.length;
+}
+
+export function insertVariableSuggestion(text, state, name) {
+    const value = String(text ?? "");
+    const selectedName = String(name || state?.options?.[state?.selectedIndex] || "");
+    if (!state?.active || !selectedName) {
+        return { text: value, cursor: Number(state?.end) || value.length };
+    }
+    const insertion = `{{${selectedName}}}`;
+    const nextText = `${value.slice(0, state.start)}${insertion}${value.slice(state.end)}`;
+    return { text: nextText, cursor: state.start + insertion.length };
 }
 
 async function parsePromptEnhancerResponse(response, fallbackMessage) {
