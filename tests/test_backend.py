@@ -428,6 +428,13 @@ class NodeSchemaContractTests(unittest.TestCase):
             input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "provider_model_history"
         )
         prompt_enhancer_variables_input = next(input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "variables")
+        prompt_enhancer_script_input = next(input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "script")
+        prompt_enhancer_segment_input = next(
+            input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "active_segment_index"
+        )
+        prompt_enhancer_segment_mode_input = next(
+            input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "segment_generation_mode"
+        )
         prompt_enhancer_keep_alive_unit_input = next(
             input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "ollama_keep_alive_unit"
         )
@@ -437,11 +444,28 @@ class NodeSchemaContractTests(unittest.TestCase):
         self.assertEqual(prompt_enhancer_model_history_input.kwargs["io_kind"], "String")
         self.assertEqual(prompt_enhancer_model_history_input.kwargs["default"], "{}")
         self.assertEqual(prompt_enhancer_variables_input.kwargs["io_kind"], "String")
+        self.assertEqual(prompt_enhancer_script_input.kwargs["io_kind"], "String")
+        self.assertTrue(prompt_enhancer_script_input.kwargs["multiline"])
+        self.assertEqual(prompt_enhancer_segment_input.kwargs["io_kind"], "Int")
+        self.assertEqual(prompt_enhancer_segment_input.kwargs["default"], 1)
+        self.assertEqual(prompt_enhancer_segment_mode_input.kwargs["io_kind"], "Combo")
+        self.assertEqual(prompt_enhancer_segment_mode_input.kwargs["options"], ["all segments", "single segment"])
+        self.assertEqual(prompt_enhancer_segment_mode_input.kwargs["default"], "all segments")
         self.assertEqual(prompt_enhancer_keep_alive_unit_input.kwargs["options"], ["seconds", "minutes", "hours"])
         self.assertEqual(len(prompt_enhancer_schema.hidden), 1)
         self.assertEqual(
             [output_def.id for output_def in prompt_enhancer_schema.outputs],
-            ["prompt", "system_prompt", "resolved_prompt"],
+            [
+                "enhanced_prompt",
+                "system_prompt",
+                "resolved_segment_prompt",
+                "parsed_direction",
+                "parsed_continuity",
+                "reference_mode",
+                "image_notes",
+                "segment_count",
+                "warnings",
+            ],
         )
 
     def test_custom_node_style_import_does_not_require_top_level_selector_package(self):
@@ -493,7 +517,10 @@ class NodeSchemaContractTests(unittest.TestCase):
         try:
             result = prompt_node.execute(
                 seed=11,
-                prompt=encrypt_selection("A {{style}} portrait"),
+                prompt_type="image",
+                active_segment_index=999,
+                segment_generation_mode="single segment",
+                script=encrypt_selection("A {{style}} portrait"),
                 variables=json.dumps([
                     {"name": "style", "mode": "fixed", "values": ["documentary"], "fixed_index": 0}
                 ]),
@@ -504,6 +531,128 @@ class NodeSchemaContractTests(unittest.TestCase):
         self.assertEqual(result[0], "A documentary portrait")
         self.assertEqual(result[2], "A documentary portrait")
         self.assertEqual(requests[0].prompt, "A documentary portrait")
+
+    def test_prompt_enhancer_video_script_sends_selected_segment_to_provider(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        prompt_node = next(
+            node_cls
+            for node_cls in asyncio.run(extension_module.HeltoUtilsExtension().get_node_list())
+            if node_cls.define_schema().node_id == "HeltoPromptEnhancer"
+        )
+        globals_ = prompt_node.execute.__func__.__globals__
+        original_provider = globals_["PromptProviderRegistry"]
+        requests = []
+
+        class FakeRegistry:
+            def generate(self, request, progress=None):
+                requests.append(request)
+                return request.prompt
+
+        script = """[rating=SFW]
+[style=cinematic realism]
+
+## First beat. @image1:start
+---
+[reference_mode=end_guidance]
+> > First beat ends with the character looking up.
+Second beat moves toward the doorway. @image1:end
+"""
+
+        globals_["PromptProviderRegistry"] = FakeRegistry
+        try:
+            result = prompt_node.execute(
+                seed=7,
+                images=[object()],
+                prompt_type="multi scene video",
+                active_segment_index=2,
+                segment_generation_mode="single segment",
+                script=script,
+            )
+        finally:
+            globals_["PromptProviderRegistry"] = original_provider
+
+        self.assertIn("Second beat moves toward the doorway.", result[0])
+        self.assertIn("Generate exactly one SFW video prompt for segment 2 of 2", result[1])
+        self.assertIn("Second beat moves toward the doorway.", result[2])
+        self.assertEqual(result[3], "Second beat moves toward the doorway.")
+        self.assertIn("First beat ends", result[4])
+        self.assertEqual(result[5], "end_guidance")
+        self.assertIn("Image 1 is used as end guidance", result[6])
+        self.assertEqual(result[7], 2)
+        self.assertEqual(requests[0].prompt_type, "multi scene video")
+
+    def test_prompt_enhancer_video_script_can_generate_all_segments(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        prompt_node = next(
+            node_cls
+            for node_cls in asyncio.run(extension_module.HeltoUtilsExtension().get_node_list())
+            if node_cls.define_schema().node_id == "HeltoPromptEnhancer"
+        )
+        globals_ = prompt_node.execute.__func__.__globals__
+        original_provider = globals_["PromptProviderRegistry"]
+        requests = []
+
+        class FakeRegistry:
+            def generate(self, request, progress=None):
+                requests.append(request)
+                return f"generated {len(requests)}:\n{request.prompt}"
+
+        script = """[rating=SFW]
+[style=cinematic realism]
+
+## First beat. @image1:start
+---
+[reference_mode=end_guidance]
+> > First beat ends with the character looking up.
+Second beat moves toward the doorway. @image1:end
+"""
+
+        globals_["PromptProviderRegistry"] = FakeRegistry
+        try:
+            result = prompt_node.execute(
+                seed=7,
+                images=[object()],
+                prompt_type="video",
+                active_segment_index=99,
+                segment_generation_mode="all segments",
+                script=script,
+            )
+        finally:
+            globals_["PromptProviderRegistry"] = original_provider
+
+        self.assertEqual(len(requests), 2)
+        self.assertEqual([request.seed for request in requests], [7, 7])
+        self.assertEqual([request.prompt_type for request in requests], ["video", "video"])
+        self.assertIn("Segment: 1 of 2", requests[0].prompt)
+        self.assertIn("Segment: 2 of 2", requests[1].prompt)
+        self.assertIn("Generate exactly one SFW video prompt for segment 1 of 2", requests[0].system_prompt)
+        self.assertIn("Generate exactly one SFW video prompt for segment 2 of 2", requests[1].system_prompt)
+        self.assertEqual(result[0].count("generated "), 2)
+        self.assertIn("\n\n", result[0])
+        self.assertIn("First beat.", result[2])
+        self.assertIn("Second beat moves toward the doorway.", result[2])
+        self.assertEqual(result[3], "First beat.\n\nSecond beat moves toward the doorway.")
+        self.assertIn("First beat ends", result[4])
+        self.assertEqual(result[5], "start_frame\n\nend_guidance")
+        self.assertIn("Image 1 is used as the starting frame", result[6])
+        self.assertIn("Image 1 is used as end guidance", result[6])
+        self.assertEqual(result[7], 2)
+
+    def test_prompt_enhancer_video_single_segment_validates_active_index(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        prompt_node = next(
+            node_cls
+            for node_cls in asyncio.run(extension_module.HeltoUtilsExtension().get_node_list())
+            if node_cls.define_schema().node_id == "HeltoPromptEnhancer"
+        )
+
+        with self.assertRaisesRegex(ValueError, "outside the available segment range"):
+            prompt_node.execute(
+                prompt_type="video",
+                active_segment_index=2,
+                segment_generation_mode="single segment",
+                script="Only beat.",
+            )
 
     def test_privacy_show_any_summarizes_unhelpful_object_values(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()

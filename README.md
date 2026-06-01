@@ -25,6 +25,7 @@ The pack registers through ComfyUI's V3 `comfy_entrypoint()` extension API and e
 | Video Parameters LTX | `HeltoVideoParamsLTX` | `HELTO/Video` | LTX 2.3 width, height, frame-safe frame count, and sampler parameter helper. |
 | Aspect Ratio Calculator | `AspectRatioCalculator` | `HELTO/Utils` | Converts a side length plus aspect ratio into width and height. |
 | Model Auto Router (Mute-safe) | `ModelAutoRouter` | `HELTO/Utils` | Routes `model_a` when connected, otherwise falls back to `model_b`. |
+| Prompt enhancer | `HeltoPromptEnhancer` | `HELTO/Prompt` | Enhances image prompts and scripted video segments through a configured prompt provider. |
 | Privacy Show Any | `HeltoPrivacyShowAny` | `HELTO/Privacy` | Displays any connected value as copyable text while saving only encrypted display state. |
 | Image Comparer | `HeltoImageComparer` | `HELTO/Image` | Output node that previews an original image against a new image. |
 | Video Comparer | `HeltoVideoComparer` | `HELTO/Video` | Output node that previews two videos or frame batches side by side. |
@@ -104,6 +105,71 @@ Inputs:
 Output: one `MODEL`.
 
 If `model_a` is connected, it is returned. If `model_a` is missing and `model_b` is connected, `model_b` is returned. If neither input is available, the node raises an error telling you to connect or unmute at least one model.
+
+## Prompting
+
+### Prompt Enhancer
+
+`Prompt enhancer` can enhance a plain image prompt or a structured video script. The `script` field is privacy-aware: with `privacy_mode` enabled, saved workflow text is encrypted, and `hide_mode` hides the inline editor until hovered. Use the `edit script` button when you want a larger editor.
+
+Inputs:
+
+| Input | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `images` | Image | optional | Optional reference images. Video scripts can address them as `@image1`, `@image2`, and so on. |
+| `video` | Video | optional | Marks video context as available for the system prompt; video bytes are not sent to the provider. |
+| `audio` | Audio | optional | Marks audio context as available for the system prompt; audio bytes are not sent to the provider. |
+| `seed` | Int | `-1` | `-1` generates a new seed per node execution. Fixed seeds are reused across all generated segments. |
+| `prompt_type` | Combo | `image` | Use `image`, `video`, or `multi scene video`. |
+| `active_segment_index` | Int | `1` | One-based selected segment for `single segment` mode. |
+| `segment_generation_mode` | Combo | `all segments` | `all segments` generates every parsed video segment. `single segment` generates only `active_segment_index`. Ignored in image mode. |
+| `script` | String | empty | Plain image prompt, or video script when `prompt_type` is `video` or `multi scene video`. |
+| `variables` | String | `[]` | Serialized variables used by `{{variable_name}}` tokens. |
+| `hide_mode` / `privacy_mode` | Boolean | `False` / `True` | Hide the editor content on the canvas, and encrypt serialized script text. |
+
+Outputs include the final `enhanced_prompt`, the rendered `system_prompt`, parsed segment diagnostics, `segment_count`, and parser `warnings`.
+
+#### Video Script Syntax
+
+In `video` and `multi scene video` modes, plain text without separators is treated as one segment. Split multiple segments with `---` on its own line:
+
+```text
+[rating=SFW]
+[style=cinematic realism]
+[camera=slow handheld push-in]
+
+## A traveler enters a rainy neon alley. @image1:start
+>> Ends with the traveler looking toward a glowing doorway.
+
+---
+
+[reference_mode=end_guidance]
+[duration=5 seconds]
+The traveler walks toward the doorway as steam rolls across the street. @image2:end
+```
+
+Supported syntax:
+
+| Syntax | Meaning |
+| --- | --- |
+| `---` | Starts a new segment when placed on its own line. |
+| `[key=value]` | Metadata. Global metadata must appear at the top before segment text. Segment metadata appears inside a segment. |
+| `>> text` or `> > text` | Continuity note for the current segment. |
+| `@imageN[:role]` | Reference image marker, where `N` is one-based. If no role is given, `start` is used. |
+| `## text` | Visual heading markup is stripped, leaving `text` as direction. |
+| `{{name}}` | Variable token replaced from the node's variable list before parsing. |
+
+Global metadata keys: `rating`, `style`, `default_reference_mode`, `camera`, `duration`, `continuity_mode`.
+
+Segment metadata keys: `rating`, `reference_mode`, `style`, `camera`, `duration`, `continuity`.
+
+Image roles: `start`, `end`, `character`, `style`, `pose`, `setting`, `motion`.
+
+Reference modes: `none`, `start_frame`, `end_guidance`, `start_and_end_transition`, `character_reference`, `style_reference`, `mixed`.
+
+If `reference_mode` is not set on a segment, it is inferred from image roles: only `start` becomes `start_frame`, only `end` becomes `end_guidance`, `start` plus `end` becomes `start_and_end_transition`, only `character` becomes `character_reference`, only `style` becomes `style_reference`, and mixed role sets become `mixed`. `default_reference_mode` is used only when a segment has no image references.
+
+`all segments` mode calls the provider once per parsed segment and joins the generated prompts with one empty line. `single segment` mode validates and uses only `active_segment_index`. Image mode does not parse this syntax; the full `script` text is sent as the image prompt.
 
 ## Compare Previews
 

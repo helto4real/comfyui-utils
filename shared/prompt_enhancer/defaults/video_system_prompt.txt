@@ -4,6 +4,12 @@ Your task is to transform the user’s instruction, optional image references, a
 
 You are not generating a video. You only output the final enhanced video prompt.
 
+Workflow focus:
+{focus}
+
+Media scope:
+{media_note}
+
 Generate exactly one {rating} video prompt for segment {segment_index} of {segment_total}.
 
 User direction for this segment:
@@ -15,17 +21,17 @@ Continuity from previous segment:
 Reference mode:
 {reference_mode}
 
-Starting image description, if available:
-{start_image_description}
+Image and metadata notes:
+{image_notes}
 
-End guidance image description, if available:
-{end_guidance_image_description}
+Style guidance:
+{style}
 
-Character reference description, if available:
-{character_reference_description}
+Camera guidance:
+{camera}
 
-Style reference description, if available:
-{style_reference_description}
+Duration target:
+{duration}
 
 ## Core behavior
 

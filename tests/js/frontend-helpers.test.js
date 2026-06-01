@@ -27,9 +27,11 @@ import {
     storeOutputForPreviewKeys,
 } from "../../web/hide_mode_helpers.js";
 import {
+    acceptPromptAutocompleteSuggestion,
     addPromptVariable,
     autocompleteStateForPrompt,
     decryptPromptText,
+    emptyAutocompleteState,
     insertVariableSuggestion,
     fetchSystemPrompt,
     hideSerializedSettingsWidgets,
@@ -59,6 +61,7 @@ import {
     seedProviderModelHistory,
     shouldRefreshPromptVariables,
     shouldHidePromptWidget,
+    promptAutocompleteShortcutAction,
     updatePromptVariable,
     updateModelOptions,
     updateProviderModelOptions,
@@ -591,7 +594,7 @@ test("prompt enhancer hide mode calculates prompt widget hover state", () => {
         size: [420, 500],
         widgets: [
             { name: "hide_mode", value: true },
-            { name: "prompt", last_y: 120, computedHeight: 96 },
+            { name: "script", last_y: 120, computedHeight: 96 },
         ],
     };
 
@@ -631,7 +634,7 @@ test("prompt enhancer prompt bounds fall back to widget compute size", () => {
         size: [360, 400],
         widgets: [
             {
-                name: "prompt",
+                name: "script",
                 last_y: 64,
                 computeSize(width) {
                     return [width, 144];
@@ -716,7 +719,7 @@ test("prompt enhancer hides serialized model and settings widgets", () => {
             { name: "model" },
             { name: "hide_mode" },
             { name: "privacy_mode" },
-            { name: "prompt" },
+            { name: "script" },
             { name: "variables" },
         ],
     };
@@ -740,7 +743,7 @@ test("prompt enhancer hides serialized model and settings widgets", () => {
         "model_backend",
         "provider_model_history",
         "model",
-        "prompt",
+        "script",
         "variables",
         "hide_mode",
         "privacy_mode",
@@ -808,7 +811,7 @@ test("prompt enhancer prompt config encrypts only when privacy mode is enabled",
     };
     const node = {
         widgets: [
-            { name: "prompt", value: "" },
+            { name: "script", value: "" },
         ],
     };
     const secret = "secret phrase for workflow search";
@@ -873,6 +876,114 @@ test("prompt enhancer autocomplete filters navigates and inserts variables", () 
         cursor: 13,
     });
     assert.equal(autocompleteStateForPrompt("A {{style}}", 11, variables).active, false);
+});
+
+test("prompt enhancer video script autocomplete suggests metadata images and roles", () => {
+    const context = { promptType: "video", imageCount: 3 };
+
+    let state = autocompleteStateForPrompt("[ref", 4, [], 0, context);
+    assert.equal(state.active, true);
+    assert.deepEqual(state.options, ["reference_mode="]);
+    assert.deepEqual(insertVariableSuggestion("[ref", state), {
+        text: "[reference_mode=",
+        cursor: 16,
+    });
+
+    state = autocompleteStateForPrompt("[reference_mode=st", 18, [], 0, context);
+    assert.deepEqual(state.options, ["start_frame", "start_and_end_transition", "style_reference"]);
+    assert.deepEqual(insertVariableSuggestion("[reference_mode=st", state), {
+        text: "[reference_mode=start_frame]",
+        cursor: 28,
+    });
+
+    state = autocompleteStateForPrompt("Look @", 6, [], 0, context);
+    assert.deepEqual(state.options, ["@image1", "@image2", "@image3"]);
+    assert.deepEqual(insertVariableSuggestion("Look @", state, "@image2"), {
+        text: "Look @image2",
+        cursor: 12,
+    });
+
+    state = autocompleteStateForPrompt("@image1:ch", 10, [], 0, context);
+    assert.deepEqual(state.options, ["character"]);
+    assert.deepEqual(insertVariableSuggestion("@image1:ch", state), {
+        text: "@image1:character",
+        cursor: 17,
+    });
+
+    state = autocompleteStateForPrompt(">>", 2, [], 0, context);
+    assert.equal(state.active, true);
+    assert.deepEqual(insertVariableSuggestion(">>", state), {
+        text: ">> ",
+        cursor: 3,
+    });
+});
+
+test("prompt enhancer autocomplete shortcuts consume only active intellisense keys", () => {
+    const active = autocompleteStateForPrompt("[", 1, [], 0, { promptType: "video" });
+    const consumed = [];
+    const event = {
+        key: "Escape",
+        preventDefault: () => consumed.push("prevent"),
+        stopPropagation: () => consumed.push("stop"),
+        stopImmediatePropagation: () => consumed.push("stop-immediate"),
+    };
+
+    assert.equal(promptAutocompleteShortcutAction(event, active), "close");
+    assert.deepEqual(consumed, ["prevent", "stop", "stop-immediate"]);
+    assert.equal(promptAutocompleteShortcutAction({ key: "Escape" }, emptyAutocompleteState(1)), "");
+    assert.equal(promptAutocompleteShortcutAction({ key: "c", ctrlKey: true }, active), "");
+});
+
+test("prompt enhancer autocomplete shortcuts accept navigate and preserve browser text shortcuts", () => {
+    const state = autocompleteStateForPrompt("{{", 2, [{ name: "style", values: ["cinematic"] }]);
+    const calls = [];
+    const ctrlY = {
+        key: "y",
+        ctrlKey: true,
+        preventDefault: () => calls.push("prevent"),
+        stopPropagation: () => calls.push("stop"),
+    };
+
+    assert.equal(promptAutocompleteShortcutAction(ctrlY, state), "accept");
+    assert.deepEqual(calls, ["prevent", "stop"]);
+    assert.equal(promptAutocompleteShortcutAction({ key: "n", ctrlKey: true }, state), "next");
+    assert.equal(promptAutocompleteShortcutAction({ key: "p", ctrlKey: true }, state), "previous");
+    assert.equal(promptAutocompleteShortcutAction({ key: "a", ctrlKey: true }, state), "");
+    assert.equal(promptAutocompleteShortcutAction({ key: "v", ctrlKey: true }, state), "");
+    assert.equal(promptAutocompleteShortcutAction({ key: "z", ctrlKey: true }, state), "");
+});
+
+test("prompt enhancer autocomplete accept closes or continues to immediate follow-up suggestions", () => {
+    const variables = [{ name: "style", values: ["cinematic"] }];
+    let state = autocompleteStateForPrompt("{{st", 4, variables, 0, { promptType: "video" });
+    let accepted = acceptPromptAutocompleteSuggestion("{{st", state, variables, { promptType: "video" });
+
+    assert.equal(accepted.text, "{{style}}");
+    assert.equal(accepted.cursor, 9);
+    assert.equal(accepted.autocomplete.active, false);
+
+    state = autocompleteStateForPrompt("[ref", 4, [], 0, { promptType: "video" });
+    accepted = acceptPromptAutocompleteSuggestion("[ref", state, [], { promptType: "video" });
+
+    assert.equal(accepted.text, "[reference_mode=");
+    assert.equal(accepted.cursor, 16);
+    assert.equal(accepted.autocomplete.active, true);
+    assert.equal(accepted.autocomplete.kind, "metadata_value");
+    assert.deepEqual(accepted.autocomplete.options, [
+        "none",
+        "start_frame",
+        "end_guidance",
+        "start_and_end_transition",
+        "character_reference",
+        "style_reference",
+        "mixed",
+    ]);
+
+    state = autocompleteStateForPrompt("[reference_mode=st", 18, [], 0, { promptType: "video" });
+    accepted = acceptPromptAutocompleteSuggestion("[reference_mode=st", state, [], { promptType: "video" });
+
+    assert.equal(accepted.text, "[reference_mode=start_frame]");
+    assert.equal(accepted.autocomplete.active, false);
 });
 
 test("privacy show any extracts output text and hides encrypted state widget", () => {

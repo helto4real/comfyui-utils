@@ -1131,6 +1131,38 @@
     max-height: none;
     min-height: 0;
 }
+.helto-prompt-enhancer-script-card {
+    height: min(88vh, 980px);
+    min-height: 58vh;
+    width: max(58vw, 840px);
+    max-width: 94vw;
+}
+.helto-prompt-enhancer-script-body,
+.helto-prompt-enhancer-large-editor {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-height: 0;
+    min-width: 0;
+    position: relative;
+}
+.helto-prompt-enhancer-large-script {
+    flex: 1;
+    min-height: 0;
+}
+.helto-prompt-enhancer-modal-suggestions {
+    left: 14px;
+    top: 14px;
+    width: min(240px, calc(100% - 28px));
+}
+.helto-prompt-enhancer-script-help {
+    color: var(--text-secondary);
+    flex: 0 0 auto;
+    font-family: var(--font-sans);
+    font-size: 12px;
+    line-height: 1.35;
+    padding: 8px 2px 0;
+}
 .helto-prompt-enhancer-textarea {
     background: var(--bg-tertiary);
     border: 1px solid var(--border-subtle);
@@ -1211,7 +1243,8 @@
     padding: 8px 0;
 }
 @media (max-width: 820px) {
-    .helto-prompt-enhancer-editor-card {
+    .helto-prompt-enhancer-editor-card,
+    .helto-prompt-enhancer-script-card {
         min-height: 70vh;
         width: 92vw;
     }

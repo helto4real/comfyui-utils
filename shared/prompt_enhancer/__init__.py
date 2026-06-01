@@ -26,6 +26,15 @@ from .variables import (
     parse_prompt_variables,
     substitute_prompt_variables,
 )
+from .video_script import (
+    ImageReference,
+    ParsedSegment,
+    ParsedVideoScript,
+    VideoScriptError,
+    build_resolved_segment_prompt,
+    build_segment_variables,
+    parse_video_prompt_script,
+)
 
 __all__ = [
     "DEFAULT_OLLAMA_KEEP_ALIVE",
@@ -50,4 +59,11 @@ __all__ = [
     "is_valid_variable_name",
     "parse_prompt_variables",
     "substitute_prompt_variables",
+    "ImageReference",
+    "ParsedSegment",
+    "ParsedVideoScript",
+    "VideoScriptError",
+    "build_resolved_segment_prompt",
+    "build_segment_variables",
+    "parse_video_prompt_script",
 ]

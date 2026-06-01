@@ -1,5 +1,6 @@
 export const PROMPT_ENHANCER_NODE_CLASS = "HeltoPromptEnhancer";
-export const PROMPT_EDITOR_WIDGET_NAME = "prompt editor";
+export const SCRIPT_WIDGET_NAME = "script";
+export const PROMPT_EDITOR_WIDGET_NAME = "script editor";
 export const PROMPT_EDITOR_HEIGHT = 180;
 export const PROMPT_EDITOR_HORIZONTAL_INSET = 24;
 export const PROMPT_EDITOR_PADDING = 6;
@@ -22,7 +23,7 @@ export const HIDDEN_WIDGET_NAMES = Object.freeze([
     "model_backend",
     "provider_model_history",
     "model",
-    "prompt",
+    SCRIPT_WIDGET_NAME,
     "variables",
     ...SETTINGS_WIDGET_NAMES,
 ]);
@@ -38,15 +39,15 @@ export function setWidgetValue(widget, value) {
 }
 
 export function readPromptValue(node) {
-    return String(getWidget(node, "prompt")?.value ?? "");
+    return String(getWidget(node, SCRIPT_WIDGET_NAME)?.value ?? "");
 }
 
 export function writePromptValue(node, value) {
-    setWidgetValue(getWidget(node, "prompt"), String(value ?? ""));
+    setWidgetValue(getWidget(node, SCRIPT_WIDGET_NAME), String(value ?? ""));
 }
 
 export function serializedPromptValue(node) {
-    return String(getWidget(node, "prompt")?.value || "");
+    return String(getWidget(node, SCRIPT_WIDGET_NAME)?.value || "");
 }
 
 export function isEncryptedText(value) {
@@ -83,7 +84,7 @@ export async function writePromptText(node, prompt, privacyMode, selectorApi) {
     const response = await selectorApi.encrypt(plain);
     const encrypted = String(response?.encrypted || "");
     if (!isEncryptedText(encrypted)) {
-        throw new Error("Failed to encrypt Prompt enhancer prompt.");
+        throw new Error("Failed to encrypt Prompt enhancer script.");
     }
     writePromptValue(node, encrypted);
     return encrypted;
@@ -378,7 +379,7 @@ export function isPromptHideModeEnabled(node) {
 }
 
 export function promptWidgetBounds(node) {
-    const widget = getWidget(node, PROMPT_EDITOR_WIDGET_NAME) || getWidget(node, "prompt");
+    const widget = getWidget(node, PROMPT_EDITOR_WIDGET_NAME) || getWidget(node, SCRIPT_WIDGET_NAME);
     if (!widget) {
         return null;
     }
@@ -525,27 +526,28 @@ export function removePromptVariable(variables, index) {
     return normalizePromptVariables(variables).filter((_variable, itemIndex) => itemIndex !== index);
 }
 
-export function autocompleteStateForPrompt(text, cursor, variables, selectedIndex = 0) {
+export function autocompleteStateForPrompt(text, cursor, variables, selectedIndex = 0, context = {}) {
     const value = String(text ?? "");
     const safeCursor = Math.max(0, Math.min(Number(cursor) || 0, value.length));
     const beforeCursor = value.slice(0, safeCursor);
     const openIndex = beforeCursor.lastIndexOf("{{");
     if (openIndex < 0) {
-        return { active: false, start: safeCursor, end: safeCursor, prefix: "", options: [], selectedIndex: 0 };
+        return scriptAutocompleteState(value, safeCursor, selectedIndex, context);
     }
     if (beforeCursor.lastIndexOf("}}") > openIndex) {
-        return { active: false, start: safeCursor, end: safeCursor, prefix: "", options: [], selectedIndex: 0 };
+        return scriptAutocompleteState(value, safeCursor, selectedIndex, context);
     }
 
     const prefix = beforeCursor.slice(openIndex + 2);
     if (!/^[A-Za-z0-9_]*$/.test(prefix)) {
-        return { active: false, start: safeCursor, end: safeCursor, prefix: "", options: [], selectedIndex: 0 };
+        return scriptAutocompleteState(value, safeCursor, selectedIndex, context);
     }
     const names = variableNames(variables);
     const options = names.filter((name) => name.startsWith(prefix));
     const boundedIndex = options.length ? ((selectedIndex % options.length) + options.length) % options.length : 0;
     return {
         active: true,
+        kind: "variable",
         start: openIndex,
         end: safeCursor,
         prefix,
@@ -554,9 +556,114 @@ export function autocompleteStateForPrompt(text, cursor, variables, selectedInde
     };
 }
 
+export const VIDEO_METADATA_COMPLETIONS = Object.freeze([
+    "rating=",
+    "style=",
+    "default_reference_mode=",
+    "reference_mode=",
+    "camera=",
+    "duration=",
+    "continuity=",
+    "continuity_mode=",
+]);
+
+export const VIDEO_REFERENCE_MODE_COMPLETIONS = Object.freeze([
+    "none",
+    "start_frame",
+    "end_guidance",
+    "start_and_end_transition",
+    "character_reference",
+    "style_reference",
+    "mixed",
+]);
+
+export const VIDEO_IMAGE_ROLE_COMPLETIONS = Object.freeze([
+    "start",
+    "end",
+    "character",
+    "style",
+    "pose",
+    "setting",
+    "motion",
+]);
+
+export function scriptAutocompleteState(text, cursor, selectedIndex = 0, context = {}) {
+    const value = String(text ?? "");
+    const safeCursor = Math.max(0, Math.min(Number(cursor) || 0, value.length));
+    const beforeCursor = value.slice(0, safeCursor);
+    const lineStart = beforeCursor.lastIndexOf("\n") + 1;
+    const linePrefix = beforeCursor.slice(lineStart);
+    const promptType = String(context?.promptType || "").toLowerCase();
+    const isVideoPrompt = promptType === "video" || promptType === "multi scene video" || context?.videoScript === true;
+    if (!isVideoPrompt) {
+        return inactiveAutocomplete(safeCursor);
+    }
+
+    const metadata = metadataAutocomplete(linePrefix, lineStart, safeCursor, selectedIndex);
+    if (metadata.active) return metadata;
+
+    const role = imageRoleAutocomplete(beforeCursor, safeCursor, selectedIndex);
+    if (role.active) return role;
+
+    const image = imageReferenceAutocomplete(beforeCursor, safeCursor, selectedIndex, context);
+    if (image.active) return image;
+
+    const continuity = continuityAutocomplete(linePrefix, lineStart, safeCursor, selectedIndex);
+    if (continuity.active) return continuity;
+
+    return inactiveAutocomplete(safeCursor);
+}
+
 export function moveAutocompleteSelection(state, delta) {
     if (!state?.active || !state.options?.length) return 0;
     return ((state.selectedIndex + delta) % state.options.length + state.options.length) % state.options.length;
+}
+
+export function emptyAutocompleteState(cursor = 0) {
+    return inactiveAutocomplete(cursor);
+}
+
+export function promptAutocompleteShortcutAction(event, autocomplete) {
+    if (!autocomplete?.active) return "";
+    const key = String(event?.key || "");
+    const normalizedKey = key.toLowerCase();
+    let action = "";
+    if (key === "Escape") {
+        action = "close";
+    } else if (event?.ctrlKey && normalizedKey === "y") {
+        action = "accept";
+    } else if (event?.ctrlKey && normalizedKey === "n") {
+        action = "next";
+    } else if (event?.ctrlKey && normalizedKey === "p") {
+        action = "previous";
+    }
+    if (action) {
+        consumeAutocompleteShortcutEvent(event);
+    }
+    return action;
+}
+
+export function acceptPromptAutocompleteSuggestion(text, autocomplete, variables = [], context = {}, explicitName = null) {
+    const result = insertVariableSuggestion(text, autocomplete, explicitName);
+    const nextAutocomplete = autocompleteStateForPrompt(result.text, result.cursor, variables, 0, context);
+    return {
+        text: result.text,
+        cursor: result.cursor,
+        autocomplete: shouldContinueAutocompleteAfterAccept(autocomplete, nextAutocomplete)
+            ? nextAutocomplete
+            : emptyAutocompleteState(result.cursor),
+    };
+}
+
+function consumeAutocompleteShortcutEvent(event) {
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    event?.stopImmediatePropagation?.();
+}
+
+function shouldContinueAutocompleteAfterAccept(previousAutocomplete, nextAutocomplete) {
+    if (!previousAutocomplete?.active || !nextAutocomplete?.active) return false;
+    return previousAutocomplete.kind === "metadata_key" && nextAutocomplete.kind === "metadata_value";
 }
 
 export function insertVariableSuggestion(text, state, name) {
@@ -565,9 +672,126 @@ export function insertVariableSuggestion(text, state, name) {
     if (!state?.active || !selectedName) {
         return { text: value, cursor: Number(state?.end) || value.length };
     }
-    const insertion = `{{${selectedName}}}`;
+    let insertion = selectedName;
+    if (state.kind === "variable" || !state.kind) {
+        insertion = `{{${selectedName}}}`;
+    } else if (state.kind === "metadata_key") {
+        insertion = `[${selectedName}`;
+    } else if (state.kind === "metadata_value") {
+        insertion = `[${state.key}=${selectedName}]`;
+    } else if (state.kind === "continuity") {
+        insertion = ">> ";
+    }
     const nextText = `${value.slice(0, state.start)}${insertion}${value.slice(state.end)}`;
     return { text: nextText, cursor: state.start + insertion.length };
+}
+
+function inactiveAutocomplete(cursor) {
+    return { active: false, start: cursor, end: cursor, prefix: "", options: [], selectedIndex: 0 };
+}
+
+function boundedAutocompleteIndex(options, selectedIndex) {
+    return options.length ? ((selectedIndex % options.length) + options.length) % options.length : 0;
+}
+
+function metadataAutocomplete(linePrefix, lineStart, safeCursor, selectedIndex) {
+    const openIndex = linePrefix.lastIndexOf("[");
+    if (openIndex < 0 || linePrefix.includes("]")) {
+        return inactiveAutocomplete(safeCursor);
+    }
+    const token = linePrefix.slice(openIndex + 1);
+    if (!/^[A-Za-z0-9_]*(=.*)?$/.test(token)) {
+        return inactiveAutocomplete(safeCursor);
+    }
+    const absoluteStart = lineStart + openIndex;
+    if (token.includes("=")) {
+        const [rawKey, ...rest] = token.split("=");
+        const key = rawKey.trim();
+        const prefix = rest.join("=");
+        const candidates = metadataValueCompletions(key);
+        const options = candidates.filter((option) => option.startsWith(prefix));
+        return {
+            active: options.length > 0,
+            kind: "metadata_value",
+            key,
+            start: absoluteStart,
+            end: safeCursor,
+            prefix,
+            options,
+            selectedIndex: boundedAutocompleteIndex(options, selectedIndex),
+        };
+    }
+    const options = VIDEO_METADATA_COMPLETIONS.filter((option) => option.startsWith(token));
+    return {
+        active: options.length > 0,
+        kind: "metadata_key",
+        start: absoluteStart,
+        end: safeCursor,
+        prefix: token,
+        options,
+        selectedIndex: boundedAutocompleteIndex(options, selectedIndex),
+    };
+}
+
+function metadataValueCompletions(key) {
+    if (key === "rating") return ["SFW", "NSFW"];
+    if (key === "reference_mode" || key === "default_reference_mode") return VIDEO_REFERENCE_MODE_COMPLETIONS;
+    return [];
+}
+
+function imageRoleAutocomplete(beforeCursor, safeCursor, selectedIndex) {
+    const match = beforeCursor.match(/@image\d+:([A-Za-z_]*)$/i);
+    if (!match) {
+        return inactiveAutocomplete(safeCursor);
+    }
+    const prefix = match[1] || "";
+    const options = VIDEO_IMAGE_ROLE_COMPLETIONS.filter((option) => option.startsWith(prefix.toLowerCase()));
+    return {
+        active: options.length > 0,
+        kind: "image_role",
+        start: safeCursor - prefix.length,
+        end: safeCursor,
+        prefix,
+        options,
+        selectedIndex: boundedAutocompleteIndex(options, selectedIndex),
+    };
+}
+
+function imageReferenceAutocomplete(beforeCursor, safeCursor, selectedIndex, context) {
+    const match = beforeCursor.match(/@([A-Za-z0-9_]*)$/);
+    if (!match) {
+        return inactiveAutocomplete(safeCursor);
+    }
+    const prefix = match[1] || "";
+    const imageCount = Math.max(2, Math.min(Number(context?.imageCount) || 2, 8));
+    const candidates = Array.from({ length: imageCount }, (_item, index) => `@image${index + 1}`);
+    const options = candidates.filter((option) => option.slice(1).startsWith(prefix));
+    return {
+        active: options.length > 0,
+        kind: "image_ref",
+        start: safeCursor - prefix.length - 1,
+        end: safeCursor,
+        prefix,
+        options,
+        selectedIndex: boundedAutocompleteIndex(options, selectedIndex),
+    };
+}
+
+function continuityAutocomplete(linePrefix, lineStart, safeCursor, selectedIndex) {
+    const trimmed = linePrefix.trim();
+    if (trimmed !== ">>" && trimmed !== "> >") {
+        return inactiveAutocomplete(safeCursor);
+    }
+    const options = ["Continuity note"];
+    return {
+        active: true,
+        kind: "continuity",
+        start: lineStart,
+        end: safeCursor,
+        prefix: trimmed,
+        options,
+        selectedIndex: boundedAutocompleteIndex(options, selectedIndex),
+    };
 }
 
 async function parsePromptEnhancerResponse(response, fallbackMessage) {

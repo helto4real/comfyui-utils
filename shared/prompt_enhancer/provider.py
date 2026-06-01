@@ -151,11 +151,21 @@ def resolve_seed(seed: int | str | None, rng: random.Random | None = None) -> in
     return generator.randint(0, MAX_SEED)
 
 
-def build_system_prompt(prompt_type: str, has_video: bool = False, has_audio: bool = False) -> str:
+def build_system_prompt(
+    prompt_type: str,
+    has_video: bool = False,
+    has_audio: bool = False,
+    prompt_values: dict[str, object] | None = None,
+) -> str:
     prompt_kind = prompt_type if prompt_type in PROMPT_TYPES else "image"
     if prompt_kind == "image":
         return load_system_prompt("image")
-    return render_video_system_prompt(prompt_kind, has_video=has_video, has_audio=has_audio)
+    return render_video_system_prompt(
+        prompt_kind,
+        has_video=has_video,
+        has_audio=has_audio,
+        prompt_values=prompt_values,
+    )
 
 
 def _sample_indices(count: int, limit: int = MAX_PROMPT_IMAGES) -> list[int]:
@@ -172,6 +182,7 @@ def encode_images_for_ollama(
     images: Any,
     limit: int = MAX_PROMPT_IMAGES,
     progress: PromptEnhancerProgress | None = None,
+    preserve_order: bool = False,
 ) -> list[str]:
     if images is None:
         if progress is not None:
@@ -186,7 +197,7 @@ def encode_images_for_ollama(
         return []
 
     encoded: list[str] = []
-    indices = _sample_indices(count, limit)
+    indices = list(range(min(count, limit))) if preserve_order else _sample_indices(count, limit)
     if not indices:
         if progress is not None:
             progress.phase_done("media")

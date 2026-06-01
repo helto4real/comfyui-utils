@@ -29,6 +29,11 @@ from shared.prompt_enhancer.provider import (
     resolve_seed,
 )
 from shared.prompt_enhancer.variables import decrypt_prompt_text, parse_prompt_variables, substitute_prompt_variables
+from shared.prompt_enhancer.video_script import (
+    VideoScriptError,
+    build_segment_variables,
+    parse_video_prompt_script,
+)
 from helto_selector_backend.crypto import encrypt_selection
 
 
@@ -66,9 +71,9 @@ class PromptEnhancerProviderTests(unittest.TestCase):
         self.assertIn("expert prompt enhancer for ComfyUI image generation workflows", image_prompt)
         self.assertIn("Only output the prompt itself.", image_prompt)
         self.assertIn("video generation prompt", video_prompt)
-        self.assertIn("does not send video bytes", video_prompt)
+        self.assertIn("not sent as video bytes", video_prompt)
         self.assertIn("multi-scene video prompt", multi_prompt)
-        self.assertIn("does not send audio bytes", multi_prompt)
+        self.assertIn("not sent as audio bytes", multi_prompt)
 
     def test_system_prompt_override_and_reset_uses_user_config(self):
         with tempfile.TemporaryDirectory() as tmpdir, patch.object(prompts, "USER_PROMPT_DIR", Path(tmpdir)):
@@ -98,9 +103,9 @@ class PromptEnhancerProviderTests(unittest.TestCase):
             multi_prompt = build_system_prompt("multi scene video", has_audio=True)
 
             self.assertIn("Custom video: a concise video generation prompt", video_prompt)
-            self.assertIn("does not send video bytes", video_prompt)
+            self.assertIn("not sent as video bytes", video_prompt)
             self.assertIn("Custom video: a multi-scene video prompt", multi_prompt)
-            self.assertIn("does not send audio bytes", multi_prompt)
+            self.assertIn("not sent as audio bytes", multi_prompt)
 
             prompts.save_system_prompt("video", "Broken {missing}")
 
@@ -300,6 +305,70 @@ class PromptEnhancerProviderTests(unittest.TestCase):
         self.assertEqual(decrypt_prompt_text("plain prompt"), "plain prompt")
         self.assertEqual(decrypt_prompt_text(encrypted), "secret prompt")
         self.assertEqual(decrypt_prompt_text("__HELTO_ENC__:not-valid"), "")
+
+    def test_video_script_parser_builds_segment_variables(self):
+        script = """[rating=SFW]
+[style=cinematic | dramatic | high contrast]
+[default_reference_mode=start_frame]
+
+## A man enters a rainy neon street. @image1
+
+---
+
+[reference_mode=start_and_end_transition]
+[camera=slow push-in]
+[continuity=He looks left = uncertain]
+> > Previous segment ends with the man under a neon sign. @image1:start
+The woman walks toward him through the rain. @image1:start @image2:end
+"""
+
+        parsed = parse_video_prompt_script(script, image_count=2)
+        variables = build_segment_variables(parsed, 2)
+
+        self.assertEqual(len(parsed.segments), 2)
+        self.assertEqual(parsed.global_metadata["style"], "cinematic | dramatic | high contrast")
+        self.assertEqual(parsed.segments[0].direction, "A man enters a rainy neon street.")
+        self.assertEqual(variables["segment_index"], 2)
+        self.assertEqual(variables["segment_total"], 2)
+        self.assertEqual(variables["direction"], "The woman walks toward him through the rain.")
+        self.assertIn("He looks left = uncertain", variables["continuity"])
+        self.assertIn("Previous segment ends", variables["continuity"])
+        self.assertEqual(variables["reference_mode"], "start_and_end_transition")
+        self.assertIn("Style: cinematic | dramatic | high contrast.", variables["image_notes"])
+        self.assertIn("Camera guidance: slow push-in.", variables["image_notes"])
+        self.assertIn("Image 2 is used as end guidance", variables["image_notes"])
+
+    def test_video_script_parser_infers_reference_modes_and_warns_on_unknown_keys(self):
+        script = """[unknown_global=yes]
+
+[unknown_segment=kept]
+A character turns around. @image3:character
+"""
+
+        parsed = parse_video_prompt_script(script, image_count=3)
+        variables = build_segment_variables(parsed, 1)
+
+        self.assertEqual(variables["reference_mode"], "character_reference")
+        self.assertIn("unknown_global", "\n".join(parsed.warnings))
+        self.assertIn("unknown_segment", "\n".join(variables["warnings"]))
+
+        first_segment_local = parse_video_prompt_script("[reference_mode=end_guidance]\nA closing pose. @image1:end", image_count=1)
+        self.assertEqual(first_segment_local.global_metadata, {})
+        self.assertEqual(build_segment_variables(first_segment_local, 1)["reference_mode"], "end_guidance")
+
+    def test_video_script_parser_validates_references_modes_and_segment_index(self):
+        with self.assertRaisesRegex(VideoScriptError, "Unknown image role"):
+            parse_video_prompt_script("A view. @image1:background", image_count=1)
+
+        with self.assertRaisesRegex(VideoScriptError, "only 1 images"):
+            parse_video_prompt_script("A view. @image2:start", image_count=1)
+
+        with self.assertRaisesRegex(VideoScriptError, "Unknown reference mode"):
+            parse_video_prompt_script("Intro.\n[reference_mode=firstframe]\nA view.", image_count=0)
+
+        parsed = parse_video_prompt_script("A view.", image_count=0)
+        with self.assertRaisesRegex(VideoScriptError, "outside the available segment range"):
+            build_segment_variables(parsed, 2)
 
     def test_provider_catalog_combines_ollama_and_local_models(self):
         catalog = local_provider.provider_catalog(["llava:latest"], "offline")

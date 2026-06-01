@@ -17,6 +17,24 @@ VIDEO_FOCUS = {
     "multi scene video": "a multi-scene video prompt with clear scene beats and visual continuity",
 }
 
+DEFAULT_VIDEO_PROMPT_VALUES = {
+    "rating": "SFW",
+    "segment_index": 1,
+    "segment_total": 1,
+    "direction": "",
+    "continuity": "",
+    "reference_mode": "none",
+    "image_notes": "",
+    "style": "",
+    "camera": "",
+    "duration": "",
+    "continuity_mode": "",
+    "start_image_description": "",
+    "end_guidance_image_description": "",
+    "character_reference_description": "",
+    "style_reference_description": "",
+}
+
 
 def normalize_prompt_kind(kind: str | None) -> str:
     prompt_kind = str(kind or "").strip().lower()
@@ -85,18 +103,25 @@ def reset_system_prompt(kind: str) -> dict[str, object]:
     return system_prompt_payload(prompt_kind)
 
 
-def render_video_system_prompt(prompt_type: str, has_video: bool = False, has_audio: bool = False) -> str:
+def render_video_system_prompt(
+    prompt_type: str,
+    has_video: bool = False,
+    has_audio: bool = False,
+    prompt_values: dict[str, object] | None = None,
+) -> str:
     prompt_kind = prompt_type if prompt_type in VIDEO_FOCUS else "video"
     notes = []
     if has_video:
-        notes.append("Video input is connected but v1 does not send video bytes to Ollama.")
+        notes.append("Video input is connected but is not sent as video bytes to the prompt provider.")
     if has_audio:
-        notes.append("Audio input is connected but v1 does not send audio bytes to Ollama.")
+        notes.append("Audio input is connected but is not sent as audio bytes to the prompt provider.")
     media_note = "\n".join(notes) if notes else "Only connected image tensors are sent as visual context."
     values = {
+        **DEFAULT_VIDEO_PROMPT_VALUES,
         "focus": VIDEO_FOCUS[prompt_kind],
         "media_note": media_note,
     }
+    values.update(prompt_values or {})
 
     template = load_system_prompt("video")
     try:

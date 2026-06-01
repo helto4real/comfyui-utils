@@ -4,15 +4,18 @@ import { selectorApi } from "./api.js";
 import { collapseHiddenWidgetLayout, containPointerEvents, createModal, setWidgetHeight } from "./ui.js";
 import {
     PROMPT_ENHANCER_NODE_CLASS,
+    SCRIPT_WIDGET_NAME,
     addPromptVariable,
+    acceptPromptAutocompleteSuggestion,
     autocompleteStateForPrompt,
+    emptyAutocompleteState,
     getWidget,
     fetchSystemPrompt,
     hideSerializedSettingsWidgets,
-    insertVariableSuggestion,
     keepFixedPromptSeed,
     isPointInPromptWidget,
     moveAutocompleteSelection,
+    promptAutocompleteShortcutAction,
     PROMPT_EDITOR_HEIGHT,
     PROMPT_EDITOR_WIDGET_NAME,
     promptEditorLayout,
@@ -44,6 +47,7 @@ const MODELS_BUTTON = "__heltoPromptEnhancerModelsButton";
 const DOWNLOAD_MODEL_BUTTON = "__heltoPromptEnhancerDownloadModelButton";
 const UNLOAD_MODEL_BUTTON = "__heltoPromptEnhancerUnloadModelButton";
 const VARIABLES_BUTTON = "__heltoPromptEnhancerVariablesButton";
+const EDIT_SCRIPT_BUTTON = "__heltoPromptEnhancerEditScriptButton";
 const PROVIDER_SELECTOR = "__heltoPromptEnhancerProviderSelector";
 const MODEL_SELECTOR = "__heltoPromptEnhancerModelSelector";
 const PROVIDER_CATALOG = "__heltoPromptEnhancerProviderCatalog";
@@ -87,6 +91,22 @@ function addButton(node, key, label, callback) {
 
 function getPromptEditorState(node) {
     return node[PROMPT_EDITOR_STATE] ?? null;
+}
+
+function autocompleteContextForNode(node) {
+    const promptType = String(getWidget(node, "prompt_type")?.value || "image").toLowerCase();
+    return {
+        promptType,
+        imageCount: connectedImageSuggestionCount(node),
+    };
+}
+
+function connectedImageSuggestionCount(node) {
+    const imageInput = node?.inputs?.find?.((input) => input?.name === "images");
+    if (Array.isArray(imageInput?.links) && imageInput.links.length > 0) {
+        return Math.min(8, Math.max(2, imageInput.links.length));
+    }
+    return 2;
 }
 
 function applyPromptEditorLayout(node) {
@@ -201,7 +221,7 @@ function persistPromptEditorText(node, text, privacyMode = readPromptEnhancerSet
         }
         return serialized;
     }).catch((err) => {
-        console.error("Prompt enhancer prompt encryption failed:", err);
+        console.error("Prompt enhancer script encryption failed:", err);
         return serializedPromptValue(node);
     });
     if (state) {
@@ -212,7 +232,7 @@ function persistPromptEditorText(node, text, privacyMode = readPromptEnhancerSet
 
 function installPromptPrivacySerialization(node) {
     if (node[PROMPT_PRIVACY_SERIALIZATION]) return;
-    const promptWidget = getWidget(node, "prompt");
+    const promptWidget = getWidget(node, SCRIPT_WIDGET_NAME);
     if (!promptWidget) return;
     promptWidget.serialize = true;
     promptWidget.options ??= {};
@@ -242,7 +262,7 @@ function ensurePromptEditor(node) {
     containPointerEvents(frame);
     const textarea = document.createElement("textarea");
     textarea.className = "helto-prompt-enhancer-user-prompt";
-    textarea.placeholder = "Describe the result you want. Use {{variable_name}} for variables.";
+    textarea.placeholder = "Write an image prompt or segmented video script. Use {{variable_name}} for variables.";
     textarea.spellcheck = false;
     textarea.wrap = "soft";
     textarea.value = "";
@@ -275,6 +295,7 @@ function ensurePromptEditor(node) {
             textarea.selectionStart,
             state.variables,
             selectedIndex,
+            autocompleteContextForNode(node),
         );
         renderPromptSuggestions(node);
     };
@@ -293,22 +314,18 @@ function ensurePromptEditor(node) {
         refreshAutocomplete();
     });
     textarea.addEventListener("keydown", (event) => {
-        if (!state.autocomplete.active) return;
-        const key = event.key.toLowerCase();
-        if (event.ctrlKey && key === "y") {
-            event.preventDefault();
+        const action = promptAutocompleteShortcutAction(event, state.autocomplete);
+        if (!action) return;
+        if (action === "accept") {
             acceptPromptSuggestion(node);
-        } else if (event.ctrlKey && key === "n") {
-            event.preventDefault();
+        } else if (action === "next") {
             state.autocomplete.selectedIndex = moveAutocompleteSelection(state.autocomplete, 1);
             renderPromptSuggestions(node);
-        } else if (event.ctrlKey && key === "p") {
-            event.preventDefault();
+        } else if (action === "previous") {
             state.autocomplete.selectedIndex = moveAutocompleteSelection(state.autocomplete, -1);
             renderPromptSuggestions(node);
-        } else if (event.key === "Escape") {
-            event.preventDefault();
-            state.autocomplete = { active: false, options: [], selectedIndex: 0 };
+        } else if (action === "close") {
+            state.autocomplete = emptyAutocompleteState(textarea.selectionStart);
             renderPromptSuggestions(node);
         }
     });
@@ -316,7 +333,7 @@ function ensurePromptEditor(node) {
     textarea.addEventListener("mouseleave", () => updatePromptHover(node, false));
 
     const getEditorHeight = () => PROMPT_EDITOR_HEIGHT;
-    const domWidget = node.addDOMWidget(PROMPT_EDITOR_WIDGET_NAME, "prompt", frame, {
+    const domWidget = node.addDOMWidget(PROMPT_EDITOR_WIDGET_NAME, SCRIPT_WIDGET_NAME, frame, {
         serialize: false,
         hideOnZoom: false,
         getMinHeight: getEditorHeight,
@@ -380,11 +397,17 @@ function renderPromptSuggestions(node) {
 function acceptPromptSuggestion(node, explicitName = null) {
     const state = getPromptEditorState(node);
     if (!state?.autocomplete?.active) return;
-    const result = insertVariableSuggestion(state.textarea.value, state.autocomplete, explicitName);
+    const result = acceptPromptAutocompleteSuggestion(
+        state.textarea.value,
+        state.autocomplete,
+        state.variables,
+        autocompleteContextForNode(node),
+        explicitName,
+    );
     state.textarea.value = result.text;
     state.textarea.setSelectionRange(result.cursor, result.cursor);
     persistPromptEditorText(node, result.text);
-    state.autocomplete = { active: false, options: [], selectedIndex: 0 };
+    state.autocomplete = result.autocomplete;
     renderPromptSuggestions(node);
     setCanvasDirty(node);
     state.textarea.focus();
@@ -582,7 +605,7 @@ function getPromptDomElements(node) {
         return cached;
     }
 
-    const widget = getWidget(node, "prompt");
+    const widget = getWidget(node, SCRIPT_WIDGET_NAME);
     const candidates = [
         getPromptEditorState(node)?.textarea,
         getPromptEditorState(node)?.frame,
@@ -647,6 +670,113 @@ async function openSystemPromptEditor(kind) {
         }
     };
     modal.footer.insertBefore(resetButton, modal.actionBtn);
+}
+
+async function openScriptEditor(node) {
+    const state = getPromptEditorState(node);
+    const currentText = state?.textarea?.value ?? await readPromptText(node, selectorApi);
+    const variables = await readPromptVariables(node, selectorApi);
+    const content = `
+        <div class="helto-prompt-enhancer-large-editor">
+            <textarea class="helto-prompt-enhancer-textarea helto-prompt-enhancer-large-script" id="helto-pe-script-editor"></textarea>
+            <div class="helto-prompt-enhancer-suggestions helto-prompt-enhancer-modal-suggestions" id="helto-pe-script-suggestions" hidden></div>
+            <div class="helto-prompt-enhancer-script-help">
+                Use --- on its own line to separate segments. Use [key=value] for settings, >> for continuity, and @image1:start for image references.
+            </div>
+        </div>
+    `;
+    const modal = createModal("Edit script", content, async (body) => {
+        const text = body.querySelector("#helto-pe-script-editor")?.value ?? "";
+        await persistPromptEditorText(node, text, readPromptEnhancerSettings(node).privacyMode);
+        const activeState = getPromptEditorState(node);
+        if (activeState?.textarea) {
+            activeState.textarea.value = text;
+            activeState.promptText = text;
+            activeState.promptWidgetValue = serializedPromptValue(node);
+        }
+        applyPromptDomHideMode(node);
+        setCanvasDirty(node);
+        return true;
+    }, {
+        actionText: "Save",
+        cardClass: "helto-prompt-enhancer-script-card",
+        bodyClass: "helto-prompt-enhancer-script-body",
+    });
+
+    const textarea = modal.body.querySelector("#helto-pe-script-editor");
+    const suggestions = modal.body.querySelector("#helto-pe-script-suggestions");
+    textarea.value = currentText;
+    textarea.focus();
+
+    let autocomplete = { active: false, options: [], selectedIndex: 0 };
+    const render = () => {
+        suggestions.innerHTML = "";
+        if (!autocomplete.active || autocomplete.options.length === 0) {
+            suggestions.hidden = true;
+            return;
+        }
+        suggestions.hidden = false;
+        autocomplete.options.forEach((name, index) => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = index === autocomplete.selectedIndex ? "selected" : "";
+            button.innerText = name;
+            button.onmousedown = (event) => {
+                event.preventDefault();
+                accept(name);
+            };
+            suggestions.appendChild(button);
+        });
+    };
+    const refresh = (selectedIndex = autocomplete.selectedIndex || 0) => {
+        autocomplete = autocompleteStateForPrompt(
+            textarea.value,
+            textarea.selectionStart,
+            variables,
+            selectedIndex,
+            autocompleteContextForNode(node),
+        );
+        render();
+    };
+    const accept = (explicitName = null) => {
+        if (!autocomplete.active) return;
+        const result = acceptPromptAutocompleteSuggestion(
+            textarea.value,
+            autocomplete,
+            variables,
+            autocompleteContextForNode(node),
+            explicitName,
+        );
+        textarea.value = result.text;
+        textarea.setSelectionRange(result.cursor, result.cursor);
+        autocomplete = result.autocomplete;
+        render();
+        textarea.focus();
+    };
+
+    textarea.addEventListener("input", () => refresh(0));
+    textarea.addEventListener("click", () => refresh());
+    textarea.addEventListener("keyup", (event) => {
+        if (["Control", "Meta", "Alt", "Shift"].includes(event.key)) return;
+        refresh();
+    });
+    textarea.addEventListener("keydown", (event) => {
+        const action = promptAutocompleteShortcutAction(event, autocomplete);
+        if (!action) return;
+        if (action === "accept") {
+            accept();
+        } else if (action === "next") {
+            autocomplete.selectedIndex = moveAutocompleteSelection(autocomplete, 1);
+            render();
+        } else if (action === "previous") {
+            autocomplete.selectedIndex = moveAutocompleteSelection(autocomplete, -1);
+            render();
+        } else if (action === "close") {
+            autocomplete = emptyAutocompleteState(textarea.selectionStart);
+            render();
+        }
+    });
+    refresh(0);
 }
 
 async function openVariablesEditor(node) {
@@ -971,6 +1101,12 @@ function ensurePromptEnhancerUi(node) {
         setCanvasDirty(node);
     });
     addButton(node, SETTINGS_BUTTON, "settings", () => openSettingsModal(node));
+    addButton(node, EDIT_SCRIPT_BUTTON, "edit script", () => {
+        openScriptEditor(node).catch((err) => {
+            console.error("Prompt enhancer script editor failed:", err);
+            alert(err.message || "Failed to open script editor.");
+        });
+    });
     addButton(node, VARIABLES_BUTTON, "variables", () => {
         openVariablesEditor(node).catch((err) => {
             console.error("Prompt enhancer variable editor failed:", err);
