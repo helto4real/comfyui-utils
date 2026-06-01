@@ -20,6 +20,7 @@ export const HIDDEN_WIDGET_NAMES = Object.freeze([
     "provider",
     "model_id",
     "model_backend",
+    "provider_model_history",
     "model",
     "prompt",
     "variables",
@@ -169,6 +170,82 @@ export function writePromptEnhancerModelConfig(node, config) {
     return { provider, modelId, modelBackend: backend };
 }
 
+export function readProviderModelHistory(node) {
+    const raw = String(getWidget(node, "provider_model_history")?.value || "{}");
+    let parsed = {};
+    try {
+        parsed = JSON.parse(raw);
+    } catch {
+        parsed = {};
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return {};
+    }
+    const history = {};
+    for (const [provider, entry] of Object.entries(parsed)) {
+        const providerId = String(provider || "").trim();
+        if (!providerId || !entry || typeof entry !== "object" || Array.isArray(entry)) {
+            continue;
+        }
+        const modelId = String(entry.modelId || entry.model_id || entry.model || "").trim();
+        if (!modelId) {
+            continue;
+        }
+        history[providerId] = {
+            modelId,
+            modelBackend: String(entry.modelBackend || entry.backend || (providerId === "ollama" ? "ollama" : "")).trim(),
+        };
+    }
+    return history;
+}
+
+export function writeProviderModelHistory(node, history) {
+    const normalized = {};
+    if (history && typeof history === "object" && !Array.isArray(history)) {
+        for (const [provider, entry] of Object.entries(history)) {
+            const providerId = String(provider || "").trim();
+            const modelId = String(entry?.modelId || entry?.model_id || entry?.model || "").trim();
+            if (!providerId || !modelId) {
+                continue;
+            }
+            normalized[providerId] = {
+                modelId,
+                modelBackend: String(entry?.modelBackend || entry?.backend || (providerId === "ollama" ? "ollama" : "")).trim(),
+            };
+        }
+    }
+    const serialized = JSON.stringify(normalized);
+    setWidgetValue(getWidget(node, "provider_model_history"), serialized);
+    return normalized;
+}
+
+export function rememberPromptEnhancerProviderModel(node, config = readPromptEnhancerModelConfig(node)) {
+    const provider = String(config?.provider || "ollama").trim() || "ollama";
+    const modelId = String(config?.modelId || config?.model_id || config?.model || "").trim();
+    if (!modelId) {
+        return readProviderModelHistory(node);
+    }
+    const history = readProviderModelHistory(node);
+    history[provider] = {
+        modelId,
+        modelBackend: String(config?.modelBackend || config?.backend || (provider === "ollama" ? "ollama" : "")).trim(),
+    };
+    return writeProviderModelHistory(node, history);
+}
+
+export function seedProviderModelHistory(node) {
+    const config = readPromptEnhancerModelConfig(node);
+    const history = readProviderModelHistory(node);
+    if (config.modelId && !history[config.provider]) {
+        history[config.provider] = {
+            modelId: config.modelId,
+            modelBackend: config.modelBackend,
+        };
+        return writeProviderModelHistory(node, history);
+    }
+    return history;
+}
+
 export function modelOptionsWithCurrentValue(modelWidget, models) {
     const current = String(modelWidget?.value || "").trim();
     const values = Array.isArray(models) ? models.map((model) => String(model || "").trim()).filter(Boolean) : [];
@@ -250,29 +327,49 @@ export function modelOptionsForProvider(catalog, provider, currentModelId = "") 
 export function updateProviderModelOptions(providerSelector, modelSelector, node, catalogPayload) {
     const catalog = normalizeProviderCatalog(catalogPayload);
     const config = readPromptEnhancerModelConfig(node);
+    let history = seedProviderModelHistory(node);
     const providerValues = catalog.providers.map((provider) => provider.id);
     if (!providerValues.includes(config.provider)) {
         providerValues.unshift(config.provider);
     }
+    const requestedProvider = String(providerSelector?.value || config.provider || "ollama").trim() || "ollama";
+    const nextProvider = providerValues.includes(requestedProvider) ? requestedProvider : providerValues[0];
+    if (nextProvider !== config.provider && config.modelId) {
+        history[config.provider] = {
+            modelId: config.modelId,
+            modelBackend: config.modelBackend,
+        };
+        history = writeProviderModelHistory(node, history);
+    }
     if (providerSelector) {
         providerSelector.options ??= {};
         providerSelector.options.values = providerValues;
-        providerSelector.value = providerValues.includes(config.provider) ? config.provider : providerValues[0];
+        providerSelector.value = nextProvider;
     }
-    const provider = String(providerSelector?.value || config.provider || "ollama");
-    const modelValues = modelOptionsForProvider(catalog, provider, config.modelId);
+    const provider = String(providerSelector?.value || nextProvider || "ollama");
+    const modelValues = [...new Set(catalog.models
+        .filter((model) => model.provider === provider)
+        .map((model) => model.model_id))];
     if (!modelSelector || modelValues.length === 0) {
         return false;
     }
     modelSelector.options ??= {};
     modelSelector.options.values = modelValues;
-    modelSelector.value = modelValues.includes(config.modelId) ? config.modelId : modelValues[0];
+    const remembered = history[provider];
+    if (remembered?.modelId && modelValues.includes(remembered.modelId)) {
+        modelSelector.value = remembered.modelId;
+    } else if (!remembered?.modelId && provider === config.provider && config.modelId && modelValues.includes(config.modelId)) {
+        modelSelector.value = config.modelId;
+    } else {
+        modelSelector.value = modelValues[0];
+    }
     const selectedModel = catalog.models.find((model) => model.provider === provider && model.model_id === modelSelector.value);
-    writePromptEnhancerModelConfig(node, {
+    const written = writePromptEnhancerModelConfig(node, {
         provider,
         modelId: modelSelector.value,
         modelBackend: selectedModel?.backend || (provider === "ollama" ? "ollama" : ""),
     });
+    rememberPromptEnhancerProviderModel(node, written);
     return true;
 }
 

@@ -45,6 +45,7 @@ import {
     parsePromptVariablesJson,
     promptEditorLayout,
     promptWidgetBounds,
+    readProviderModelHistory,
     readPromptEnhancerModelConfig,
     readPromptText,
     readPromptVariables,
@@ -55,11 +56,13 @@ import {
     serializePromptVariables,
     setGenerateNewEachPrompt,
     setNewFixedPromptSeed,
+    seedProviderModelHistory,
     shouldRefreshPromptVariables,
     shouldHidePromptWidget,
     updatePromptVariable,
     updateModelOptions,
     updateProviderModelOptions,
+    writeProviderModelHistory,
     writePromptEnhancerModelConfig,
     writePromptText,
     writePromptVariables,
@@ -474,6 +477,7 @@ test("prompt enhancer provider model selector writes hidden provider fields", ()
             { name: "provider", value: "ollama" },
             { name: "model_id", value: "llava:latest" },
             { name: "model_backend", value: "ollama" },
+            { name: "provider_model_history", value: "{}" },
             { name: "model", value: "llava:latest" },
         ],
     };
@@ -490,8 +494,6 @@ test("prompt enhancer provider model selector writes hidden provider fields", ()
     const providerSelector = { value: "local_transformers_vlm", options: { values: [] } };
     const modelSelector = { value: "", options: { values: [] } };
 
-    writePromptEnhancerModelConfig(node, { provider: "local_transformers_vlm", modelId: "", modelBackend: "" });
-
     assert.deepEqual(modelOptionsForProvider(catalog, "local_transformers_vlm"), ["qwen3_vl_4b_fast"]);
     assert.equal(updateProviderModelOptions(providerSelector, modelSelector, node, catalog), true);
     assert.deepEqual(readPromptEnhancerModelConfig(node), {
@@ -500,8 +502,88 @@ test("prompt enhancer provider model selector writes hidden provider fields", ()
         modelBackend: "qwen",
         legacyModel: "qwen3_vl_4b_fast",
     });
+    assert.deepEqual(readProviderModelHistory(node), {
+        ollama: { modelId: "llava:latest", modelBackend: "ollama" },
+        local_transformers_vlm: { modelId: "qwen3_vl_4b_fast", modelBackend: "qwen" },
+    });
     assert.deepEqual(providerSelector.options.values, ["ollama", "local_transformers_vlm"]);
     assert.deepEqual(modelSelector.options.values, ["qwen3_vl_4b_fast"]);
+});
+
+test("prompt enhancer provider model history reads writes and seeds current workflow model", () => {
+    const node = {
+        widgets: [
+            { name: "provider", value: "ollama" },
+            { name: "model_id", value: "llava:latest" },
+            { name: "model_backend", value: "ollama" },
+            { name: "provider_model_history", value: "{\"bad\":true}" },
+            { name: "model", value: "llava:latest" },
+        ],
+    };
+
+    assert.deepEqual(readProviderModelHistory(node), {});
+    assert.deepEqual(seedProviderModelHistory(node), {
+        ollama: { modelId: "llava:latest", modelBackend: "ollama" },
+    });
+    assert.deepEqual(writeProviderModelHistory(node, {
+        ollama: { modelId: "mistral:latest", modelBackend: "ollama" },
+        local_transformers_vlm: { model_id: "qwen3_vl_4b_fast", backend: "qwen" },
+        empty: { modelId: "" },
+    }), {
+        ollama: { modelId: "mistral:latest", modelBackend: "ollama" },
+        local_transformers_vlm: { modelId: "qwen3_vl_4b_fast", modelBackend: "qwen" },
+    });
+});
+
+test("prompt enhancer provider switch restores remembered model and falls back when unavailable", () => {
+    const node = {
+        widgets: [
+            { name: "provider", value: "ollama" },
+            { name: "model_id", value: "llava:latest" },
+            { name: "model_backend", value: "ollama" },
+            {
+                name: "provider_model_history",
+                value: JSON.stringify({
+                    ollama: { modelId: "llava:latest", modelBackend: "ollama" },
+                    local_transformers_vlm: { modelId: "qwen3_vl_8b_quality", modelBackend: "qwen" },
+                }),
+            },
+            { name: "model", value: "llava:latest" },
+        ],
+    };
+    const catalog = normalizeProviderCatalog({
+        providers: [
+            { id: "ollama", label: "Ollama" },
+            { id: "local_transformers_vlm", label: "Local Transformers VLM" },
+        ],
+        models: [
+            { provider: "ollama", model_id: "llava:latest", backend: "ollama" },
+            { provider: "local_transformers_vlm", model_id: "qwen3_vl_4b_fast", backend: "qwen" },
+            { provider: "local_transformers_vlm", model_id: "qwen3_vl_8b_quality", backend: "qwen" },
+        ],
+    });
+    const providerSelector = { value: "local_transformers_vlm", options: { values: [] } };
+    const modelSelector = { value: "", options: { values: [] } };
+
+    assert.equal(updateProviderModelOptions(providerSelector, modelSelector, node, catalog), true);
+    assert.equal(modelSelector.value, "qwen3_vl_8b_quality");
+    assert.deepEqual(readPromptEnhancerModelConfig(node), {
+        provider: "local_transformers_vlm",
+        modelId: "qwen3_vl_8b_quality",
+        modelBackend: "qwen",
+        legacyModel: "qwen3_vl_8b_quality",
+    });
+
+    writeProviderModelHistory(node, {
+        ollama: { modelId: "llava:latest", modelBackend: "ollama" },
+        local_transformers_vlm: { modelId: "missing_model", modelBackend: "qwen" },
+    });
+    assert.equal(updateProviderModelOptions(providerSelector, modelSelector, node, catalog), true);
+    assert.equal(modelSelector.value, "qwen3_vl_4b_fast");
+    assert.deepEqual(readProviderModelHistory(node).local_transformers_vlm, {
+        modelId: "qwen3_vl_4b_fast",
+        modelBackend: "qwen",
+    });
 });
 
 test("prompt enhancer hide mode calculates prompt widget hover state", () => {
@@ -630,6 +712,7 @@ test("prompt enhancer hides serialized model and settings widgets", () => {
             { name: "provider" },
             { name: "model_id" },
             { name: "model_backend" },
+            { name: "provider_model_history" },
             { name: "model" },
             { name: "hide_mode" },
             { name: "privacy_mode" },
@@ -650,7 +733,18 @@ test("prompt enhancer hides serialized model and settings widgets", () => {
     assert.equal(node.widgets[5].hidden, true);
     assert.equal(node.widgets[6].hidden, true);
     assert.equal(node.widgets[7].hidden, true);
-    assert.deepEqual(collapsed, ["provider", "model_id", "model_backend", "model", "prompt", "variables", "hide_mode", "privacy_mode"]);
+    assert.equal(node.widgets[8].hidden, true);
+    assert.deepEqual(collapsed, [
+        "provider",
+        "model_id",
+        "model_backend",
+        "provider_model_history",
+        "model",
+        "prompt",
+        "variables",
+        "hide_mode",
+        "privacy_mode",
+    ]);
 });
 
 test("prompt enhancer variable helpers parse update and serialize configs", () => {

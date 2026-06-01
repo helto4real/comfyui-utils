@@ -424,6 +424,9 @@ class NodeSchemaContractTests(unittest.TestCase):
         prompt_enhancer_model_input = next(input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "model")
         prompt_enhancer_provider_input = next(input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "provider")
         prompt_enhancer_model_id_input = next(input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "model_id")
+        prompt_enhancer_model_history_input = next(
+            input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "provider_model_history"
+        )
         prompt_enhancer_variables_input = next(input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "variables")
         prompt_enhancer_keep_alive_unit_input = next(
             input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "ollama_keep_alive_unit"
@@ -431,6 +434,8 @@ class NodeSchemaContractTests(unittest.TestCase):
         self.assertEqual(prompt_enhancer_model_input.kwargs["io_kind"], "String")
         self.assertEqual(prompt_enhancer_provider_input.kwargs["io_kind"], "String")
         self.assertEqual(prompt_enhancer_model_id_input.kwargs["io_kind"], "String")
+        self.assertEqual(prompt_enhancer_model_history_input.kwargs["io_kind"], "String")
+        self.assertEqual(prompt_enhancer_model_history_input.kwargs["default"], "{}")
         self.assertEqual(prompt_enhancer_variables_input.kwargs["io_kind"], "String")
         self.assertEqual(prompt_enhancer_keep_alive_unit_input.kwargs["options"], ["seconds", "minutes", "hours"])
         self.assertEqual(len(prompt_enhancer_schema.hidden), 1)

@@ -64,6 +64,7 @@ class PromptEnhancer(io.ComfyNode):
                 io.String.Input("provider", default="ollama"),
                 io.String.Input("model_id", default=""),
                 io.String.Input("model_backend", default="ollama"),
+                io.String.Input("provider_model_history", default="{}", dynamic_prompts=False),
             ],
             outputs=[
                 io.String.Output("prompt"),
@@ -88,6 +89,7 @@ class PromptEnhancer(io.ComfyNode):
         provider: str = "ollama",
         model_id: str = "",
         model_backend: str = "ollama",
+        provider_model_history: str = "{}",
         model: str = DEFAULT_OLLAMA_MODEL,
         prompt_type: str = "image",
         prompt: str = "",

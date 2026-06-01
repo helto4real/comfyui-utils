@@ -20,6 +20,7 @@ import {
     readPromptEnhancerSettings,
     readPromptText,
     readPromptVariables,
+    rememberPromptEnhancerProviderModel,
     removePromptVariable,
     resetSystemPrompt,
     saveSystemPrompt,
@@ -409,6 +410,7 @@ function ensureModelSelector(node) {
                 modelId: selected,
                 modelBackend: selectedModel?.backend || (provider === "ollama" ? "ollama" : ""),
             });
+            rememberPromptEnhancerProviderModel(node);
             modelIdWidget?.callback?.(selected);
             modelWidget?.callback?.(selected);
             setCanvasDirty(node);
@@ -431,11 +433,7 @@ function ensureProviderSelector(node) {
     const widget = node.addWidget?.("combo", "provider", config.provider, (value) => {
         const provider = String(value || "ollama").trim() || "ollama";
         const catalog = node[PROVIDER_CATALOG] || { providers: [{ id: provider }], models: [] };
-        writePromptEnhancerModelConfig(node, {
-            provider,
-            modelId: "",
-            modelBackend: provider === "ollama" ? "ollama" : "",
-        });
+        rememberPromptEnhancerProviderModel(node);
         updateProviderModelOptions(widget, ensureModelSelector(node), node, catalog);
         setCanvasDirty(node);
     }, { values: [config.provider] });
