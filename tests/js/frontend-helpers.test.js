@@ -1065,19 +1065,22 @@ test("prompt enhancer autocomplete shortcuts accept navigate and preserve browse
 
     assert.equal(promptAutocompleteShortcutAction(ctrlY, state), "accept");
     assert.deepEqual(calls, ["prevent", "stop"]);
-    assert.equal(promptAutocompleteShortcutAction({ key: "n", ctrlKey: true }, state), "next");
-    assert.equal(promptAutocompleteShortcutAction({ key: "p", ctrlKey: true }, state), "previous");
+    assert.equal(promptAutocompleteShortcutAction({ key: "Enter" }, state), "accept");
+    assert.equal(promptAutocompleteShortcutAction({ key: "Tab" }, state), "accept");
+    assert.equal(promptAutocompleteShortcutAction({ key: "ArrowDown" }, state), "next");
+    assert.equal(promptAutocompleteShortcutAction({ key: "ArrowUp" }, state), "previous");
+    assert.equal(promptAutocompleteShortcutAction({ key: "n", ctrlKey: true }, state), "");
+    assert.equal(promptAutocompleteShortcutAction({ key: "p", ctrlKey: true }, state), "");
     assert.equal(promptAutocompleteShortcutAction({ key: "a", ctrlKey: true }, state), "");
     assert.equal(promptAutocompleteShortcutAction({ key: "v", ctrlKey: true }, state), "");
     assert.equal(promptAutocompleteShortcutAction({ key: "z", ctrlKey: true }, state), "");
 });
 
-test("prompt enhancer autocomplete guard consumes ctrl+n only for focused active editors", () => {
+test("prompt enhancer autocomplete guard consumes arrow navigation only for focused active editors", () => {
     const state = autocompleteStateForPrompt("[", 1, [], 0, { promptType: "video" });
     const calls = [];
     const event = {
-        key: "n",
-        ctrlKey: true,
+        key: "ArrowDown",
         preventDefault: () => calls.push("prevent"),
         stopPropagation: () => calls.push("stop"),
         stopImmediatePropagation: () => calls.push("stop-immediate"),
@@ -1085,13 +1088,13 @@ test("prompt enhancer autocomplete guard consumes ctrl+n only for focused active
 
     assert.equal(promptAutocompleteShortcutGuardAction(event, state, true), "next");
     assert.deepEqual(calls, ["prevent", "stop", "stop-immediate"]);
-    assert.equal(promptAutocompleteShortcutGuardAction({ key: "n", ctrlKey: true }, state, false), "");
-    assert.equal(promptAutocompleteShortcutGuardAction({ key: "n", ctrlKey: true }, emptyAutocompleteState(1), true), "");
+    assert.equal(promptAutocompleteShortcutGuardAction({ key: "ArrowDown" }, state, false), "");
+    assert.equal(promptAutocompleteShortcutGuardAction({ key: "ArrowDown" }, emptyAutocompleteState(1), true), "");
 });
 
 test("prompt enhancer autocomplete guard preserves unrelated focused editor shortcuts", () => {
     const state = autocompleteStateForPrompt("[", 1, [], 0, { promptType: "video" });
-    const shortcuts = ["a", "c", "v", "x", "z"];
+    const shortcuts = ["a", "c", "v", "x", "z", "n", "p"];
     for (const key of shortcuts) {
         const calls = [];
         const event = {
@@ -1111,8 +1114,10 @@ test("prompt enhancer autocomplete guard consumes all intellisense control short
     const cases = [
         [{ key: "Escape" }, "close"],
         [{ key: "y", ctrlKey: true }, "accept"],
-        [{ key: "n", ctrlKey: true }, "next"],
-        [{ key: "p", ctrlKey: true }, "previous"],
+        [{ key: "Enter" }, "accept"],
+        [{ key: "Tab" }, "accept"],
+        [{ key: "ArrowDown" }, "next"],
+        [{ key: "ArrowUp" }, "previous"],
     ];
 
     for (const [baseEvent, action] of cases) {

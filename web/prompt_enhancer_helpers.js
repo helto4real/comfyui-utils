@@ -675,14 +675,17 @@ export function promptAutocompleteShortcutGuardAction(event, autocomplete, edito
     if (!editorFocused || !isPromptAutocompleteVisible(autocomplete)) return "";
     const key = String(event?.key || "");
     const normalizedKey = key.toLowerCase();
+    const hasTextModifier = Boolean(event?.ctrlKey || event?.metaKey || event?.altKey);
     let action = "";
     if (key === "Escape") {
         action = "close";
     } else if (event?.ctrlKey && normalizedKey === "y") {
         action = "accept";
-    } else if (event?.ctrlKey && normalizedKey === "n") {
+    } else if (!hasTextModifier && (key === "Enter" || key === "Tab")) {
+        action = "accept";
+    } else if (!hasTextModifier && key === "ArrowDown") {
         action = "next";
-    } else if (event?.ctrlKey && normalizedKey === "p") {
+    } else if (!hasTextModifier && key === "ArrowUp") {
         action = "previous";
     }
     if (action) {
