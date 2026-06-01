@@ -158,7 +158,7 @@ Supported syntax:
 | `---` | Starts a new segment when placed on its own line. |
 | `[key=value]` | Metadata. Global metadata must appear at the top before segment text. Segment metadata appears inside a segment. |
 | `>> text` or `> > text` | Continuity note for the current segment. |
-| `@imageN[:role]` | Reference image marker, where `N` is one-based. If no role is given, `start` is used. In video modes, these markers select which connected images are used for that segment's direct or separate vision pass. |
+| `@imageN[:role][:describe]` | Reference image marker, where `N` is one-based. If no role is given, `start` is used. In video modes, these markers select which connected images are used for that segment's direct or separate vision pass. Add `:describe` when the model should explicitly describe visible traits from that reference. |
 | `## text` | Visual heading markup is stripped, leaving `text` as direction. |
 | `{{name}}` | Variable token replaced from the node's variable list before parsing. |
 
@@ -168,6 +168,8 @@ Segment metadata keys: `rating`, `reference_mode`, `style`, `camera`, `duration`
 
 Image roles: `start`, `end`, `character`, `style`, `pose`, `setting`, `motion`.
 
+Image modifier: `describe`. For example, `@image2:character:describe` asks the writer or vision model to describe persistent character traits such as color, size, markings, expression, posture, and distinctive features. `@image1:describe` means `@image1:start:describe`.
+
 Reference modes: `none`, `start_frame`, `end_guidance`, `start_and_end_transition`, `character_reference`, `style_reference`, `mixed`.
 
 If `reference_mode` is not set on a segment, it is inferred from image roles: only `start` becomes `start_frame`, only `end` becomes `end_guidance`, `start` plus `end` becomes `start_and_end_transition`, only `character` becomes `character_reference`, only `style` becomes `style_reference`, and mixed role sets become `mixed`. `default_reference_mode` is used only when a segment has no image references.
@@ -175,6 +177,19 @@ If `reference_mode` is not set on a segment, it is inferred from image roles: on
 `all segments` mode calls the provider once per parsed segment and joins the generated prompts with one empty line. `single segment` mode validates and uses only `active_segment_index`. Image mode does not parse this syntax; the full `script` text is sent as the image prompt.
 
 Example with a text-only writer model: set the main provider/model to your text model, keep `vision_context_mode=auto`, and set the vision model selector to a VLM such as `qwen3_vl_4b_fast`. A segment containing `@image1:character` sends image 1 to the vision model, inserts its visual notes into `visual_context`, then asks the text-only writer to produce the final prompt.
+
+Dog reference example:
+
+```text
+[rating=SFW]
+[style=cinematic realism, natural motion]
+
+A woman walks along a quiet forest path. @image1:start
+
+---
+
+A dog runs beside the woman. @image2:character:describe
+```
 
 ## Compare Previews
 

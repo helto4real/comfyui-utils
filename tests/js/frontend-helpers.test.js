@@ -1079,6 +1079,13 @@ test("prompt enhancer video script autocomplete suggests metadata images and rol
         cursor: 17,
     });
 
+    state = autocompleteStateForPrompt("@image1:character:d", 19, [], 0, context);
+    assert.deepEqual(state.options, ["describe"]);
+    assert.deepEqual(insertVariableSuggestion("@image1:character:d", state), {
+        text: "@image1:character:describe",
+        cursor: 26,
+    });
+
     state = autocompleteStateForPrompt(">>", 2, [], 0, context);
     assert.equal(state.active, true);
     assert.deepEqual(insertVariableSuggestion(">>", state), {

@@ -930,6 +930,51 @@ Second beat moves toward the doorway. @image1:end
         self.assertEqual(writer_requests[0].images, ["encoded-image-2"])
         self.assertEqual(result[7], "")
 
+    def test_prompt_enhancer_direct_vision_describe_modifier_guides_writer(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        prompt_node = next(
+            node_cls
+            for node_cls in asyncio.run(extension_module.HeltoUtilsExtension().get_node_list())
+            if node_cls.define_schema().node_id == "HeltoPromptEnhancer"
+        )
+        globals_ = prompt_node.execute.__func__.__globals__
+        original_provider = globals_["PromptProviderRegistry"]
+        original_encode = globals_["encode_images_for_ollama"]
+        original_support = globals_["provider_model_supports_images"]
+        writer_requests = []
+
+        class FakeRegistry:
+            def generate(self, request, progress=None):
+                writer_requests.append(request)
+                return request.prompt
+
+            def generate_visual_context(self, request, progress=None):
+                raise AssertionError("direct writer mode should not call separate vision")
+
+        globals_["PromptProviderRegistry"] = FakeRegistry
+        globals_["encode_images_for_ollama"] = lambda *args, **kwargs: ["encoded-image-1", "encoded-image-2"]
+        globals_["provider_model_supports_images"] = lambda provider, model_id, backend="": True
+        try:
+            result = prompt_node.execute(
+                seed=3,
+                images=[object(), object()],
+                prompt_type="video",
+                vision_context_mode="direct to writer",
+                segment_generation_mode="single segment",
+                script="A dog runs beside the woman. @image2:character:describe",
+                model="llava:latest",
+                model_id="llava:latest",
+            )
+        finally:
+            globals_["PromptProviderRegistry"] = original_provider
+            globals_["encode_images_for_ollama"] = original_encode
+            globals_["provider_model_supports_images"] = original_support
+
+        self.assertEqual(writer_requests[0].images, ["encoded-image-2"])
+        self.assertIn("persistent identity traits", writer_requests[0].prompt)
+        self.assertIn("color, size, markings", writer_requests[0].prompt)
+        self.assertIn("persistent identity traits", result[2])
+
     def test_prompt_enhancer_auto_uses_separate_vision_for_text_only_writer(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()
         prompt_node = next(
@@ -982,6 +1027,59 @@ Second beat moves toward the doorway. @image1:end
         self.assertEqual(writer_requests[0].images, [])
         self.assertIn("Visual context: subject raises one hand", writer_requests[0].prompt)
         self.assertEqual(result[7], "subject raises one hand while rain falls")
+
+    def test_prompt_enhancer_separate_vision_describe_modifier_guides_vision_prompt(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        prompt_node = next(
+            node_cls
+            for node_cls in asyncio.run(extension_module.HeltoUtilsExtension().get_node_list())
+            if node_cls.define_schema().node_id == "HeltoPromptEnhancer"
+        )
+        globals_ = prompt_node.execute.__func__.__globals__
+        original_provider = globals_["PromptProviderRegistry"]
+        original_encode = globals_["encode_images_for_ollama"]
+        original_support = globals_["provider_model_supports_images"]
+        writer_requests = []
+        vision_requests = []
+
+        class FakeRegistry:
+            def generate(self, request, progress=None):
+                writer_requests.append(request)
+                return request.prompt
+
+            def generate_visual_context(self, request, progress=None):
+                vision_requests.append(request)
+                return "a medium white dog with fluffy fur and dark eyes"
+
+        globals_["PromptProviderRegistry"] = FakeRegistry
+        globals_["encode_images_for_ollama"] = lambda *args, **kwargs: ["encoded-image-1", "encoded-image-2"]
+        globals_["provider_model_supports_images"] = lambda provider, model_id, backend="": model_id == "qwen3_vl_4b_fast"
+        try:
+            result = prompt_node.execute(
+                seed=3,
+                images=[object(), object()],
+                prompt_type="video",
+                vision_context_mode="separate vision model",
+                segment_generation_mode="single segment",
+                script="A dog runs beside the woman. @image2:character:describe",
+                provider="ollama",
+                model="AutumnAurelium/llama3.1-abliterated:latest",
+                model_id="AutumnAurelium/llama3.1-abliterated:latest",
+                vision_provider="local_transformers_vlm",
+                vision_model_id="qwen3_vl_4b_fast",
+                vision_model_backend="qwen",
+            )
+        finally:
+            globals_["PromptProviderRegistry"] = original_provider
+            globals_["encode_images_for_ollama"] = original_encode
+            globals_["provider_model_supports_images"] = original_support
+
+        self.assertEqual(vision_requests[0].images, ["encoded-image-2"])
+        self.assertIn("persistent identity traits", vision_requests[0].prompt)
+        self.assertIn("color, size, markings", vision_requests[0].prompt)
+        self.assertEqual(writer_requests[0].images, [])
+        self.assertIn("Visual context: a medium white dog", writer_requests[0].prompt)
+        self.assertEqual(result[7], "a medium white dog with fluffy fur and dark eyes")
 
     def test_prompt_enhancer_image_mode_uses_all_images_for_separate_vision(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()

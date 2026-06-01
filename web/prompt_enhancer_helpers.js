@@ -660,6 +660,10 @@ export const VIDEO_IMAGE_ROLE_COMPLETIONS = Object.freeze([
     "motion",
 ]);
 
+export const VIDEO_IMAGE_MODIFIER_COMPLETIONS = Object.freeze([
+    "describe",
+]);
+
 export function scriptAutocompleteState(text, cursor, selectedIndex = 0, context = {}) {
     const value = String(text ?? "");
     const safeCursor = Math.max(0, Math.min(Number(cursor) || 0, value.length));
@@ -674,6 +678,9 @@ export function scriptAutocompleteState(text, cursor, selectedIndex = 0, context
 
     const metadata = metadataAutocomplete(linePrefix, lineStart, safeCursor, selectedIndex);
     if (metadata.active) return metadata;
+
+    const modifier = imageModifierAutocomplete(beforeCursor, safeCursor, selectedIndex);
+    if (modifier.active) return modifier;
 
     const role = imageRoleAutocomplete(beforeCursor, safeCursor, selectedIndex);
     if (role.active) return role;
@@ -887,6 +894,24 @@ function imageRoleAutocomplete(beforeCursor, safeCursor, selectedIndex) {
     return {
         active: options.length > 0,
         kind: "image_role",
+        start: safeCursor - prefix.length,
+        end: safeCursor,
+        prefix,
+        options,
+        selectedIndex: boundedAutocompleteIndex(options, selectedIndex),
+    };
+}
+
+function imageModifierAutocomplete(beforeCursor, safeCursor, selectedIndex) {
+    const match = beforeCursor.match(/@image\d+:[A-Za-z_][A-Za-z0-9_-]*:([A-Za-z_]*)$/i);
+    if (!match) {
+        return inactiveAutocomplete(safeCursor);
+    }
+    const prefix = match[1] || "";
+    const options = VIDEO_IMAGE_MODIFIER_COMPLETIONS.filter((option) => option.startsWith(prefix.toLowerCase()));
+    return {
+        active: options.length > 0,
+        kind: "image_modifier",
         start: safeCursor - prefix.length,
         end: safeCursor,
         prefix,

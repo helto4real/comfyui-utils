@@ -402,6 +402,33 @@ A character turns around. @image3:character
         self.assertEqual(first_segment_local.global_metadata, {})
         self.assertEqual(build_segment_variables(first_segment_local, 1)["reference_mode"], "end_guidance")
 
+    def test_video_script_parser_supports_describe_image_reference_modifier(self):
+        parsed = parse_video_prompt_script(
+            "A white dog runs beside the woman. @image2:character:describe\n"
+            "---\n"
+            "Opening frame holds on the forest path. @image1:describe",
+            image_count=2,
+        )
+        first = build_segment_variables(parsed, 1)
+        second = build_segment_variables(parsed, 2)
+
+        self.assertEqual(parsed.segments[0].image_references[0].role, "character")
+        self.assertTrue(parsed.segments[0].image_references[0].describe)
+        self.assertEqual(first["reference_mode"], "character_reference")
+        self.assertIn("Image 2 is used as character reference.", first["image_notes"])
+        self.assertIn("persistent identity traits", first["image_notes"])
+        self.assertIn("color, size, markings", first["image_notes"])
+        self.assertEqual(parsed.segments[1].image_references[0].role, "start")
+        self.assertTrue(parsed.segments[1].image_references[0].describe)
+        self.assertEqual(second["reference_mode"], "start_frame")
+        self.assertIn("opening-frame state", second["image_notes"])
+
+        plain = parse_video_prompt_script("A character turns around. @image1:character", image_count=1)
+        plain_reference = plain.segments[0].image_references[0]
+        self.assertEqual(plain_reference.role, "character")
+        self.assertFalse(plain_reference.describe)
+        self.assertNotIn("persistent identity traits", build_segment_variables(plain, 1)["image_notes"])
+
     def test_video_script_parser_warns_when_reference_mode_has_no_image_reference(self):
         parsed = parse_video_prompt_script("[reference_mode=start_frame]\nA subject turns toward camera.", image_count=1)
         variables = build_segment_variables(parsed, 1)
@@ -414,6 +441,9 @@ A character turns around. @image3:character
     def test_video_script_parser_validates_references_modes_and_segment_index(self):
         with self.assertRaisesRegex(VideoScriptError, "Unknown image role"):
             parse_video_prompt_script("A view. @image1:background", image_count=1)
+
+        with self.assertRaisesRegex(VideoScriptError, "Unknown image reference modifier"):
+            parse_video_prompt_script("A view. @image1:character:lock", image_count=1)
 
         with self.assertRaisesRegex(VideoScriptError, "only 1 images"):
             parse_video_prompt_script("A view. @image2:start", image_count=1)

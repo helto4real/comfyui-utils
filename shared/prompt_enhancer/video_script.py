@@ -45,7 +45,7 @@ SUPPORTED_REFERENCE_MODES = (
 )
 
 DEFAULT_RATING = "SFW"
-IMAGE_REF_RE = re.compile(r"@image(?P<index>\d+)(?::(?P<role>[A-Za-z_][A-Za-z0-9_-]*))?", re.IGNORECASE)
+IMAGE_REF_RE = re.compile(r"@image(?P<index>\d+)(?P<suffix>(?::[A-Za-z_][A-Za-z0-9_-]*)*)", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -53,6 +53,7 @@ class ImageReference:
     index: int
     role: str
     token: str
+    describe: bool = False
 
 
 @dataclass
@@ -96,7 +97,7 @@ def extract_image_references(text: str, image_count: int | None = None) -> list[
     for match in IMAGE_REF_RE.finditer(str(text or "")):
         token = match.group(0)
         index = _as_int(match.group("index"), 0)
-        role = (match.group("role") or "start").strip().lower()
+        role, describe = _parse_image_reference_suffix(match.group("suffix") or "", token)
         if role not in SUPPORTED_IMAGE_ROLES:
             raise VideoScriptError(
                 f"Unknown image role `{role}`. Supported roles: {', '.join(SUPPORTED_IMAGE_ROLES)}."
@@ -105,7 +106,7 @@ def extract_image_references(text: str, image_count: int | None = None) -> list[
             raise VideoScriptError(f"Image reference `{token}` must use a 1-based image index.")
         if image_count is not None and index > image_count:
             raise VideoScriptError(f"Image reference `{token}` was used, but only {image_count} images were provided.")
-        references.append(ImageReference(index=index, role=role, token=token))
+        references.append(ImageReference(index=index, role=role, token=token, describe=describe))
     return references
 
 
@@ -153,13 +154,18 @@ def build_image_notes(image_references: list[ImageReference], metadata: dict[str
     if metadata.get("duration"):
         notes.append(f"Duration target: {metadata['duration']}.")
 
-    seen: set[tuple[int, str]] = set()
+    ordered_keys: list[tuple[int, str]] = []
+    describe_by_key: dict[tuple[int, str], bool] = {}
     for reference in image_references:
         key = (reference.index, reference.role)
-        if key in seen:
-            continue
-        seen.add(key)
-        notes.append(f"Image {reference.index} is used as {_role_note(reference.role)}.")
+        if key not in describe_by_key:
+            ordered_keys.append(key)
+            describe_by_key[key] = False
+        describe_by_key[key] = describe_by_key[key] or reference.describe
+    for index, role in ordered_keys:
+        notes.append(f"Image {index} is used as {_role_note(role)}.")
+        if describe_by_key[(index, role)]:
+            notes.append(f"For image {index}, {_describe_note(role)}")
     return " ".join(notes).strip()
 
 
@@ -370,6 +376,24 @@ def _combined_continuity(metadata_continuity: str, explicit_continuity: str) -> 
     return "\n".join(part for part in parts if part)
 
 
+def _parse_image_reference_suffix(suffix: str, token: str) -> tuple[str, bool]:
+    parts = [part.strip().lower() for part in str(suffix or "").split(":") if part.strip()]
+    if not parts:
+        return "start", False
+    if len(parts) == 1:
+        if parts[0] == "describe":
+            return "start", True
+        return parts[0], False
+    if len(parts) == 2:
+        role, modifier = parts
+        if modifier != "describe":
+            raise VideoScriptError(
+                f"Unknown image reference modifier `{modifier}` in `{token}`. Supported modifiers: describe."
+            )
+        return role, True
+    raise VideoScriptError(f"Image reference `{token}` has too many modifiers. Supported modifier: describe.")
+
+
 def _role_note(role: str) -> str:
     return {
         "start": "the starting frame",
@@ -379,6 +403,39 @@ def _role_note(role: str) -> str:
         "pose": "pose reference",
         "setting": "setting reference",
         "motion": "motion reference",
+    }[role]
+
+
+def _describe_note(role: str) -> str:
+    return {
+        "start": (
+            "inspect and explicitly describe the visible opening-frame state, including subject appearance, "
+            "setting, lighting, composition, posture, and other details that should be preserved."
+        ),
+        "end": (
+            "inspect and explicitly describe the visible final-frame target state, including subject appearance, "
+            "setting, lighting, composition, posture, and details the motion should resolve toward."
+        ),
+        "character": (
+            "inspect and explicitly describe persistent identity traits such as color, size, markings, "
+            "clothing or accessories, expression, posture, and distinctive features."
+        ),
+        "style": (
+            "inspect and explicitly describe the visual style, color palette, lighting, texture, medium, "
+            "mood, and rendering treatment."
+        ),
+        "pose": (
+            "inspect and explicitly describe body pose, gesture, limb placement, expression, camera-facing angle, "
+            "and other pose cues to preserve."
+        ),
+        "setting": (
+            "inspect and explicitly describe the environment layout, objects, weather, lighting, atmosphere, "
+            "and spatial details."
+        ),
+        "motion": (
+            "inspect and explicitly describe movement cues, posture changes, implied timing, direction of travel, "
+            "and action-relevant details."
+        ),
     }[role]
 
 
