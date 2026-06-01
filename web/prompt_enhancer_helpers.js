@@ -417,8 +417,8 @@ export function isPointInPromptWidget(node, point) {
         y <= bounds.y + bounds.height;
 }
 
-export function shouldHidePromptWidget(node, promptHovered = false) {
-    return isPromptHideModeEnabled(node) && !promptHovered;
+export function shouldHidePromptWidget(node, promptHovered = false, autocompleteVisible = false) {
+    return isPromptHideModeEnabled(node) && !promptHovered && !autocompleteVisible;
 }
 
 export function isEncryptedVariables(value) {
@@ -623,6 +623,50 @@ export function emptyAutocompleteState(cursor = 0) {
     return inactiveAutocomplete(cursor);
 }
 
+export function isPromptAutocompleteVisible(autocomplete, suggestionsHidden = false) {
+    return Boolean(autocomplete?.active && autocomplete?.options?.length > 0 && !suggestionsHidden);
+}
+
+export function promptSuggestionPopupPosition(options = {}) {
+    const lineHeight = positiveNumber(options.lineHeight, 18);
+    const paddingTop = Math.max(0, numberOr(options.paddingTop, 0));
+    const paddingLeft = Math.max(0, numberOr(options.paddingLeft, 0));
+    const scrollTop = Math.max(0, numberOr(options.scrollTop, 0));
+    const textareaHeight = Math.max(1, positiveNumber(options.textareaHeight, 120));
+    const textareaOffsetTop = numberOr(options.textareaOffsetTop, 0);
+    const textareaOffsetLeft = numberOr(options.textareaOffsetLeft, 0);
+    const containerHeight = Math.max(1, positiveNumber(options.containerHeight, textareaHeight + textareaOffsetTop));
+    const containerWidth = Math.max(1, positiveNumber(options.containerWidth, positiveNumber(options.textareaWidth, 240)));
+    const popupHeight = Math.max(1, positiveNumber(options.popupHeight, 132));
+    const popupWidth = Math.max(1, positiveNumber(options.popupWidth, 160));
+    const gap = Math.max(0, numberOr(options.gap, 4));
+    const cursor = Math.max(0, Math.min(Number(options.cursor) || 0, String(options.text ?? "").length));
+    const lineIndex = String(options.text ?? "").slice(0, cursor).split("\n").length - 1;
+    const estimatedLineTop = textareaOffsetTop + paddingTop + (lineIndex * lineHeight) - scrollTop;
+    const visualLineTop = options.visualLineTop;
+    const lineTop = Number.isFinite(Number(visualLineTop)) ? Number(visualLineTop) : estimatedLineTop;
+    const belowTop = lineTop + lineHeight + gap;
+    const aboveTop = lineTop - popupHeight - gap;
+    const maxTop = Math.max(0, containerHeight - popupHeight);
+    const preferBelow = Boolean(options.preferBelow);
+    const top = preferBelow
+        ? belowTop
+        : belowTop + popupHeight <= containerHeight
+        ? belowTop
+        : aboveTop >= 0
+            ? aboveTop
+            : clamp(belowTop, 0, maxTop);
+    const maxLeft = Math.max(0, containerWidth - popupWidth);
+    const left = clamp(textareaOffsetLeft + paddingLeft, 0, maxLeft);
+
+    return {
+        left,
+        top: preferBelow ? Math.max(0, top) : clamp(top, 0, maxTop),
+        maxWidth: Math.max(1, containerWidth - left),
+        placement: preferBelow || belowTop + popupHeight <= containerHeight ? "below" : "above",
+    };
+}
+
 export function promptAutocompleteShortcutAction(event, autocomplete) {
     if (!autocomplete?.active) return "";
     const key = String(event?.key || "");
@@ -664,6 +708,20 @@ function consumeAutocompleteShortcutEvent(event) {
 function shouldContinueAutocompleteAfterAccept(previousAutocomplete, nextAutocomplete) {
     if (!previousAutocomplete?.active || !nextAutocomplete?.active) return false;
     return previousAutocomplete.kind === "metadata_key" && nextAutocomplete.kind === "metadata_value";
+}
+
+function numberOr(value, fallback) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : fallback;
+}
+
+function positiveNumber(value, fallback) {
+    const number = Number(value);
+    return Number.isFinite(number) && number > 0 ? number : fallback;
+}
+
+function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
 }
 
 export function insertVariableSuggestion(text, state, name) {

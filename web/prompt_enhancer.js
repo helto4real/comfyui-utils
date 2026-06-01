@@ -16,6 +16,7 @@ import {
     isPointInPromptWidget,
     moveAutocompleteSelection,
     promptAutocompleteShortcutAction,
+    promptSuggestionPopupPosition,
     PROMPT_EDITOR_HEIGHT,
     PROMPT_EDITOR_WIDGET_NAME,
     promptEditorLayout,
@@ -55,6 +56,7 @@ const PROMPT_HOVER_STATE = "__heltoPromptEnhancerPromptHover";
 const PROMPT_DOM_ELEMENTS = "__heltoPromptEnhancerPromptDomElements";
 const PROMPT_EDITOR_STATE = "__heltoPromptEnhancerPromptEditor";
 const PROMPT_PRIVACY_SERIALIZATION = "__heltoPromptEnhancerPromptPrivacySerialization";
+const PROMPT_AUTOCOMPLETE_VISIBLE = "__heltoPromptEnhancerAutocompleteVisible";
 
 function isPromptEnhancerNode(node) {
     return node?.comfyClass === PROMPT_ENHANCER_NODE_CLASS || node?.constructor?.comfyClass === PROMPT_ENHANCER_NODE_CLASS;
@@ -109,6 +111,107 @@ function connectedImageSuggestionCount(node) {
     return 2;
 }
 
+function cssPixels(value, fallback = 0) {
+    const number = Number.parseFloat(String(value || ""));
+    return Number.isFinite(number) ? number : fallback;
+}
+
+function textareaLineHeight(textarea) {
+    const style = getComputedStyle(textarea);
+    const fontSize = cssPixels(style.fontSize, 12);
+    return cssPixels(style.lineHeight, fontSize * 1.45);
+}
+
+function textareaVisualCaretTop(textarea, container) {
+    const cursor = Math.max(0, Math.min(Number(textarea.selectionStart) || 0, textarea.value.length));
+    const style = getComputedStyle(textarea);
+    const containerRect = container?.getBoundingClientRect?.() ?? { top: 0 };
+    const textareaRect = textarea.getBoundingClientRect?.() ?? { top: 0 };
+    const offsetTop = Number.isFinite(textarea.offsetTop)
+        ? textarea.offsetTop
+        : Math.max(0, textareaRect.top - (containerRect.top || 0));
+    const mirror = document.createElement("div");
+    const marker = document.createElement("span");
+    const copiedStyles = [
+        "fontFamily",
+        "fontSize",
+        "fontWeight",
+        "fontStyle",
+        "letterSpacing",
+        "lineHeight",
+        "textTransform",
+        "wordSpacing",
+        "tabSize",
+        "paddingTop",
+        "paddingRight",
+        "paddingBottom",
+        "paddingLeft",
+        "borderTopWidth",
+        "borderRightWidth",
+        "borderBottomWidth",
+        "borderLeftWidth",
+    ];
+    for (const property of copiedStyles) {
+        mirror.style[property] = style[property];
+    }
+    mirror.style.boxSizing = "border-box";
+    mirror.style.left = "-10000px";
+    mirror.style.overflow = "hidden";
+    mirror.style.position = "absolute";
+    mirror.style.top = "0";
+    mirror.style.visibility = "hidden";
+    mirror.style.whiteSpace = "pre-wrap";
+    mirror.style.overflowWrap = "break-word";
+    mirror.style.wordBreak = style.wordBreak || "break-word";
+    mirror.style.width = `${textarea.clientWidth || textareaRect.width}px`;
+    mirror.textContent = textarea.value.slice(0, cursor) || "\u200b";
+    marker.textContent = "\u200b";
+    mirror.appendChild(marker);
+    document.body.appendChild(mirror);
+    try {
+        const mirrorRect = mirror.getBoundingClientRect();
+        const markerRect = marker.getBoundingClientRect();
+        return offsetTop + Math.max(0, markerRect.top - mirrorRect.top) - textarea.scrollTop;
+    } finally {
+        mirror.remove();
+    }
+}
+
+function positionPromptSuggestionsElement(textarea, suggestions, container, options = {}) {
+    if (!textarea || !suggestions || suggestions.hidden) return;
+    const style = getComputedStyle(textarea);
+    const containerRect = container?.getBoundingClientRect?.() ?? { width: 0, height: 0 };
+    const textareaRect = textarea.getBoundingClientRect?.() ?? { width: 0, height: 0, top: 0, left: 0 };
+    const offsetTop = Number.isFinite(textarea.offsetTop)
+        ? textarea.offsetTop
+        : Math.max(0, textareaRect.top - (containerRect.top || 0));
+    const offsetLeft = Number.isFinite(textarea.offsetLeft)
+        ? textarea.offsetLeft
+        : Math.max(0, textareaRect.left - (containerRect.left || 0));
+    const lineHeight = textareaLineHeight(textarea);
+    const position = promptSuggestionPopupPosition({
+        text: textarea.value,
+        cursor: textarea.selectionStart,
+        lineHeight,
+        paddingTop: cssPixels(style.paddingTop, 0),
+        paddingLeft: cssPixels(style.paddingLeft, 0),
+        scrollTop: textarea.scrollTop,
+        visualLineTop: textareaVisualCaretTop(textarea, container),
+        textareaHeight: textarea.clientHeight || textareaRect.height,
+        textareaWidth: textarea.clientWidth || textareaRect.width,
+        textareaOffsetTop: offsetTop,
+        textareaOffsetLeft: offsetLeft,
+        containerHeight: container?.clientHeight || containerRect.height || textarea.clientHeight || textareaRect.height,
+        containerWidth: container?.clientWidth || containerRect.width || textarea.clientWidth || textareaRect.width,
+        popupHeight: suggestions.offsetHeight || 132,
+        popupWidth: suggestions.offsetWidth || 160,
+        preferBelow: Boolean(options.preferBelow),
+    });
+    suggestions.style.left = `${Math.round(position.left)}px`;
+    suggestions.style.top = `${Math.round(position.top)}px`;
+    suggestions.style.maxWidth = `${Math.max(1, Math.floor(position.maxWidth))}px`;
+}
+
 function applyPromptEditorLayout(node) {
     const state = getPromptEditorState(node);
     if (!state) return;
@@ -131,7 +234,7 @@ function applyPromptEditorLayout(node) {
             domWidget.element.style.height = heightPx;
             domWidget.element.style.minHeight = heightPx;
             domWidget.element.style.maxHeight = heightPx;
-            domWidget.element.style.overflow = "hidden";
+            domWidget.element.style.overflow = suggestions && !suggestions.hidden ? "visible" : "hidden";
         }
     }
 
@@ -143,7 +246,7 @@ function applyPromptEditorLayout(node) {
         frame.style.height = heightPx;
         frame.style.minHeight = heightPx;
         frame.style.maxHeight = heightPx;
-        frame.style.overflow = "hidden";
+        frame.style.overflow = suggestions && !suggestions.hidden ? "visible" : "hidden";
     }
     if (textarea) {
         textarea.style.boxSizing = "border-box";
@@ -158,6 +261,7 @@ function applyPromptEditorLayout(node) {
     }
     if (suggestions) {
         suggestions.style.maxWidth = `${Math.max(0, layout.width - 20)}px`;
+        positionPromptSuggestionsElement(textarea, suggestions, frame, { preferBelow: true });
     }
 }
 
@@ -309,6 +413,9 @@ function ensurePromptEditor(node) {
         refreshAutocomplete();
     });
     textarea.addEventListener("click", () => refreshAutocomplete());
+    textarea.addEventListener("scroll", () => {
+        positionPromptSuggestionsElement(textarea, suggestions, frame, { preferBelow: true });
+    });
     textarea.addEventListener("keyup", (event) => {
         if (["Control", "Meta", "Alt", "Shift"].includes(event.key)) return;
         refreshAutocomplete();
@@ -374,13 +481,19 @@ function syncPromptEditorFromWidget(node) {
 function renderPromptSuggestions(node) {
     const state = getPromptEditorState(node);
     if (!state) return;
-    const { suggestions, autocomplete } = state;
+    const { suggestions, autocomplete, textarea, frame, domWidget } = state;
     suggestions.innerHTML = "";
     if (!autocomplete.active || autocomplete.options.length === 0) {
         suggestions.hidden = true;
+        if (frame) frame.style.overflow = "hidden";
+        if (domWidget?.element) domWidget.element.style.overflow = "hidden";
+        node[PROMPT_AUTOCOMPLETE_VISIBLE] = false;
+        applyPromptDomHideMode(node);
         return;
     }
     suggestions.hidden = false;
+    if (frame) frame.style.overflow = "visible";
+    if (domWidget?.element) domWidget.element.style.overflow = "visible";
     autocomplete.options.forEach((name, index) => {
         const button = document.createElement("button");
         button.type = "button";
@@ -392,6 +505,9 @@ function renderPromptSuggestions(node) {
         };
         suggestions.appendChild(button);
     });
+    positionPromptSuggestionsElement(textarea, suggestions, frame, { preferBelow: true });
+    node[PROMPT_AUTOCOMPLETE_VISIBLE] = true;
+    applyPromptDomHideMode(node);
 }
 
 function acceptPromptSuggestion(node, explicitName = null) {
@@ -627,7 +743,7 @@ function getPromptDomElements(node) {
 }
 
 function applyPromptDomHideMode(node) {
-    const shouldHide = shouldHidePromptWidget(node, node[PROMPT_HOVER_STATE]);
+    const shouldHide = shouldHidePromptWidget(node, node[PROMPT_HOVER_STATE], node[PROMPT_AUTOCOMPLETE_VISIBLE]);
     for (const element of getPromptDomElements(node)) {
         element.classList.toggle("helto-prompt-enhancer-prompt-hidden", shouldHide);
     }
@@ -705,14 +821,30 @@ async function openScriptEditor(node) {
 
     const textarea = modal.body.querySelector("#helto-pe-script-editor");
     const suggestions = modal.body.querySelector("#helto-pe-script-suggestions");
+    const suggestionContainer = modal.body.querySelector(".helto-prompt-enhancer-large-editor");
     textarea.value = currentText;
     textarea.focus();
 
     let autocomplete = { active: false, options: [], selectedIndex: 0 };
+    const clearModalAutocompleteReveal = () => {
+        autocomplete = emptyAutocompleteState(textarea.selectionStart);
+        node[PROMPT_AUTOCOMPLETE_VISIBLE] = false;
+        applyPromptDomHideMode(node);
+    };
+    modal.card.querySelector(".helto-modal-close-btn")?.addEventListener("click", clearModalAutocompleteReveal);
+    modal.cancelBtn?.addEventListener("click", clearModalAutocompleteReveal);
+    modal.actionBtn?.addEventListener("click", clearModalAutocompleteReveal);
+    modal.overlay?.addEventListener("click", (event) => {
+        if (event.target === modal.overlay) {
+            clearModalAutocompleteReveal();
+        }
+    });
     const render = () => {
         suggestions.innerHTML = "";
         if (!autocomplete.active || autocomplete.options.length === 0) {
             suggestions.hidden = true;
+            node[PROMPT_AUTOCOMPLETE_VISIBLE] = false;
+            applyPromptDomHideMode(node);
             return;
         }
         suggestions.hidden = false;
@@ -727,6 +859,9 @@ async function openScriptEditor(node) {
             };
             suggestions.appendChild(button);
         });
+        positionPromptSuggestionsElement(textarea, suggestions, suggestionContainer);
+        node[PROMPT_AUTOCOMPLETE_VISIBLE] = true;
+        applyPromptDomHideMode(node);
     };
     const refresh = (selectedIndex = autocomplete.selectedIndex || 0) => {
         autocomplete = autocompleteStateForPrompt(
@@ -756,6 +891,9 @@ async function openScriptEditor(node) {
 
     textarea.addEventListener("input", () => refresh(0));
     textarea.addEventListener("click", () => refresh());
+    textarea.addEventListener("scroll", () => {
+        positionPromptSuggestionsElement(textarea, suggestions, suggestionContainer);
+    });
     textarea.addEventListener("keyup", (event) => {
         if (["Control", "Meta", "Alt", "Shift"].includes(event.key)) return;
         refresh();

@@ -37,6 +37,7 @@ import {
     hideSerializedSettingsWidgets,
     isEncryptedText,
     isEncryptedVariables,
+    isPromptAutocompleteVisible,
     isPointInPromptWidget,
     isPromptHideModeEnabled,
     modelOptionsForProvider,
@@ -46,6 +47,7 @@ import {
     normalizePromptVariables,
     parsePromptVariablesJson,
     promptEditorLayout,
+    promptSuggestionPopupPosition,
     promptWidgetBounds,
     readProviderModelHistory,
     readPromptEnhancerModelConfig,
@@ -609,9 +611,125 @@ test("prompt enhancer hide mode calculates prompt widget hover state", () => {
     assert.equal(isPointInPromptWidget(node, [30, 230]), false);
     assert.equal(shouldHidePromptWidget(node, false), true);
     assert.equal(shouldHidePromptWidget(node, true), false);
+    assert.equal(shouldHidePromptWidget(node, false, true), false);
 
     node.widgets[0].value = false;
     assert.equal(shouldHidePromptWidget(node, false), false);
+});
+
+test("prompt enhancer suggestion popup positions below flips and clamps", () => {
+    let position = promptSuggestionPopupPosition({
+        text: "[rating=",
+        cursor: 8,
+        lineHeight: 20,
+        paddingTop: 8,
+        paddingLeft: 10,
+        scrollTop: 0,
+        textareaHeight: 120,
+        textareaWidth: 280,
+        textareaOffsetTop: 6,
+        textareaOffsetLeft: 6,
+        containerHeight: 180,
+        containerWidth: 320,
+        popupHeight: 60,
+        popupWidth: 160,
+    });
+
+    assert.equal(position.placement, "below");
+    assert.equal(position.top, 38);
+    assert.equal(position.left, 16);
+
+    position = promptSuggestionPopupPosition({
+        text: "logical line only",
+        cursor: 16,
+        lineHeight: 20,
+        paddingTop: 8,
+        paddingLeft: 10,
+        scrollTop: 0,
+        visualLineTop: 72,
+        textareaHeight: 160,
+        textareaWidth: 280,
+        textareaOffsetTop: 6,
+        textareaOffsetLeft: 6,
+        containerHeight: 180,
+        containerWidth: 320,
+        popupHeight: 60,
+        popupWidth: 160,
+    });
+
+    assert.equal(position.placement, "below");
+    assert.equal(position.top, 96);
+
+    position = promptSuggestionPopupPosition({
+        text: "one\ntwo\nthree\nfour\nfive\nsix",
+        cursor: 27,
+        lineHeight: 20,
+        paddingTop: 8,
+        paddingLeft: 10,
+        scrollTop: 0,
+        textareaHeight: 120,
+        textareaWidth: 280,
+        textareaOffsetTop: 6,
+        textareaOffsetLeft: 6,
+        containerHeight: 150,
+        containerWidth: 320,
+        popupHeight: 60,
+        popupWidth: 160,
+    });
+
+    assert.equal(position.placement, "above");
+    assert.equal(position.top, 50);
+
+    position = promptSuggestionPopupPosition({
+        text: "one\ntwo\nthree\nfour\nfive\nsix",
+        cursor: 27,
+        lineHeight: 20,
+        paddingTop: 8,
+        paddingLeft: 10,
+        scrollTop: 0,
+        textareaHeight: 120,
+        textareaWidth: 280,
+        textareaOffsetTop: 6,
+        textareaOffsetLeft: 6,
+        containerHeight: 150,
+        containerWidth: 320,
+        popupHeight: 60,
+        popupWidth: 160,
+        preferBelow: true,
+    });
+
+    assert.equal(position.placement, "below");
+    assert.equal(position.top, 138);
+
+    position = promptSuggestionPopupPosition({
+        text: "one\ntwo\nthree",
+        cursor: 13,
+        lineHeight: 20,
+        paddingTop: 8,
+        paddingLeft: 300,
+        scrollTop: 0,
+        textareaHeight: 80,
+        textareaWidth: 280,
+        textareaOffsetTop: 0,
+        textareaOffsetLeft: 20,
+        containerHeight: 80,
+        containerWidth: 180,
+        popupHeight: 120,
+        popupWidth: 160,
+    });
+
+    assert.equal(position.top, 0);
+    assert.equal(position.left, 20);
+    assert.equal(position.maxWidth, 160);
+});
+
+test("prompt enhancer autocomplete visibility only reveals for active shown suggestions", () => {
+    const active = autocompleteStateForPrompt("[", 1, [], 0, { promptType: "video" });
+    const inactive = emptyAutocompleteState(1);
+
+    assert.equal(isPromptAutocompleteVisible(active, false), true);
+    assert.equal(isPromptAutocompleteVisible(active, true), false);
+    assert.equal(isPromptAutocompleteVisible(inactive, false), false);
 });
 
 test("prompt enhancer editor layout constrains textarea inside node width", () => {
