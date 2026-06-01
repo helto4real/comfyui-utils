@@ -64,6 +64,7 @@ import {
     shouldRefreshPromptVariables,
     shouldHidePromptWidget,
     promptAutocompleteShortcutAction,
+    promptAutocompleteShortcutGuardAction,
     updatePromptVariable,
     updateModelOptions,
     updateProviderModelOptions,
@@ -1069,6 +1070,62 @@ test("prompt enhancer autocomplete shortcuts accept navigate and preserve browse
     assert.equal(promptAutocompleteShortcutAction({ key: "a", ctrlKey: true }, state), "");
     assert.equal(promptAutocompleteShortcutAction({ key: "v", ctrlKey: true }, state), "");
     assert.equal(promptAutocompleteShortcutAction({ key: "z", ctrlKey: true }, state), "");
+});
+
+test("prompt enhancer autocomplete guard consumes ctrl+n only for focused active editors", () => {
+    const state = autocompleteStateForPrompt("[", 1, [], 0, { promptType: "video" });
+    const calls = [];
+    const event = {
+        key: "n",
+        ctrlKey: true,
+        preventDefault: () => calls.push("prevent"),
+        stopPropagation: () => calls.push("stop"),
+        stopImmediatePropagation: () => calls.push("stop-immediate"),
+    };
+
+    assert.equal(promptAutocompleteShortcutGuardAction(event, state, true), "next");
+    assert.deepEqual(calls, ["prevent", "stop", "stop-immediate"]);
+    assert.equal(promptAutocompleteShortcutGuardAction({ key: "n", ctrlKey: true }, state, false), "");
+    assert.equal(promptAutocompleteShortcutGuardAction({ key: "n", ctrlKey: true }, emptyAutocompleteState(1), true), "");
+});
+
+test("prompt enhancer autocomplete guard preserves unrelated focused editor shortcuts", () => {
+    const state = autocompleteStateForPrompt("[", 1, [], 0, { promptType: "video" });
+    const shortcuts = ["a", "c", "v", "x", "z"];
+    for (const key of shortcuts) {
+        const calls = [];
+        const event = {
+            key,
+            ctrlKey: true,
+            preventDefault: () => calls.push("prevent"),
+            stopPropagation: () => calls.push("stop"),
+            stopImmediatePropagation: () => calls.push("stop-immediate"),
+        };
+        assert.equal(promptAutocompleteShortcutGuardAction(event, state, true), "");
+        assert.deepEqual(calls, []);
+    }
+});
+
+test("prompt enhancer autocomplete guard consumes all intellisense control shortcuts", () => {
+    const state = autocompleteStateForPrompt("[", 1, [], 0, { promptType: "video" });
+    const cases = [
+        [{ key: "Escape" }, "close"],
+        [{ key: "y", ctrlKey: true }, "accept"],
+        [{ key: "n", ctrlKey: true }, "next"],
+        [{ key: "p", ctrlKey: true }, "previous"],
+    ];
+
+    for (const [baseEvent, action] of cases) {
+        const calls = [];
+        const event = {
+            ...baseEvent,
+            preventDefault: () => calls.push("prevent"),
+            stopPropagation: () => calls.push("stop"),
+            stopImmediatePropagation: () => calls.push("stop-immediate"),
+        };
+        assert.equal(promptAutocompleteShortcutGuardAction(event, state, true), action);
+        assert.deepEqual(calls, ["prevent", "stop", "stop-immediate"]);
+    }
 });
 
 test("prompt enhancer autocomplete accept closes or continues to immediate follow-up suggestions", () => {

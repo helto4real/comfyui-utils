@@ -668,7 +668,11 @@ export function promptSuggestionPopupPosition(options = {}) {
 }
 
 export function promptAutocompleteShortcutAction(event, autocomplete) {
-    if (!autocomplete?.active) return "";
+    return promptAutocompleteShortcutGuardAction(event, autocomplete, true);
+}
+
+export function promptAutocompleteShortcutGuardAction(event, autocomplete, editorFocused = true) {
+    if (!editorFocused || !isPromptAutocompleteVisible(autocomplete)) return "";
     const key = String(event?.key || "");
     const normalizedKey = key.toLowerCase();
     let action = "";

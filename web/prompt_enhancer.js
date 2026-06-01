@@ -16,6 +16,7 @@ import {
     isPointInPromptWidget,
     moveAutocompleteSelection,
     promptAutocompleteShortcutAction,
+    promptAutocompleteShortcutGuardAction,
     promptSuggestionPopupPosition,
     PROMPT_EDITOR_HEIGHT,
     PROMPT_EDITOR_WIDGET_NAME,
@@ -57,6 +58,7 @@ const PROMPT_DOM_ELEMENTS = "__heltoPromptEnhancerPromptDomElements";
 const PROMPT_EDITOR_STATE = "__heltoPromptEnhancerPromptEditor";
 const PROMPT_PRIVACY_SERIALIZATION = "__heltoPromptEnhancerPromptPrivacySerialization";
 const PROMPT_AUTOCOMPLETE_VISIBLE = "__heltoPromptEnhancerAutocompleteVisible";
+const PROMPT_AUTOCOMPLETE_SHORTCUT_CLEANUP = "__heltoPromptEnhancerAutocompleteShortcutCleanup";
 
 function isPromptEnhancerNode(node) {
     return node?.comfyClass === PROMPT_ENHANCER_NODE_CLASS || node?.constructor?.comfyClass === PROMPT_ENHANCER_NODE_CLASS;
@@ -101,6 +103,16 @@ function autocompleteContextForNode(node) {
         promptType,
         imageCount: connectedImageSuggestionCount(node),
     };
+}
+
+function installPromptAutocompleteShortcutGuard({ getAutocomplete, isEditorFocused, onAction }) {
+    const listener = (event) => {
+        const action = promptAutocompleteShortcutGuardAction(event, getAutocomplete(), isEditorFocused());
+        if (!action) return;
+        onAction(action, event);
+    };
+    window.addEventListener("keydown", listener, true);
+    return () => window.removeEventListener("keydown", listener, true);
 }
 
 function connectedImageSuggestionCount(node) {
@@ -403,6 +415,26 @@ function ensurePromptEditor(node) {
         );
         renderPromptSuggestions(node);
     };
+    const handleAutocompleteAction = (action) => {
+        if (action === "accept") {
+            acceptPromptSuggestion(node);
+        } else if (action === "next") {
+            state.autocomplete.selectedIndex = moveAutocompleteSelection(state.autocomplete, 1);
+            renderPromptSuggestions(node);
+        } else if (action === "previous") {
+            state.autocomplete.selectedIndex = moveAutocompleteSelection(state.autocomplete, -1);
+            renderPromptSuggestions(node);
+        } else if (action === "close") {
+            state.autocomplete = emptyAutocompleteState(textarea.selectionStart);
+            renderPromptSuggestions(node);
+        }
+    };
+    node[PROMPT_AUTOCOMPLETE_SHORTCUT_CLEANUP]?.();
+    node[PROMPT_AUTOCOMPLETE_SHORTCUT_CLEANUP] = installPromptAutocompleteShortcutGuard({
+        getAutocomplete: () => state.autocomplete,
+        isEditorFocused: () => document.activeElement === textarea,
+        onAction: handleAutocompleteAction,
+    });
 
     textarea.addEventListener("input", () => {
         persistPromptEditorText(node, textarea.value);
@@ -423,18 +455,7 @@ function ensurePromptEditor(node) {
     textarea.addEventListener("keydown", (event) => {
         const action = promptAutocompleteShortcutAction(event, state.autocomplete);
         if (!action) return;
-        if (action === "accept") {
-            acceptPromptSuggestion(node);
-        } else if (action === "next") {
-            state.autocomplete.selectedIndex = moveAutocompleteSelection(state.autocomplete, 1);
-            renderPromptSuggestions(node);
-        } else if (action === "previous") {
-            state.autocomplete.selectedIndex = moveAutocompleteSelection(state.autocomplete, -1);
-            renderPromptSuggestions(node);
-        } else if (action === "close") {
-            state.autocomplete = emptyAutocompleteState(textarea.selectionStart);
-            renderPromptSuggestions(node);
-        }
+        handleAutocompleteAction(action);
     });
     textarea.addEventListener("mouseenter", () => updatePromptHover(node, true));
     textarea.addEventListener("mouseleave", () => updatePromptHover(node, false));
@@ -812,6 +833,7 @@ async function openScriptEditor(node) {
         }
         applyPromptDomHideMode(node);
         setCanvasDirty(node);
+        clearModalAutocompleteReveal();
         return true;
     }, {
         actionText: "Save",
@@ -826,14 +848,16 @@ async function openScriptEditor(node) {
     textarea.focus();
 
     let autocomplete = { active: false, options: [], selectedIndex: 0 };
+    let cleanupShortcutGuard = null;
     const clearModalAutocompleteReveal = () => {
         autocomplete = emptyAutocompleteState(textarea.selectionStart);
         node[PROMPT_AUTOCOMPLETE_VISIBLE] = false;
+        cleanupShortcutGuard?.();
+        cleanupShortcutGuard = null;
         applyPromptDomHideMode(node);
     };
     modal.card.querySelector(".helto-modal-close-btn")?.addEventListener("click", clearModalAutocompleteReveal);
     modal.cancelBtn?.addEventListener("click", clearModalAutocompleteReveal);
-    modal.actionBtn?.addEventListener("click", clearModalAutocompleteReveal);
     modal.overlay?.addEventListener("click", (event) => {
         if (event.target === modal.overlay) {
             clearModalAutocompleteReveal();
@@ -888,6 +912,25 @@ async function openScriptEditor(node) {
         render();
         textarea.focus();
     };
+    const handleAutocompleteAction = (action) => {
+        if (action === "accept") {
+            accept();
+        } else if (action === "next") {
+            autocomplete.selectedIndex = moveAutocompleteSelection(autocomplete, 1);
+            render();
+        } else if (action === "previous") {
+            autocomplete.selectedIndex = moveAutocompleteSelection(autocomplete, -1);
+            render();
+        } else if (action === "close") {
+            autocomplete = emptyAutocompleteState(textarea.selectionStart);
+            render();
+        }
+    };
+    cleanupShortcutGuard = installPromptAutocompleteShortcutGuard({
+        getAutocomplete: () => autocomplete,
+        isEditorFocused: () => document.activeElement === textarea,
+        onAction: handleAutocompleteAction,
+    });
 
     textarea.addEventListener("input", () => refresh(0));
     textarea.addEventListener("click", () => refresh());
@@ -901,18 +944,7 @@ async function openScriptEditor(node) {
     textarea.addEventListener("keydown", (event) => {
         const action = promptAutocompleteShortcutAction(event, autocomplete);
         if (!action) return;
-        if (action === "accept") {
-            accept();
-        } else if (action === "next") {
-            autocomplete.selectedIndex = moveAutocompleteSelection(autocomplete, 1);
-            render();
-        } else if (action === "previous") {
-            autocomplete.selectedIndex = moveAutocompleteSelection(autocomplete, -1);
-            render();
-        } else if (action === "close") {
-            autocomplete = emptyAutocompleteState(textarea.selectionStart);
-            render();
-        }
+        handleAutocompleteAction(action);
     });
     refresh(0);
 }
@@ -1271,6 +1303,7 @@ app.registerExtension({
         const onMouseLeave = nodeType.prototype.onMouseLeave;
         const onResize = nodeType.prototype.onResize;
         const onDrawForeground = nodeType.prototype.onDrawForeground;
+        const onRemoved = nodeType.prototype.onRemoved;
 
         nodeType.prototype.onNodeCreated = function () {
             const result = onNodeCreated?.apply(this, arguments);
@@ -1305,6 +1338,12 @@ app.registerExtension({
             applyPromptEditorLayout(this);
             applyPromptDomHideMode(this);
             return result;
+        };
+
+        nodeType.prototype.onRemoved = function () {
+            this[PROMPT_AUTOCOMPLETE_SHORTCUT_CLEANUP]?.();
+            this[PROMPT_AUTOCOMPLETE_SHORTCUT_CLEANUP] = null;
+            return onRemoved?.apply(this, arguments);
         };
     },
 });
