@@ -8,10 +8,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Iterator, Protocol
 
 from PIL import Image
 
+from .progress import PromptEnhancerProgress
 from .prompts import load_default_system_prompt, load_system_prompt, render_video_system_prompt
 
 
@@ -23,6 +24,7 @@ DEFAULT_OLLAMA_TIMEOUT = 120
 MAX_PROMPT_IMAGES = 8
 MAX_SEED = 2_147_483_647
 PROVIDER_OLLAMA = "ollama"
+OLLAMA_ESTIMATED_GENERATION_TOKENS = 180
 
 PROMPT_TYPES = ("image", "video", "multi scene video")
 IMAGE_SYSTEM_PROMPT = load_default_system_prompt("image")
@@ -55,7 +57,7 @@ class PromptProvider(Protocol):
     def list_models(self, url: str, timeout: int = DEFAULT_OLLAMA_TIMEOUT) -> list[str]:
         ...
 
-    def generate(self, request: PromptEnhancerRequest) -> str:
+    def generate(self, request: PromptEnhancerRequest, progress: PromptEnhancerProgress | None = None) -> str:
         ...
 
 
@@ -84,6 +86,35 @@ def _json_request(url: str, payload: dict[str, Any] | None, timeout: int) -> Any
         return json.loads(body)
     except json.JSONDecodeError as exc:
         raise RuntimeError("Ollama returned invalid JSON.") from exc
+
+
+def _json_stream_request(url: str, payload: dict[str, Any], timeout: int) -> Iterator[dict[str, Any]]:
+    data = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=data,
+        headers={"Accept": "application/json", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=max(1, int(timeout))) as response:
+            for raw_line in response:
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise RuntimeError("Ollama returned invalid streaming JSON.") from exc
+                if isinstance(item, dict) and item.get("error"):
+                    raise RuntimeError(f"Ollama request failed: {item.get('error')}")
+                if isinstance(item, dict):
+                    yield item
+    except urllib.error.HTTPError as exc:
+        message = exc.read().decode("utf-8", errors="replace") or str(exc)
+        raise RuntimeError(f"Ollama request failed with HTTP {exc.code}: {message}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Ollama request failed: {exc.reason}") from exc
 
 
 def normalize_ollama_url(url: str | None) -> str:
@@ -137,17 +168,31 @@ def _sample_indices(count: int, limit: int = MAX_PROMPT_IMAGES) -> list[int]:
     return [round(index * (count - 1) / (limit - 1)) for index in range(limit)]
 
 
-def encode_images_for_ollama(images: Any, limit: int = MAX_PROMPT_IMAGES) -> list[str]:
+def encode_images_for_ollama(
+    images: Any,
+    limit: int = MAX_PROMPT_IMAGES,
+    progress: PromptEnhancerProgress | None = None,
+) -> list[str]:
     if images is None:
+        if progress is not None:
+            progress.phase_done("media")
         return []
 
     try:
         count = int(len(images))
     except Exception:
+        if progress is not None:
+            progress.phase_done("media")
         return []
 
     encoded: list[str] = []
-    for index in _sample_indices(count, limit):
+    indices = _sample_indices(count, limit)
+    if not indices:
+        if progress is not None:
+            progress.phase_done("media")
+        return []
+
+    for position, index in enumerate(indices, start=1):
         image = images[index]
         try:
             tensor = image.detach().cpu().float().clamp(0, 1)
@@ -162,6 +207,9 @@ def encode_images_for_ollama(images: Any, limit: int = MAX_PROMPT_IMAGES) -> lis
             encoded.append(base64.b64encode(buffer.getvalue()).decode("ascii"))
         except Exception:
             continue
+        finally:
+            if progress is not None:
+                progress.phase_fraction("media", position / len(indices))
 
     return encoded
 
@@ -180,7 +228,7 @@ class OllamaPromptProvider:
                 names.append(str(name))
         return sorted(dict.fromkeys(names))
 
-    def generate(self, request: PromptEnhancerRequest) -> str:
+    def generate(self, request: PromptEnhancerRequest, progress: PromptEnhancerProgress | None = None) -> str:
         endpoint = urllib.parse.urljoin(f"{normalize_ollama_url(request.settings.ollama_url)}/", "api/generate")
         keep_alive = ollama_keep_alive(request.settings.keep_alive, request.settings.keep_alive_unit)
         payload: dict[str, Any] = {
@@ -194,6 +242,9 @@ class OllamaPromptProvider:
         if request.images:
             payload["images"] = request.images
 
+        if progress is not None:
+            return self._generate_streaming(endpoint, payload, keep_alive, request, progress)
+
         response = _json_request(endpoint, payload, request.settings.timeout)
         if not isinstance(response, dict) or "response" not in response:
             raise RuntimeError("Ollama response did not include generated text.")
@@ -202,12 +253,55 @@ class OllamaPromptProvider:
             _json_request(endpoint, {"model": request.model, "keep_alive": 0, "stream": False}, request.settings.timeout)
         return generated_prompt
 
+    def _generate_streaming(
+        self,
+        endpoint: str,
+        payload: dict[str, Any],
+        keep_alive: str,
+        request: PromptEnhancerRequest,
+        progress: PromptEnhancerProgress,
+    ) -> str:
+        streaming_payload = dict(payload)
+        streaming_payload["stream"] = True
+        progress.phase_start("generate")
+        chunks: list[str] = []
+        chunk_count = 0
+        try:
+            for item in _json_stream_request(endpoint, streaming_payload, request.settings.timeout):
+                text = item.get("response")
+                if text:
+                    chunks.append(str(text))
+                    chunk_count += 1
+                    progress.generation_step(OLLAMA_ESTIMATED_GENERATION_TOKENS)
+                if item.get("done"):
+                    break
+        except Exception:
+            if chunks:
+                raise
+            fallback_payload = dict(payload)
+            fallback_payload["stream"] = False
+            response = _json_request(endpoint, fallback_payload, request.settings.timeout)
+            if not isinstance(response, dict) or "response" not in response:
+                raise RuntimeError("Ollama response did not include generated text.")
+            chunks = [str(response.get("response") or "")]
+            chunk_count = OLLAMA_ESTIMATED_GENERATION_TOKENS
+
+        if chunk_count:
+            progress.generation_tokens(chunk_count, max(chunk_count, OLLAMA_ESTIMATED_GENERATION_TOKENS))
+        progress.phase_done("generate")
+        generated_prompt = "".join(chunks).strip()
+        if keep_alive == "0s":
+            progress.phase_start("release")
+            _json_request(endpoint, {"model": request.model, "keep_alive": 0, "stream": False}, request.settings.timeout)
+            progress.phase_done("release")
+        return generated_prompt
+
 
 class PromptProviderRegistry:
-    def generate(self, request: PromptEnhancerRequest) -> str:
+    def generate(self, request: PromptEnhancerRequest, progress: PromptEnhancerProgress | None = None) -> str:
         provider = (request.provider or PROVIDER_OLLAMA).strip() or PROVIDER_OLLAMA
         if provider == PROVIDER_OLLAMA:
-            return OllamaPromptProvider().generate(request)
+            return OllamaPromptProvider().generate(request, progress)
         from .local_provider import LocalPromptProvider
 
-        return LocalPromptProvider().generate(request)
+        return LocalPromptProvider().generate(request, progress)

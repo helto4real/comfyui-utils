@@ -12,6 +12,7 @@ from .provider import (
     build_system_prompt,
     resolve_seed,
 )
+from .progress import PromptEnhancerProgress
 from .prompts import (
     load_default_system_prompt,
     load_system_prompt,
@@ -36,6 +37,7 @@ __all__ = [
     "OllamaPromptProvider",
     "PromptEnhancerRequest",
     "PromptEnhancerSettings",
+    "PromptEnhancerProgress",
     "PromptProviderRegistry",
     "build_system_prompt",
     "decrypt_prompt_text",

@@ -16,6 +16,7 @@ from ...shared.prompt_enhancer import (
     PromptProviderRegistry,
     build_system_prompt,
     decrypt_prompt_text,
+    PromptEnhancerProgress,
     resolve_seed,
     substitute_prompt_variables,
 )
@@ -31,6 +32,7 @@ class PromptEnhancer(io.ComfyNode):
             display_name="Prompt enhancer",
             category="HELTO/Prompt",
             description="Enhances a prompt with Ollama using optional image context.",
+            hidden=[io.Hidden.unique_id],
             inputs=[
                 io.Image.Input("images", optional=True),
                 io.Video.Input("video", optional=True),
@@ -96,7 +98,10 @@ class PromptEnhancer(io.ComfyNode):
         ollama_keep_alive: int = DEFAULT_OLLAMA_KEEP_ALIVE,
         ollama_keep_alive_unit: str = "minutes",
         ollama_timeout: int = DEFAULT_OLLAMA_TIMEOUT,
+        unique_id: str | None = None,
     ) -> io.NodeOutput:
+        unique_id = unique_id or getattr(getattr(cls, "hidden", None), "unique_id", None)
+        progress = PromptEnhancerProgress(unique_id)
         resolved_seed = resolve_seed(seed)
         system_prompt = build_system_prompt(prompt_type, has_video=video is not None, has_audio=audio is not None)
         settings = PromptEnhancerSettings(
@@ -107,19 +112,22 @@ class PromptEnhancer(io.ComfyNode):
         )
         plain_prompt = decrypt_prompt_text(prompt)
         resolved_prompt = substitute_prompt_variables(plain_prompt.strip(), variables, resolved_seed)
+        progress.phase_start("media")
         request = PromptEnhancerRequest(
             model=(model or DEFAULT_OLLAMA_MODEL).strip() or DEFAULT_OLLAMA_MODEL,
             prompt_type=prompt_type or "image",
             prompt=resolved_prompt,
             system_prompt=system_prompt,
             seed=resolved_seed,
-            images=encode_images_for_ollama(images, MAX_PROMPT_IMAGES),
+            images=encode_images_for_ollama(images, MAX_PROMPT_IMAGES, progress),
             settings=settings,
             provider=provider or "ollama",
             model_id=(model_id or model or DEFAULT_OLLAMA_MODEL).strip(),
             model_backend=model_backend or "",
         )
-        generated_prompt = PromptProviderRegistry().generate(request)
+        generated_prompt = PromptProviderRegistry().generate(request, progress)
+        progress.phase_done("cleanup")
+        progress.complete()
         return io.NodeOutput(generated_prompt, system_prompt, resolved_prompt)
 
 

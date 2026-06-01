@@ -13,6 +13,8 @@ from urllib.parse import unquote, urlparse
 
 from PIL import Image
 
+from .progress import PromptEnhancerProgress
+
 try:
     import folder_paths
 except Exception:  # noqa: BLE001 - tests can import outside ComfyUI.
@@ -370,11 +372,15 @@ def provider_catalog(ollama_models: list[str] | None = None, ollama_error: str =
     }
 
 
-def ensure_model_downloaded(spec: LocalModelSpec) -> Path | None:
+def ensure_model_downloaded(spec: LocalModelSpec, progress: PromptEnhancerProgress | None = None) -> Path | None:
     path = model_path_for(spec)
     if path is None:
+        if progress is not None:
+            progress.phase_done("download")
         return None
     if model_downloaded(spec):
+        if progress is not None:
+            progress.phase_done("download")
         return path
     missing = missing_dependencies(spec)
     if missing:
@@ -385,8 +391,11 @@ def ensure_model_downloaded(spec: LocalModelSpec) -> Path | None:
         raise LocalProviderError("Local model downloads require optional package: huggingface_hub") from exc
 
     if spec.file_urls:
-        for model_file, target_path in zip(model_files_for(spec), model_file_paths_for(spec), strict=True):
+        files = list(zip(model_files_for(spec), model_file_paths_for(spec), strict=True))
+        for position, (model_file, target_path) in enumerate(files, start=1):
             if target_path.exists():
+                if progress is not None:
+                    progress.phase_fraction("download", position / len(files))
                 continue
             target_path.parent.mkdir(parents=True, exist_ok=True)
             local_dir = _models_dir() if spec.backend == "gemma_safetensors" else (_models_dir() / spec.model_subdir)
@@ -401,15 +410,21 @@ def ensure_model_downloaded(spec: LocalModelSpec) -> Path | None:
             )
             if not target_path.exists():
                 raise LocalProviderError(f"Downloaded '{model_file.url}' but expected file was not found at {target_path}")
+            if progress is not None:
+                progress.phase_fraction("download", position / len(files))
         return path
 
     path.parent.mkdir(parents=True, exist_ok=True)
+    if progress is not None:
+        progress.phase_start("download")
     snapshot_download(
         repo_id=spec.repo_id,
         local_dir=str(path),
         local_dir_use_symlinks=False,
         token=hf_auth_token(),
     )
+    if progress is not None:
+        progress.phase_done("download")
     return path
 
 
@@ -525,29 +540,44 @@ def fallback_enhance_prompt(prompt: str, prompt_type: str = "image") -> str:
 
 
 class LocalPromptProvider:
-    def generate(self, request: Any) -> str:
+    def generate(self, request: Any, progress: PromptEnhancerProgress | None = None) -> str:
         spec = resolve_local_model(getattr(request, "model_id", "") or getattr(request, "model", ""))
         if not spec.generator_supported:
             raise LocalProviderError(
                 f"Model '{spec.alias}' is a ComfyUI text-encoder checkpoint, not a standalone prompt-generating model."
             )
         if spec.backend == "fallback":
+            if progress is not None:
+                progress.phase_done("download")
+                progress.phase_done("load")
+                progress.phase_start("generate")
+                progress.phase_done("generate")
             return fallback_enhance_prompt(getattr(request, "prompt", ""), getattr(request, "prompt_type", "image"))
 
-        path = ensure_model_downloaded(spec)
+        path = ensure_model_downloaded(spec, progress)
         if path is None:
+            if progress is not None:
+                progress.phase_done("load")
+                progress.phase_start("generate")
+                progress.phase_done("generate")
             return fallback_enhance_prompt(getattr(request, "prompt", ""), getattr(request, "prompt_type", "image"))
+        if progress is not None:
+            progress.phase_start("load")
         local_vram_preflight()
         instruction = _instruction(getattr(request, "system_prompt", ""), getattr(request, "prompt", ""))
         images = decode_request_images(getattr(request, "images", []) or [])
         if spec.backend == "qwen":
-            return clean_prompt_text(_generate_qwen(spec, path, images, instruction))
+            return clean_prompt_text(_generate_qwen(spec, path, images, instruction, progress))
         if spec.backend == "florence":
             if not images:
+                if progress is not None:
+                    progress.phase_done("load")
+                    progress.phase_start("generate")
+                    progress.phase_done("generate")
                 return fallback_enhance_prompt(getattr(request, "prompt", ""), getattr(request, "prompt_type", "image"))
-            return clean_prompt_text(_generate_florence(spec, path, images[0], instruction))
+            return clean_prompt_text(_generate_florence(spec, path, images[0], instruction, progress))
         if spec.backend == "llama_cpp_vision":
-            return clean_prompt_text(_generate_llama_cpp_vision(spec, path, images, instruction))
+            return clean_prompt_text(_generate_llama_cpp_vision(spec, path, images, instruction, progress))
         raise LocalProviderError(f"Unsupported local Prompt Enhancer backend: {spec.backend}")
 
 
@@ -580,8 +610,17 @@ def _load_qwen_model(spec: LocalModelSpec, path: Path) -> dict[str, Any]:
     return loaded
 
 
-def _generate_qwen(spec: LocalModelSpec, path: Path, images: list[Image.Image], instruction: str) -> str:
+def _generate_qwen(
+    spec: LocalModelSpec,
+    path: Path,
+    images: list[Image.Image],
+    instruction: str,
+    progress: PromptEnhancerProgress | None = None,
+) -> str:
     loaded = _load_qwen_model(spec, path)
+    if progress is not None:
+        progress.phase_done("load")
+        progress.phase_start("generate")
     model = loaded["model"]
     processor = loaded["processor"]
     torch = loaded["torch"]
@@ -594,8 +633,19 @@ def _generate_qwen(spec: LocalModelSpec, path: Path, images: list[Image.Image], 
     inputs = processor(text=[chat], images=images or None, padding=True, return_tensors="pt")
     device = next(model.parameters()).device
     model_inputs = {key: value.to(device) if torch.is_tensor(value) else value for key, value in inputs.items()}
-    outputs = model.generate(**model_inputs, max_new_tokens=LOCAL_GENERATION_TOKENS, do_sample=False, repetition_penalty=1.05)
     input_len = model_inputs["input_ids"].shape[-1]
+    stopping_criteria = _generation_progress_criteria(progress, input_len, LOCAL_GENERATION_TOKENS)
+    generate_kwargs = {
+        **model_inputs,
+        "max_new_tokens": LOCAL_GENERATION_TOKENS,
+        "do_sample": False,
+        "repetition_penalty": 1.05,
+    }
+    if stopping_criteria is not None:
+        generate_kwargs["stopping_criteria"] = stopping_criteria
+    outputs = model.generate(**generate_kwargs)
+    if progress is not None:
+        progress.phase_done("generate")
     return processor.batch_decode(outputs[:, input_len:], skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
 
 
@@ -614,16 +664,57 @@ def _load_florence_model(spec: LocalModelSpec, path: Path) -> dict[str, Any]:
     return loaded
 
 
-def _generate_florence(spec: LocalModelSpec, path: Path, image: Image.Image, instruction: str) -> str:
+def _generate_florence(
+    spec: LocalModelSpec,
+    path: Path,
+    image: Image.Image,
+    instruction: str,
+    progress: PromptEnhancerProgress | None = None,
+) -> str:
     loaded = _load_florence_model(spec, path)
+    if progress is not None:
+        progress.phase_done("load")
+        progress.phase_start("generate")
     model = loaded["model"]
     processor = loaded["processor"]
     torch = loaded["torch"]
     inputs = processor(text=instruction, images=image, return_tensors="pt")
     device = next(model.parameters()).device
     inputs = {key: value.to(device) if torch.is_tensor(value) else value for key, value in inputs.items()}
-    outputs = model.generate(**inputs, max_new_tokens=LOCAL_GENERATION_TOKENS, do_sample=False)
+    input_ids = inputs.get("input_ids")
+    input_len = int(input_ids.shape[-1]) if input_ids is not None and hasattr(input_ids, "shape") else 0
+    stopping_criteria = _generation_progress_criteria(progress, input_len, LOCAL_GENERATION_TOKENS)
+    generate_kwargs = {**inputs, "max_new_tokens": LOCAL_GENERATION_TOKENS, "do_sample": False}
+    if stopping_criteria is not None:
+        generate_kwargs["stopping_criteria"] = stopping_criteria
+    outputs = model.generate(**generate_kwargs)
+    if progress is not None:
+        progress.phase_done("generate")
     return processor.batch_decode(outputs, skip_special_tokens=True)[0]
+
+
+def _generation_progress_criteria(
+    progress: PromptEnhancerProgress | None,
+    prompt_token_count: int,
+    max_new_tokens: int,
+) -> Any | None:
+    if progress is None:
+        return None
+    try:
+        from transformers import StoppingCriteria, StoppingCriteriaList
+    except Exception:
+        return None
+
+    class ProgressCriteria(StoppingCriteria):
+        def __call__(self, input_ids, scores, **kwargs):  # noqa: ANN001, ANN003
+            try:
+                generated = max(0, int(input_ids.shape[-1]) - int(prompt_token_count))
+            except Exception:
+                generated = 0
+            progress.generation_tokens(generated, max_new_tokens)
+            return False
+
+    return StoppingCriteriaList([ProgressCriteria()])
 
 
 def _llama_cpp_model_paths(spec: LocalModelSpec, path: Path) -> tuple[Path, Path]:
@@ -652,20 +743,45 @@ def _load_llama_cpp_vision_model(spec: LocalModelSpec, path: Path) -> dict[str, 
     return loaded
 
 
-def _generate_llama_cpp_vision(spec: LocalModelSpec, path: Path, images: list[Image.Image], instruction: str) -> str:
+def _generate_llama_cpp_vision(
+    spec: LocalModelSpec,
+    path: Path,
+    images: list[Image.Image],
+    instruction: str,
+    progress: PromptEnhancerProgress | None = None,
+) -> str:
     loaded = _load_llama_cpp_vision_model(spec, path)
+    if progress is not None:
+        progress.phase_done("load")
+        progress.phase_start("generate")
     model = loaded["model"]
     content: list[dict[str, Any]] = []
     for index, image in enumerate(images, start=1):
         content.append({"type": "text", "text": f"Reference image {index}:"})
         content.append({"type": "image_url", "image_url": {"url": _image_data_url(image)}})
     content.append({"type": "text", "text": instruction})
-    response = model.create_chat_completion(
-        messages=[{"role": "user", "content": content}],
-        max_tokens=LOCAL_GENERATION_TOKENS,
-        temperature=0.2,
-        top_p=0.95,
-    )
+    payload = {
+        "messages": [{"role": "user", "content": content}],
+        "max_tokens": LOCAL_GENERATION_TOKENS,
+        "temperature": 0.2,
+        "top_p": 0.95,
+    }
+    if progress is not None:
+        chunks: list[str] = []
+        try:
+            for item in model.create_chat_completion(**payload, stream=True):
+                text = _llama_cpp_chunk_text(item)
+                if text:
+                    chunks.append(text)
+                    progress.generation_step(LOCAL_GENERATION_TOKENS)
+            progress.phase_done("generate")
+            return "".join(chunks)
+        except Exception:
+            if chunks:
+                raise
+    response = model.create_chat_completion(**payload)
+    if progress is not None:
+        progress.phase_done("generate")
     choices = response.get("choices") if isinstance(response, dict) else None
     if choices:
         first = choices[0]
@@ -675,3 +791,16 @@ def _generate_llama_cpp_vision(spec: LocalModelSpec, path: Path, images: list[Im
                 return str(message.get("content") or "")
             return str(first.get("text") or "")
     return str(response or "")
+
+
+def _llama_cpp_chunk_text(item: Any) -> str:
+    choices = item.get("choices") if isinstance(item, dict) else None
+    if not choices:
+        return ""
+    first = choices[0]
+    if not isinstance(first, dict):
+        return ""
+    delta = first.get("delta")
+    if isinstance(delta, dict):
+        return str(delta.get("content") or "")
+    return str(first.get("text") or "")

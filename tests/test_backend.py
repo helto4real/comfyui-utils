@@ -433,6 +433,7 @@ class NodeSchemaContractTests(unittest.TestCase):
         self.assertEqual(prompt_enhancer_model_id_input.kwargs["io_kind"], "String")
         self.assertEqual(prompt_enhancer_variables_input.kwargs["io_kind"], "String")
         self.assertEqual(prompt_enhancer_keep_alive_unit_input.kwargs["options"], ["seconds", "minutes", "hours"])
+        self.assertEqual(len(prompt_enhancer_schema.hidden), 1)
         self.assertEqual(
             [output_def.id for output_def in prompt_enhancer_schema.outputs],
             ["prompt", "system_prompt", "resolved_prompt"],
@@ -478,8 +479,9 @@ class NodeSchemaContractTests(unittest.TestCase):
         requests = []
 
         class FakeRegistry:
-            def generate(self, request):
+            def generate(self, request, progress=None):
                 requests.append(request)
+                self.progress = progress
                 return request.prompt
 
         globals_["PromptProviderRegistry"] = FakeRegistry

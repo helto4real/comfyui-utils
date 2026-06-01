@@ -21,6 +21,7 @@ from shared.prompt_enhancer.provider import (
     OllamaPromptProvider,
     PromptEnhancerRequest,
     PromptEnhancerSettings,
+    PromptEnhancerProgress,
     PromptProviderRegistry,
     build_system_prompt,
     encode_images_for_ollama,
@@ -32,6 +33,25 @@ from helto_selector_backend.crypto import encrypt_selection
 
 
 class PromptEnhancerProviderTests(unittest.TestCase):
+    def test_progress_helper_updates_standard_bar_ranges_monotonically(self):
+        updates = []
+
+        class FakeProgressBar:
+            def update_absolute(self, value, total=None):
+                updates.append((value, total))
+
+        with patch.object(PromptEnhancerProgress, "check_interrupted") as interrupted:
+            progress = PromptEnhancerProgress("12", FakeProgressBar())
+            progress.phase_fraction("media", 0.5)
+            progress.generation_tokens(90, 180)
+            progress.phase_done("release")
+            progress.complete()
+
+        self.assertEqual(updates[0], (0, 1000))
+        self.assertEqual(updates[-1], (1000, 1000))
+        self.assertEqual([value for value, _total in updates], sorted(value for value, _total in updates))
+        self.assertGreaterEqual(interrupted.call_count, 4)
+
     def test_resolve_seed_keeps_fixed_and_randomizes_negative(self):
         self.assertEqual(resolve_seed(42), 42)
         self.assertEqual(resolve_seed("7"), 7)
@@ -102,6 +122,22 @@ class PromptEnhancerProviderTests(unittest.TestCase):
 
         self.assertEqual(len(encoded), MAX_PROMPT_IMAGES)
         self.assertTrue(all(isinstance(item, str) and item for item in encoded))
+
+    def test_image_encoding_reports_media_progress(self):
+        images = torch.zeros((3, 4, 4, 3), dtype=torch.float32)
+        updates = []
+
+        class FakeProgress:
+            def phase_done(self, phase):
+                updates.append((phase, 1))
+
+            def phase_fraction(self, phase, fraction):
+                updates.append((phase, fraction))
+
+        encode_images_for_ollama(images, progress=FakeProgress())
+
+        self.assertEqual(updates[-1], ("media", 1))
+        self.assertTrue(all(phase == "media" for phase, _fraction in updates))
 
     def test_ollama_keep_alive_supports_seconds_and_zero_release(self):
         self.assertEqual(ollama_keep_alive(3, "seconds"), "3s")
@@ -175,6 +211,49 @@ class PromptEnhancerProviderTests(unittest.TestCase):
         self.assertEqual(generate_payload["keep_alive"], "0s")
         self.assertEqual(unload_payload, {"model": "llava:latest", "keep_alive": 0, "stream": False})
         self.assertEqual(request.call_args_list[1].args[2], 9)
+
+    def test_generate_streams_ollama_when_progress_is_available_and_waits_for_unload(self):
+        settings = PromptEnhancerSettings(ollama_url=DEFAULT_OLLAMA_URL, keep_alive=0, keep_alive_unit="seconds", timeout=9)
+        prompt_request = PromptEnhancerRequest(
+            model="llava:latest",
+            prompt_type="image",
+            prompt="make it cinematic",
+            system_prompt="system text",
+            seed=123,
+            images=[],
+            settings=settings,
+        )
+        progress_events = []
+
+        class FakeProgress:
+            def phase_start(self, phase):
+                progress_events.append((phase, "start"))
+
+            def phase_done(self, phase):
+                progress_events.append((phase, "done"))
+
+            def generation_step(self, expected):
+                progress_events.append(("generate", expected))
+
+            def generation_tokens(self, generated, expected):
+                progress_events.append(("tokens", generated, expected))
+
+        with patch("shared.prompt_enhancer.provider._json_stream_request") as stream_request, patch(
+            "shared.prompt_enhancer.provider._json_request"
+        ) as request:
+            stream_request.return_value = [
+                {"response": " enhanced"},
+                {"response": " prompt", "done": True},
+            ]
+            request.return_value = {"done": True}
+
+            result = OllamaPromptProvider().generate(prompt_request, FakeProgress())
+
+        self.assertEqual(result, "enhanced prompt")
+        payload = stream_request.call_args.args[1]
+        self.assertTrue(payload["stream"])
+        self.assertEqual(request.call_args.args[1], {"model": "llava:latest", "keep_alive": 0, "stream": False})
+        self.assertIn(("release", "done"), progress_events)
 
     def test_prompt_variables_parse_plain_and_encrypted_json(self):
         plain = json_dumps([
@@ -251,6 +330,40 @@ class PromptEnhancerProviderTests(unittest.TestCase):
         self.assertIn("A dancer spins", result)
         self.assertIn("video prompt", result)
 
+    def test_fallback_local_provider_reports_progress_phases(self):
+        request = PromptEnhancerRequest(
+            model="fallback_text_backend",
+            prompt_type="image",
+            prompt="A quiet forest",
+            system_prompt="system",
+            seed=1,
+            images=[],
+            settings=PromptEnhancerSettings(),
+            provider=local_provider.PROVIDER_FALLBACK,
+            model_id="fallback_text_backend",
+            model_backend="fallback",
+        )
+        events = []
+
+        class FakeProgress:
+            def phase_done(self, phase):
+                events.append((phase, "done"))
+
+            def phase_start(self, phase):
+                events.append((phase, "start"))
+
+        local_provider.LocalPromptProvider().generate(request, FakeProgress())
+
+        self.assertEqual(
+            events,
+            [
+                ("download", "done"),
+                ("load", "done"),
+                ("generate", "start"),
+                ("generate", "done"),
+            ],
+        )
+
     def test_local_text_encoder_checkpoint_reports_unsupported_generator(self):
         request = PromptEnhancerRequest(
             model="gemma4_e4b_it_fp8_scaled",
@@ -290,8 +403,9 @@ class PromptEnhancerProviderTests(unittest.TestCase):
             model_id="fallback_text_backend",
         )
 
-        with patch("shared.prompt_enhancer.provider.OllamaPromptProvider.generate", return_value="ollama"):
+        with patch("shared.prompt_enhancer.provider.OllamaPromptProvider.generate", return_value="ollama") as generate:
             self.assertEqual(PromptProviderRegistry().generate(ollama_request), "ollama")
+        self.assertIsNone(generate.call_args.args[1])
         self.assertIn("hello", PromptProviderRegistry().generate(local_request))
 
     def test_provider_settings_store_hf_token_privately(self):
