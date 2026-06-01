@@ -168,7 +168,9 @@ Segment metadata keys: `rating`, `reference_mode`, `style`, `camera`, `duration`
 
 Image roles: `start`, `end`, `character`, `style`, `pose`, `setting`, `motion`.
 
-Image modifier: `describe`. For example, `@image2:character:describe` asks the writer or vision model to describe the referenced character first, including visible traits such as skin tone or complexion, face shape and facial features, hair color and style, facial expression, apparent age range, build, clothing, posture, gaze, markings, and distinctive features, then use those traits in the requested action. For animals, `:describe` asks for coat or fur color, markings, size, breed-like features, ears, tail, body shape, expression, posture, and motion-relevant traits. Ethnicity is not inferred from images; if you explicitly provide ethnicity or identity descriptors in your prompt, they are respected. `@image1:describe` means `@image1:start:describe`, so the visible opening frame is described before motion begins. If your prompt explicitly changes, replaces, ignores, or reinterprets image details, your prompt wins; otherwise the referenced image is the source of truth for that description.
+Image modifier: `describe`. For example, `@image2:character:describe` asks the writer or vision model to describe the referenced character first, including visible traits such as skin tone or complexion, face shape and facial features, hair color and style, facial expression, apparent age range, build, clothing, posture, gaze, markings, and distinctive features, then use those traits in the requested action. If a described character reference introduces a new subject in a later segment, the model should visually introduce that subject before the action. For animals, `:describe` asks for coat or fur color, markings, size, breed-like features, ears, tail, face or muzzle, body shape, expression, posture, stance, gait, and motion-relevant traits. Ethnicity is not inferred from images; if you explicitly provide ethnicity or identity descriptors in your prompt, they are respected. `@image1:describe` means `@image1:start:describe`, so the visible opening frame is described before motion begins. If your prompt explicitly changes, replaces, ignores, or reinterprets image details, your prompt wins; otherwise the referenced image is the source of truth for that description.
+
+You can reference the same image with multiple roles when you need both scene and character detail. For example, `@image1:start:describe @image1:character:describe` uses image 1 as the full opening frame/environment and also asks the model to describe each central person separately before the action.
 
 Reference modes: `none`, `start_frame`, `end_guidance`, `start_and_end_transition`, `character_reference`, `style_reference`, `mixed`.
 
@@ -190,6 +192,15 @@ A woman walks along a quiet forest path. @image1:start
 
 A dog runs beside the woman. @image2:character:describe
 ```
+
+Couple-on-beach example:
+
+```text
+[rating=SFW]
+The man and the woman turn toward each other and look deeply into each other's eyes. @image1:start:describe @image1:character:describe
+```
+
+Here `start:describe` asks for the beach, ocean, sky, lighting, composition, and opening frame, while `character:describe` asks for the man and woman to be described separately with stable labels and visible traits.
 
 ## Compare Previews
 

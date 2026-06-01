@@ -119,16 +119,10 @@ class PromptEnhancerProviderTests(unittest.TestCase):
         self.assertIn("Only output the prompt itself.", image_prompt)
         self.assertIn("video generation prompt", video_prompt)
         self.assertIn("not sent as video bytes", video_prompt)
-        self.assertIn("describe the referenced image content first for that role", video_prompt)
-        self.assertIn("honor the user direction", video_prompt)
-        self.assertIn("skin tone or visible complexion", video_prompt)
-        self.assertIn("face shape, facial structure", video_prompt)
-        self.assertIn("facial features", video_prompt)
-        self.assertIn("hair color and style", video_prompt)
-        self.assertIn("Use apparent age range only", video_prompt)
-        self.assertIn("Do not guess identity, name, ethnicity", video_prompt)
-        self.assertIn("If the user explicitly provides ethnicity", video_prompt)
-        self.assertIn("coat or fur color", video_prompt)
+        self.assertIn("No image references are selected", video_prompt)
+        self.assertNotIn("Describe the visible target final state", video_prompt)
+        self.assertNotIn("Describe the referenced image content", video_prompt)
+        self.assertNotIn("apparent age range", video_prompt)
         self.assertIn("multi-scene video prompt", multi_prompt)
         self.assertIn("not sent as audio bytes", multi_prompt)
 
@@ -427,24 +421,20 @@ A character turns around. @image3:character
         self.assertTrue(parsed.segments[0].image_references[0].describe)
         self.assertEqual(first["reference_mode"], "character_reference")
         self.assertIn("Image 2 is used as character reference.", first["image_notes"])
-        self.assertIn("persistent identity traits", first["image_notes"])
-        self.assertIn("color, size, markings", first["image_notes"])
-        self.assertIn("skin tone or visible complexion", first["image_notes"])
-        self.assertIn("face shape", first["image_notes"])
-        self.assertIn("facial structure", first["image_notes"])
-        self.assertIn("facial features", first["image_notes"])
-        self.assertIn("eye expression", first["image_notes"])
-        self.assertIn("hair color and style", first["image_notes"])
-        self.assertIn("apparent age range", first["image_notes"])
-        self.assertIn("Do not infer ethnicity", first["image_notes"])
-        self.assertIn("coat or fur color", first["image_notes"])
+        self.assertIn("Image 2 requests :describe for the character role.", first["image_notes"])
+        self.assertNotIn("persistent identity traits", first["image_notes"])
+        first_prompt = build_system_prompt("video", prompt_values=first)
+        self.assertIn("Visually introduce the referenced subject before the action", first_prompt)
+        self.assertIn("describe the subject before any action", first_prompt)
+        self.assertIn("For described animals", first_prompt)
         self.assertEqual(parsed.segments[1].image_references[0].role, "start")
         self.assertTrue(parsed.segments[1].image_references[0].describe)
         self.assertEqual(second["reference_mode"], "start_frame")
-        self.assertIn("visible opening frame", second["image_notes"])
-        self.assertIn("facial expression", second["image_notes"])
-        self.assertIn("then apply the user's requested action", second["image_notes"])
-        self.assertIn("honor the user prompt", second["image_notes"])
+        self.assertIn("Image 1 requests :describe for the start role.", second["image_notes"])
+        second_prompt = build_system_prompt("video", prompt_values=second)
+        self.assertIn("full visible opening frame", second_prompt)
+        self.assertIn("the user's action starting from that exact frame", second_prompt)
+        self.assertIn("treat the referenced image as the source of truth", second_prompt)
 
         plain = parse_video_prompt_script("A character turns around. @image1:character", image_count=1)
         plain_reference = plain.segments[0].image_references[0]
@@ -452,11 +442,28 @@ A character turns around. @image3:character
         self.assertFalse(plain_reference.describe)
         self.assertNotIn("persistent identity traits", build_segment_variables(plain, 1)["image_notes"])
 
+    def test_video_script_describe_combines_start_scene_and_character_detail_guidance(self):
+        parsed = parse_video_prompt_script(
+            "The couple turns toward each other. @image1:start:describe @image1:character:describe",
+            image_count=1,
+        )
+        variables = build_segment_variables(parsed, 1)
+        rendered_prompt = build_system_prompt("video", prompt_values=variables)
+
+        self.assertEqual(variables["reference_mode"], "mixed")
+        self.assertIn("Image 1 requests :describe for the start role.", variables["image_notes"])
+        self.assertIn("Image 1 requests :describe for the character role.", variables["image_notes"])
+        self.assertIn("full visible opening frame", rendered_prompt)
+        self.assertIn("Visually introduce the referenced subject before the action", rendered_prompt)
+        self.assertIn("describe each person separately", rendered_prompt)
+        self.assertIn("stable labels", rendered_prompt)
+        self.assertIn("source of truth", rendered_prompt)
+
     def test_video_script_describe_modifier_is_role_first_for_every_image_role(self):
         role_expectations = {
-            "start": "visible opening frame",
+            "start": "full visible opening frame",
             "end": "target final state",
-            "character": "character or subject reference",
+            "character": "referenced subject",
             "style": "style reference",
             "pose": "pose reference",
             "setting": "setting reference",
@@ -465,18 +472,53 @@ A character turns around. @image3:character
         for role, expected in role_expectations.items():
             with self.subTest(role=role):
                 parsed = parse_video_prompt_script(f"A subject moves. @image1:{role}:describe", image_count=1)
-                image_notes = build_segment_variables(parsed, 1)["image_notes"]
+                variables = build_segment_variables(parsed, 1)
+                rendered_prompt = build_system_prompt("video", prompt_values=variables)
 
-                self.assertIn(expected, image_notes)
-                self.assertIn("describe the referenced image content first", image_notes)
-                self.assertIn("skin tone or visible complexion", image_notes)
-                self.assertIn("face shape", image_notes)
-                self.assertIn("facial features", image_notes)
-                self.assertIn("hair color and style", image_notes)
-                self.assertIn("Do not infer ethnicity", image_notes)
-                self.assertIn("coat or fur color", image_notes)
-                self.assertIn("user's requested action", image_notes)
-                self.assertIn("honor the user prompt", image_notes)
+                self.assertIn(f"Image 1 requests :describe for the {role} role.", variables["image_notes"])
+                self.assertIn(expected, rendered_prompt)
+                self.assertIn("When a reference uses :describe", rendered_prompt)
+                self.assertIn("treat the referenced image as the source of truth", rendered_prompt)
+                self.assertIn("For described animals", rendered_prompt)
+
+    def test_video_system_prompt_inserts_only_relevant_reference_blocks(self):
+        start_plain = build_segment_variables(
+            parse_video_prompt_script("The couple turns toward each other. @image1:start", image_count=1),
+            1,
+        )
+        start_describe = build_segment_variables(
+            parse_video_prompt_script("The couple turns toward each other. @image1:start:describe", image_count=1),
+            1,
+        )
+        character_plain = build_segment_variables(
+            parse_video_prompt_script("A dog enters from the side. @image1:character", image_count=1),
+            1,
+        )
+        character_describe = build_segment_variables(
+            parse_video_prompt_script("A dog enters from the side. @image1:character:describe", image_count=1),
+            1,
+        )
+
+        start_plain_prompt = build_system_prompt("video", prompt_values=start_plain)
+        start_describe_prompt = build_system_prompt("video", prompt_values=start_describe)
+        character_plain_prompt = build_system_prompt("video", prompt_values=character_plain)
+        character_describe_prompt = build_system_prompt("video", prompt_values=character_describe)
+
+        self.assertIn("Use the start image as the opening-state reference", start_plain_prompt)
+        self.assertNotIn("full visible opening frame first", start_plain_prompt)
+        self.assertNotIn("For described animals", start_plain_prompt)
+
+        self.assertIn("full visible opening frame first", start_describe_prompt)
+        self.assertIn("When a reference uses :describe", start_describe_prompt)
+        self.assertNotIn("full static image description", start_describe_prompt)
+
+        self.assertIn("Use the character image as a reference", character_plain_prompt)
+        self.assertIn("Do not fully describe the reference image", character_plain_prompt)
+        self.assertNotIn("Visually introduce the referenced subject", character_plain_prompt)
+
+        self.assertIn("Visually introduce the referenced subject before the action", character_describe_prompt)
+        self.assertIn("describe the subject before any action", character_describe_prompt)
+        self.assertIn("For described animals", character_describe_prompt)
 
     def test_video_script_parser_warns_when_reference_mode_has_no_image_reference(self):
         parsed = parse_video_prompt_script("[reference_mode=start_frame]\nA subject turns toward camera.", image_count=1)

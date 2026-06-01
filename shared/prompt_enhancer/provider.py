@@ -13,7 +13,7 @@ from typing import Any, Iterator, Protocol
 from PIL import Image
 
 from .progress import PromptEnhancerProgress
-from .prompts import load_default_system_prompt, load_system_prompt, render_video_system_prompt
+from .prompts import build_video_prompt_blocks, load_default_system_prompt, load_system_prompt, render_video_system_prompt
 
 
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
@@ -210,23 +210,33 @@ def build_visual_context_prompt(
     prompt_type: str,
     prompt: str,
     image_notes: str = "",
+    image_references: object | None = None,
     reference_mode: str = "",
     segment_index: int | None = None,
     segment_total: int | None = None,
 ) -> str:
+    blocks = build_video_prompt_blocks(
+        {
+            "image_references": image_references or [],
+            "segment_index": segment_index or 1,
+            "segment_total": segment_total or 1,
+        }
+    )
     labels: list[tuple[str, object]] = [
         ("Prompt type", prompt_type or "image"),
         ("Segment", f"{segment_index} of {segment_total}" if segment_index and segment_total else ""),
         ("Reference mode", reference_mode),
         ("Image role notes", image_notes),
+        ("Reference policy", blocks["reference_policy"]),
+        ("Description policy", blocks["description_policy"]),
+        ("Detail policy", blocks["detail_policy"]),
         ("User direction", prompt),
     ]
     body = "\n".join(f"{label}: {value}" for label, value in labels if str(value or "").strip())
     return (
         f"{body}\n\n"
         "Describe the relevant visual context in 1-4 concise sentences. "
-        "When image role notes ask to describe a reference, describe the referenced image content first for that role, "
-        "then summarize the action-relevant context. If the user direction explicitly changes, replaces, ignores, or "
+        "Follow the selected reference policy above. If the user direction explicitly changes, replaces, ignores, or "
         "reinterprets image details, honor the user direction; otherwise use the referenced image as the source of truth. "
         "Focus on subjects, motion-relevant pose/expression, style, setting, and reference roles. "
         "Do not add instructions, markdown, labels, or a final generation prompt."

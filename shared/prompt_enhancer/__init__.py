@@ -17,6 +17,7 @@ from .provider import (
 )
 from .progress import PromptEnhancerProgress
 from .prompts import (
+    build_video_prompt_blocks,
     load_default_system_prompt,
     load_system_prompt,
     reset_system_prompt,
@@ -53,6 +54,7 @@ __all__ = [
     "PromptProviderRegistry",
     "VISUAL_CONTEXT_SYSTEM_PROMPT",
     "build_visual_context_prompt",
+    "build_video_prompt_blocks",
     "build_system_prompt",
     "provider_model_supports_images",
     "decrypt_prompt_text",

@@ -165,7 +165,7 @@ def build_image_notes(image_references: list[ImageReference], metadata: dict[str
     for index, role in ordered_keys:
         notes.append(f"Image {index} is used as {_role_note(role)}.")
         if describe_by_key[(index, role)]:
-            notes.append(f"For image {index}, {_describe_note(role)}")
+            notes.append(f"Image {index} requests :describe for the {role} role.")
     return " ".join(notes).strip()
 
 
@@ -411,16 +411,20 @@ def _describe_note(role: str) -> str:
         "For visible people or central subjects, include skin tone or visible complexion, face shape, facial "
         "structure, facial features, eye expression, hair color and style, facial hair, facial expression, "
         "apparent age range, build, clothing or accessories, posture, gaze direction, and distinctive visible "
-        "traits. Do not infer ethnicity, nationality, identity, profession, personality, or other private traits "
+        "traits. If the reference contains multiple people, describe each central person separately before the "
+        "action using stable labels such as the man, the woman, person on the left, or person on the right, and "
+        "include each person's relative position and distinguishing visible traits. Do not infer ethnicity, "
+        "nationality, identity, profession, personality, or other private traits "
         "from the image; use those descriptors only when the user explicitly provides them. For animals, include "
-        "coat or fur color, markings, size, breed-like features, ears, tail, body shape, expression, posture, "
-        "and motion-relevant traits."
+        "coat or fur color, markings, size, breed-like features, ears, tail, face or muzzle, body shape, "
+        "expression, posture, stance, gait, visible movement cues, and motion-relevant traits."
     )
     role_note = {
         "start": (
-            "describe the referenced image content first as the visible opening frame, including subject appearance, "
-            "setting, lighting, composition, posture, and other details that should be preserved, then apply the "
-            "user's requested action from that starting state."
+            "describe the referenced image content first as the full visible opening frame, including environment, "
+            "background, lighting, composition, camera framing, central subjects, setting, sky, water, landscape, "
+            "objects, posture, and other details that should be preserved, then apply the user's requested action "
+            "from that starting state."
         ),
         "end": (
             "describe the referenced image content first as the target final state, including subject appearance, "
@@ -428,9 +432,14 @@ def _describe_note(role: str) -> str:
             "user's requested action so it naturally reaches that state."
         ),
         "character": (
-            "describe the referenced image content first as the character or subject reference, including persistent "
-            "identity traits such as color, size, markings, clothing or accessories, expression, posture, and "
-            "distinctive features, then use those traits in the user's requested action."
+            "describe the referenced image content first as the character or subject reference. If multiple people "
+            "are visible, describe each central person separately before the action using stable labels such as the "
+            "man, the woman, person on the left, or person on the right. Include persistent identity traits such as "
+            "color, size, markings, clothing or accessories, expression, posture, relative position, and distinctive "
+            "features. If this described character reference introduces a newly referenced subject in the segment, "
+            "visually introduce that subject before any action, even in later segments. Treat the referenced subject "
+            "as new unless it was already clearly described in prior segment text, then use those traits in the "
+            "user's requested action."
         ),
         "style": (
             "describe the referenced image content first as the style reference, including visual style, color "
