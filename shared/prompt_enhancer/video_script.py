@@ -408,10 +408,13 @@ def _role_note(role: str) -> str:
 
 def _describe_note(role: str) -> str:
     subject_details = (
-        "For visible people or central subjects, include facial features, hair color and style, facial hair, "
-        "facial expression, apparent age range, build, clothing or accessories, posture, gaze direction, and "
-        "distinctive visible traits. For animals, include coat or fur color, markings, size, breed-like features, "
-        "ears, tail, body shape, expression, posture, and motion-relevant traits."
+        "For visible people or central subjects, include skin tone or visible complexion, face shape, facial "
+        "structure, facial features, eye expression, hair color and style, facial hair, facial expression, "
+        "apparent age range, build, clothing or accessories, posture, gaze direction, and distinctive visible "
+        "traits. Do not infer ethnicity, nationality, identity, profession, personality, or other private traits "
+        "from the image; use those descriptors only when the user explicitly provides them. For animals, include "
+        "coat or fur color, markings, size, breed-like features, ears, tail, body shape, expression, posture, "
+        "and motion-relevant traits."
     )
     role_note = {
         "start": (

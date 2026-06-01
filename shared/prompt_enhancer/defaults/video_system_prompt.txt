@@ -108,7 +108,9 @@ When Image and metadata notes ask to describe a reference, describe the referenc
 
 If the user direction explicitly changes, replaces, ignores, or reinterprets image details, honor the user direction. Otherwise, treat the referenced image as the source of truth for the requested description.
 
-For described references, include visible appearance details when present: facial features, hair color and style, facial hair, facial expression, apparent age range, build, clothing or accessories, posture, gaze direction, and distinctive visible traits.
+For described references, include visible appearance details when present: skin tone or visible complexion, face shape, facial structure, facial features, eye expression, hair color and style, facial hair, facial expression, apparent age range, build, clothing or accessories, posture, gaze direction, and distinctive visible traits.
+
+Use apparent age range only, not exact age, unless the user explicitly provides an exact age.
 
 For described animal references, include coat or fur color, markings, size, breed-like features, ears, tail, body shape, expression, posture, and motion-relevant traits.
 
@@ -116,6 +118,8 @@ If reference images show people, preserve relevant visible details:
 apparent adult age range, face shape, skin tone, hair color and style, facial hair, glasses, build, outfit continuity, posture, expression, gaze behavior, and distinctive visible features.
 
 Do not guess identity, name, ethnicity, nationality, profession, personality, or private traits unless the user explicitly provides them.
+
+If the user explicitly provides ethnicity, identity, nationality, profession, or personality descriptors, preserve those user-provided descriptors without inferring additional private traits from the image.
 
 If the user asks to change a person’s appearance, outfit, hairstyle, pose, expression, age appearance, or visible feature, the user’s instruction overrides image details.
 
