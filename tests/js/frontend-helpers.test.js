@@ -45,9 +45,11 @@ import {
     readPromptEnhancerSettings,
     resetSystemPrompt,
     saveSystemPrompt,
+    serializedPromptVariablesValue,
     serializePromptVariables,
     setGenerateNewEachPrompt,
     setNewFixedPromptSeed,
+    shouldRefreshPromptVariables,
     shouldHidePromptWidget,
     updatePromptVariable,
     updateModelOptions,
@@ -642,6 +644,26 @@ test("prompt enhancer variable config encrypts only when privacy mode is enabled
 
     assert.equal(isEncryptedVariables(plain), false);
     assert.deepEqual(JSON.parse(plain), variables);
+});
+
+test("prompt enhancer detects serialized variable widget changes for autocomplete refresh", () => {
+    const node = {
+        widgets: [
+            { name: "variables", value: "[]" },
+        ],
+    };
+
+    assert.equal(serializedPromptVariablesValue(node), "[]");
+    assert.equal(shouldRefreshPromptVariables(node, null), true);
+    assert.equal(shouldRefreshPromptVariables(node, "[]"), false);
+
+    node.widgets[0].value = serializePromptVariables([{ name: "style", values: ["cinematic"] }]);
+
+    assert.equal(shouldRefreshPromptVariables(node, "[]"), true);
+    assert.deepEqual(
+        autocompleteStateForPrompt("{{", 2, parsePromptVariablesJson(serializedPromptVariablesValue(node))).options,
+        ["style"],
+    );
 });
 
 test("prompt enhancer autocomplete filters navigates and inserts variables", () => {

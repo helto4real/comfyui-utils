@@ -41,6 +41,14 @@ export function writePromptValue(node, value) {
     setWidgetValue(getWidget(node, "prompt"), String(value ?? ""));
 }
 
+export function serializedPromptVariablesValue(node) {
+    return String(getWidget(node, "variables")?.value || "[]");
+}
+
+export function shouldRefreshPromptVariables(node, cachedValue) {
+    return serializedPromptVariablesValue(node) !== cachedValue;
+}
+
 export function promptEditorLayout(node, height = PROMPT_EDITOR_HEIGHT) {
     const rawWidth = Number(node?.size?.[0]);
     const nodeWidth = Number.isFinite(rawWidth) && rawWidth > 0 ? rawWidth : 320;
@@ -203,8 +211,7 @@ export function serializePromptVariables(variables) {
 }
 
 export async function readPromptVariables(node, selectorApi) {
-    const widget = getWidget(node, "variables");
-    const value = String(widget?.value || "[]");
+    const value = serializedPromptVariablesValue(node);
     if (!isEncryptedVariables(value)) {
         return parsePromptVariablesJson(value);
     }

@@ -22,8 +22,10 @@ import {
     removePromptVariable,
     resetSystemPrompt,
     saveSystemPrompt,
+    serializedPromptVariablesValue,
     setGenerateNewEachPrompt,
     setNewFixedPromptSeed,
+    shouldRefreshPromptVariables,
     shouldHidePromptWidget,
     updatePromptVariable,
     updateModelOptions,
@@ -130,6 +132,25 @@ function applyPromptEditorLayout(node) {
     }
 }
 
+async function refreshPromptEditorVariables(node, force = false) {
+    const state = getPromptEditorState(node);
+    if (!state) return [];
+    const serializedValue = serializedPromptVariablesValue(node);
+    if (!force && !shouldRefreshPromptVariables(node, state.variablesWidgetValue)) {
+        return state.variables;
+    }
+
+    const loadId = (state.variablesLoadId ?? 0) + 1;
+    state.variablesLoadId = loadId;
+    const variables = await readPromptVariables(node, selectorApi);
+    if (state.variablesLoadId !== loadId) {
+        return state.variables;
+    }
+    state.variables = variables;
+    state.variablesWidgetValue = serializedValue;
+    return variables;
+}
+
 function ensurePromptEditor(node) {
     if (node[PROMPT_EDITOR_STATE]) {
         syncPromptEditorFromWidget(node);
@@ -160,11 +181,14 @@ function ensurePromptEditor(node) {
         textarea,
         suggestions,
         variables: [],
+        variablesWidgetValue: null,
+        variablesLoadId: 0,
         autocomplete: { active: false, options: [], selectedIndex: 0 },
         domWidget: null,
     };
 
-    const refreshAutocomplete = (selectedIndex = state.autocomplete.selectedIndex || 0) => {
+    const refreshAutocomplete = async (selectedIndex = state.autocomplete.selectedIndex || 0) => {
+        await refreshPromptEditorVariables(node);
         state.autocomplete = autocompleteStateForPrompt(
             textarea.value,
             textarea.selectionStart,
@@ -178,6 +202,9 @@ function ensurePromptEditor(node) {
         writePromptValue(node, textarea.value);
         refreshAutocomplete(0);
         setCanvasDirty(node);
+    });
+    textarea.addEventListener("focus", () => {
+        refreshAutocomplete();
     });
     textarea.addEventListener("click", () => refreshAutocomplete());
     textarea.addEventListener("keyup", (event) => {
@@ -229,8 +256,7 @@ function ensurePromptEditor(node) {
     state.domWidget = domWidget;
     node[PROMPT_EDITOR_STATE] = state;
     applyPromptEditorLayout(node);
-    readPromptVariables(node, selectorApi).then((variables) => {
-        state.variables = variables;
+    refreshPromptEditorVariables(node, true).then(() => {
         renderPromptSuggestions(node);
     });
     return state;
@@ -439,6 +465,7 @@ async function openVariablesEditor(node) {
         const state = getPromptEditorState(node);
         if (state) {
             state.variables = variables;
+            state.variablesWidgetValue = serializedPromptVariablesValue(node);
             renderPromptSuggestions(node);
         }
         setCanvasDirty(node);
@@ -642,6 +669,11 @@ function openSettingsModal(node) {
             timeout: body.querySelector("#helto-pe-timeout").value,
         });
         await writePromptVariables(node, variables, privacyMode, selectorApi);
+        const state = getPromptEditorState(node);
+        if (state) {
+            state.variables = variables;
+            state.variablesWidgetValue = serializedPromptVariablesValue(node);
+        }
         await refreshModels(node);
         applyPromptDomHideMode(node);
         setCanvasDirty(node);
