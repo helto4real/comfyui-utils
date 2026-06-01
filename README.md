@@ -158,7 +158,7 @@ Supported syntax:
 | `---` | Starts a new segment when placed on its own line. |
 | `[key=value]` | Metadata. Global metadata must appear at the top before segment text. Segment metadata appears inside a segment. |
 | `>> text` or `> > text` | Continuity note for the current segment. |
-| `@imageN[:role][:describe]` | Reference image marker, where `N` is one-based. If no role is given, `start` is used. In video modes, these markers select which connected images are used for that segment's direct or separate vision pass. Add `:describe` when the model should explicitly describe visible traits from that reference. |
+| `@imageN[:role][:describe]` | Reference image marker, where `N` is one-based. If no role is given, `start` is used. In video modes, these markers select which connected images are used for that segment's direct or separate vision pass. Add `:describe` when the model should describe the reference for that role before applying the requested action. |
 | `## text` | Visual heading markup is stripped, leaving `text` as direction. |
 | `{{name}}` | Variable token replaced from the node's variable list before parsing. |
 
@@ -168,7 +168,7 @@ Segment metadata keys: `rating`, `reference_mode`, `style`, `camera`, `duration`
 
 Image roles: `start`, `end`, `character`, `style`, `pose`, `setting`, `motion`.
 
-Image modifier: `describe`. For example, `@image2:character:describe` asks the writer or vision model to describe persistent character traits such as color, size, markings, expression, posture, and distinctive features. `@image1:describe` means `@image1:start:describe`.
+Image modifier: `describe`. For example, `@image2:character:describe` asks the writer or vision model to describe the referenced character first, including visible traits such as facial features, hair color and style, facial expression, apparent age range, build, clothing, posture, gaze, markings, and distinctive features, then use those traits in the requested action. For animals, `:describe` asks for coat or fur color, markings, size, breed-like features, ears, tail, body shape, expression, posture, and motion-relevant traits. `@image1:describe` means `@image1:start:describe`, so the visible opening frame is described before motion begins. If your prompt explicitly changes, replaces, ignores, or reinterprets image details, your prompt wins; otherwise the referenced image is the source of truth for that description.
 
 Reference modes: `none`, `start_frame`, `end_guidance`, `start_and_end_transition`, `character_reference`, `style_reference`, `mixed`.
 

@@ -225,6 +225,9 @@ def build_visual_context_prompt(
     return (
         f"{body}\n\n"
         "Describe the relevant visual context in 1-4 concise sentences. "
+        "When image role notes ask to describe a reference, describe the referenced image content first for that role, "
+        "then summarize the action-relevant context. If the user direction explicitly changes, replaces, ignores, or "
+        "reinterprets image details, honor the user direction; otherwise use the referenced image as the source of truth. "
         "Focus on subjects, motion-relevant pose/expression, style, setting, and reference roles. "
         "Do not add instructions, markdown, labels, or a final generation prompt."
     ).strip()

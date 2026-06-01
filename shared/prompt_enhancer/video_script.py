@@ -407,36 +407,56 @@ def _role_note(role: str) -> str:
 
 
 def _describe_note(role: str) -> str:
-    return {
+    subject_details = (
+        "For visible people or central subjects, include facial features, hair color and style, facial hair, "
+        "facial expression, apparent age range, build, clothing or accessories, posture, gaze direction, and "
+        "distinctive visible traits. For animals, include coat or fur color, markings, size, breed-like features, "
+        "ears, tail, body shape, expression, posture, and motion-relevant traits."
+    )
+    role_note = {
         "start": (
-            "inspect and explicitly describe the visible opening-frame state, including subject appearance, "
-            "setting, lighting, composition, posture, and other details that should be preserved."
+            "describe the referenced image content first as the visible opening frame, including subject appearance, "
+            "setting, lighting, composition, posture, and other details that should be preserved, then apply the "
+            "user's requested action from that starting state."
         ),
         "end": (
-            "inspect and explicitly describe the visible final-frame target state, including subject appearance, "
-            "setting, lighting, composition, posture, and details the motion should resolve toward."
+            "describe the referenced image content first as the target final state, including subject appearance, "
+            "setting, lighting, composition, posture, and details the motion should resolve toward, then shape the "
+            "user's requested action so it naturally reaches that state."
         ),
         "character": (
-            "inspect and explicitly describe persistent identity traits such as color, size, markings, "
-            "clothing or accessories, expression, posture, and distinctive features."
+            "describe the referenced image content first as the character or subject reference, including persistent "
+            "identity traits such as color, size, markings, clothing or accessories, expression, posture, and "
+            "distinctive features, then use those traits in the user's requested action."
         ),
         "style": (
-            "inspect and explicitly describe the visual style, color palette, lighting, texture, medium, "
-            "mood, and rendering treatment."
+            "describe the referenced image content first as the style reference, including visual style, color "
+            "palette, lighting, texture, medium, mood, and rendering treatment, then apply that style to the "
+            "user's requested action. If people, animals, or central subjects are important to the style reference, "
+            "include their visible appearance details too."
         ),
         "pose": (
-            "inspect and explicitly describe body pose, gesture, limb placement, expression, camera-facing angle, "
-            "and other pose cues to preserve."
+            "describe the referenced image content first as the pose reference, including body pose, gesture, "
+            "limb placement, expression, camera-facing angle, and other pose cues, then adapt the user's requested "
+            "action from that pose."
         ),
         "setting": (
-            "inspect and explicitly describe the environment layout, objects, weather, lighting, atmosphere, "
-            "and spatial details."
+            "describe the referenced image content first as the setting reference, including environment layout, "
+            "objects, weather, lighting, atmosphere, and spatial details, then place the user's requested action "
+            "inside that setting. If people, animals, or central subjects are part of the setting, include their "
+            "visible appearance details too."
         ),
         "motion": (
-            "inspect and explicitly describe movement cues, posture changes, implied timing, direction of travel, "
-            "and action-relevant details."
+            "describe the referenced image content first as the motion reference, including movement cues, posture "
+            "changes, implied timing, direction of travel, and action-relevant details, then use those cues to shape "
+            "the user's requested action."
         ),
     }[role]
+    override_note = (
+        "If the user explicitly describes a conflicting change, transformation, or replacement, honor the user prompt; "
+        "otherwise use the referenced image as the source of truth for that description."
+    )
+    return f"{role_note} {subject_details} {override_note}"
 
 
 def _closest_reference_mode(value: str) -> str:

@@ -971,8 +971,14 @@ Second beat moves toward the doorway. @image1:end
             globals_["provider_model_supports_images"] = original_support
 
         self.assertEqual(writer_requests[0].images, ["encoded-image-2"])
+        self.assertIn("describe the referenced image content first", writer_requests[0].prompt)
         self.assertIn("persistent identity traits", writer_requests[0].prompt)
         self.assertIn("color, size, markings", writer_requests[0].prompt)
+        self.assertIn("facial features", writer_requests[0].prompt)
+        self.assertIn("hair color and style", writer_requests[0].prompt)
+        self.assertIn("apparent age range", writer_requests[0].prompt)
+        self.assertIn("coat or fur color", writer_requests[0].prompt)
+        self.assertIn("honor the user prompt", writer_requests[0].prompt)
         self.assertIn("persistent identity traits", result[2])
 
     def test_prompt_enhancer_auto_uses_separate_vision_for_text_only_writer(self):
@@ -1075,8 +1081,14 @@ Second beat moves toward the doorway. @image1:end
             globals_["provider_model_supports_images"] = original_support
 
         self.assertEqual(vision_requests[0].images, ["encoded-image-2"])
+        self.assertIn("describe the referenced image content first", vision_requests[0].prompt)
         self.assertIn("persistent identity traits", vision_requests[0].prompt)
         self.assertIn("color, size, markings", vision_requests[0].prompt)
+        self.assertIn("facial features", vision_requests[0].prompt)
+        self.assertIn("hair color and style", vision_requests[0].prompt)
+        self.assertIn("coat or fur color", vision_requests[0].prompt)
+        self.assertIn("honor the user prompt", vision_requests[0].prompt)
+        self.assertIn("otherwise use the referenced image as the source of truth", vision_requests[0].prompt)
         self.assertEqual(writer_requests[0].images, [])
         self.assertIn("Visual context: a medium white dog", writer_requests[0].prompt)
         self.assertEqual(result[7], "a medium white dog with fluffy fur and dark eyes")

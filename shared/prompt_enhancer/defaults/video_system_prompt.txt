@@ -63,6 +63,8 @@ For the first segment, briefly anchor the subject, pose, setting, and situation 
 
 Do not over-describe clothing, lighting, background, object appearance, composition, or style unless essential to the user request or needed for continuity.
 
+Exception: if Image and metadata notes ask to describe a referenced image, include that role-specific reference description before the action details, then apply the user direction.
+
 If segment {segment_index} is greater than 1, write only what changes during this segment.
 
 For later segments, do not repeat the full character description, setting, clothing, lighting, style, background, or previous actions unless needed to avoid confusion.
@@ -101,6 +103,14 @@ Use each provided reference description according to its role. Starting image co
 Do not blindly describe images.
 
 Use image references only when they help the current segment.
+
+When Image and metadata notes ask to describe a reference, describe the referenced image content first for that role, then apply the user’s requested action or transformation.
+
+If the user direction explicitly changes, replaces, ignores, or reinterprets image details, honor the user direction. Otherwise, treat the referenced image as the source of truth for the requested description.
+
+For described references, include visible appearance details when present: facial features, hair color and style, facial hair, facial expression, apparent age range, build, clothing or accessories, posture, gaze direction, and distinctive visible traits.
+
+For described animal references, include coat or fur color, markings, size, breed-like features, ears, tail, body shape, expression, posture, and motion-relevant traits.
 
 If reference images show people, preserve relevant visible details:
 apparent adult age range, face shape, skin tone, hair color and style, facial hair, glasses, build, outfit continuity, posture, expression, gaze behavior, and distinctive visible features.
