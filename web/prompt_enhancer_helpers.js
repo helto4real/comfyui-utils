@@ -786,6 +786,37 @@ export function acceptPromptAutocompleteSuggestion(text, autocomplete, variables
     };
 }
 
+export function createPromptAutocompleteDismissalState(text = "", cursor = 0) {
+    return {
+        suppressed: false,
+        text: String(text ?? ""),
+        cursor: Math.max(0, Number(cursor) || 0),
+    };
+}
+
+export function dismissPromptAutocompleteUntilInput(text, cursor, state = null) {
+    const next = state || createPromptAutocompleteDismissalState();
+    next.suppressed = true;
+    next.text = String(text ?? "");
+    next.cursor = Math.max(0, Number(cursor) || 0);
+    return next;
+}
+
+export function clearPromptAutocompleteDismissal(state, text, cursor) {
+    const next = state || createPromptAutocompleteDismissalState();
+    next.suppressed = false;
+    next.text = String(text ?? "");
+    next.cursor = Math.max(0, Number(cursor) || 0);
+    return next;
+}
+
+export function shouldSuppressPromptAutocompleteRefresh(state, text, cursor) {
+    if (!state?.suppressed) {
+        return false;
+    }
+    return state.text === String(text ?? "");
+}
+
 function consumeAutocompleteShortcutEvent(event) {
     event?.preventDefault?.();
     event?.stopPropagation?.();
@@ -890,7 +921,11 @@ function imageRoleAutocomplete(beforeCursor, safeCursor, selectedIndex) {
         return inactiveAutocomplete(safeCursor);
     }
     const prefix = match[1] || "";
-    const options = VIDEO_IMAGE_ROLE_COMPLETIONS.filter((option) => option.startsWith(prefix.toLowerCase()));
+    const normalizedPrefix = prefix.toLowerCase();
+    const options = VIDEO_IMAGE_ROLE_COMPLETIONS.filter((option) => option.startsWith(normalizedPrefix));
+    if (options.length === 1 && options[0] === normalizedPrefix) {
+        return inactiveAutocomplete(safeCursor);
+    }
     return {
         active: options.length > 0,
         kind: "image_role",
@@ -908,7 +943,11 @@ function imageModifierAutocomplete(beforeCursor, safeCursor, selectedIndex) {
         return inactiveAutocomplete(safeCursor);
     }
     const prefix = match[1] || "";
-    const options = VIDEO_IMAGE_MODIFIER_COMPLETIONS.filter((option) => option.startsWith(prefix.toLowerCase()));
+    const normalizedPrefix = prefix.toLowerCase();
+    const options = VIDEO_IMAGE_MODIFIER_COMPLETIONS.filter((option) => option.startsWith(normalizedPrefix));
+    if (options.length === 1 && options[0] === normalizedPrefix) {
+        return inactiveAutocomplete(safeCursor);
+    }
     return {
         active: options.length > 0,
         kind: "image_modifier",

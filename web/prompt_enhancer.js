@@ -8,6 +8,8 @@ import {
     addPromptVariable,
     acceptPromptAutocompleteSuggestion,
     autocompleteStateForPrompt,
+    shouldSuppressPromptAutocompleteRefresh,
+    dismissPromptAutocompleteUntilInput,
     emptyAutocompleteState,
     getWidget,
     fetchSystemPrompt,
@@ -406,10 +408,16 @@ function ensurePromptEditor(node) {
         variablesWidgetValue: null,
         variablesLoadId: 0,
         autocomplete: { active: false, options: [], selectedIndex: 0 },
+        autocompleteDismissal: null,
         domWidget: null,
     };
 
     const refreshAutocomplete = async (selectedIndex = state.autocomplete.selectedIndex || 0) => {
+        if (shouldSuppressPromptAutocompleteRefresh(state.autocompleteDismissal, textarea.value, textarea.selectionStart)) {
+            state.autocomplete = emptyAutocompleteState(textarea.selectionStart);
+            renderPromptSuggestions(node);
+            return;
+        }
         await refreshPromptEditorVariables(node);
         state.autocomplete = autocompleteStateForPrompt(
             textarea.value,
@@ -430,6 +438,7 @@ function ensurePromptEditor(node) {
             state.autocomplete.selectedIndex = moveAutocompleteSelection(state.autocomplete, -1);
             renderPromptSuggestions(node);
         } else if (action === "close") {
+            state.autocompleteDismissal = dismissPromptAutocompleteUntilInput(textarea.value, textarea.selectionStart);
             state.autocomplete = emptyAutocompleteState(textarea.selectionStart);
             renderPromptSuggestions(node);
         }
@@ -443,6 +452,7 @@ function ensurePromptEditor(node) {
 
     textarea.addEventListener("input", () => {
         persistPromptEditorText(node, textarea.value);
+        state.autocompleteDismissal = null;
         refreshAutocomplete(0);
         setCanvasDirty(node);
     });
@@ -550,6 +560,9 @@ function acceptPromptSuggestion(node, explicitName = null) {
     state.textarea.setSelectionRange(result.cursor, result.cursor);
     persistPromptEditorText(node, result.text);
     state.autocomplete = result.autocomplete;
+    state.autocompleteDismissal = result.autocomplete?.active
+        ? null
+        : dismissPromptAutocompleteUntilInput(result.text, result.cursor);
     renderPromptSuggestions(node);
     setCanvasDirty(node);
     state.textarea.focus();
@@ -902,6 +915,7 @@ async function openScriptEditor(node) {
     textarea.focus();
 
     let autocomplete = { active: false, options: [], selectedIndex: 0 };
+    let autocompleteDismissal = null;
     let cleanupShortcutGuard = null;
     const clearModalAutocompleteReveal = () => {
         autocomplete = emptyAutocompleteState(textarea.selectionStart);
@@ -942,6 +956,11 @@ async function openScriptEditor(node) {
         applyPromptDomHideMode(node);
     };
     const refresh = (selectedIndex = autocomplete.selectedIndex || 0) => {
+        if (shouldSuppressPromptAutocompleteRefresh(autocompleteDismissal, textarea.value, textarea.selectionStart)) {
+            autocomplete = emptyAutocompleteState(textarea.selectionStart);
+            render();
+            return;
+        }
         autocomplete = autocompleteStateForPrompt(
             textarea.value,
             textarea.selectionStart,
@@ -963,6 +982,7 @@ async function openScriptEditor(node) {
         textarea.value = result.text;
         textarea.setSelectionRange(result.cursor, result.cursor);
         autocomplete = result.autocomplete;
+        autocompleteDismissal = result.autocomplete.active ? null : dismissPromptAutocompleteUntilInput(result.text, result.cursor);
         render();
         textarea.focus();
     };
@@ -976,6 +996,7 @@ async function openScriptEditor(node) {
             autocomplete.selectedIndex = moveAutocompleteSelection(autocomplete, -1);
             render();
         } else if (action === "close") {
+            autocompleteDismissal = dismissPromptAutocompleteUntilInput(textarea.value, textarea.selectionStart);
             autocomplete = emptyAutocompleteState(textarea.selectionStart);
             render();
         }
@@ -986,7 +1007,10 @@ async function openScriptEditor(node) {
         onAction: handleAutocompleteAction,
     });
 
-    textarea.addEventListener("input", () => refresh(0));
+    textarea.addEventListener("input", () => {
+        autocompleteDismissal = null;
+        refresh(0);
+    });
     textarea.addEventListener("click", () => refresh());
     textarea.addEventListener("scroll", () => {
         positionPromptSuggestionsElement(textarea, suggestions, suggestionContainer);

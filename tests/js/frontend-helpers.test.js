@@ -31,6 +31,7 @@ import {
     addPromptVariable,
     autocompleteStateForPrompt,
     decryptPromptText,
+    dismissPromptAutocompleteUntilInput,
     emptyAutocompleteState,
     insertVariableSuggestion,
     fetchSystemPrompt,
@@ -38,6 +39,7 @@ import {
     isEncryptedText,
     isEncryptedVariables,
     isPromptAutocompleteVisible,
+    shouldSuppressPromptAutocompleteRefresh,
     isPointInPromptWidget,
     isPromptHideModeEnabled,
     modelOptionsForProvider,
@@ -781,6 +783,45 @@ test("prompt enhancer autocomplete visibility only reveals for active shown sugg
     assert.equal(isPromptAutocompleteVisible(active, false), true);
     assert.equal(isPromptAutocompleteVisible(active, true), false);
     assert.equal(isPromptAutocompleteVisible(inactive, false), false);
+});
+
+test("prompt enhancer image reference autocomplete does not reopen completed tokens", () => {
+    const context = { promptType: "video", imageCount: 2 };
+
+    let state = autocompleteStateForPrompt("@image1:character", 17, [], 0, context);
+    assert.equal(state.active, false);
+
+    state = autocompleteStateForPrompt("@image1:cha", 11, [], 0, context);
+    assert.equal(state.active, true);
+    assert.deepEqual(state.options, ["character"]);
+
+    state = autocompleteStateForPrompt("@image1:character:", 18, [], 0, context);
+    assert.equal(state.active, true);
+    assert.deepEqual(state.options, ["describe"]);
+
+    state = autocompleteStateForPrompt("@image1:character:describe", 26, [], 0, context);
+    assert.equal(state.active, false);
+
+    state = autocompleteStateForPrompt("@image1:character:d", 19, [], 0, context);
+    const accepted = acceptPromptAutocompleteSuggestion("@image1:character:d", state, [], context);
+    assert.equal(accepted.text, "@image1:character:describe");
+    assert.equal(accepted.autocomplete.active, false);
+});
+
+test("prompt enhancer autocomplete dismissal suppresses refresh until text changes", () => {
+    const dismissal = dismissPromptAutocompleteUntilInput("@image1:character:", 18);
+
+    assert.equal(shouldSuppressPromptAutocompleteRefresh(dismissal, "@image1:character:", 18), true);
+    assert.equal(shouldSuppressPromptAutocompleteRefresh(dismissal, "@image1:character:", 17), true);
+    assert.equal(shouldSuppressPromptAutocompleteRefresh(dismissal, "@image1:character:d", 19), false);
+
+    const metadata = acceptPromptAutocompleteSuggestion(
+        "[ref",
+        autocompleteStateForPrompt("[ref", 4, [], 0, { promptType: "video" }),
+        [],
+        { promptType: "video" },
+    );
+    assert.equal(metadata.autocomplete.active, true);
 });
 
 test("prompt enhancer editor layout constrains textarea inside node width", () => {
