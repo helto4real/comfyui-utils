@@ -22,6 +22,9 @@ export const HIDDEN_WIDGET_NAMES = Object.freeze([
     "model_id",
     "model_backend",
     "provider_model_history",
+    "vision_provider",
+    "vision_model_id",
+    "vision_model_backend",
     "model",
     SCRIPT_WIDGET_NAME,
     "variables",
@@ -171,6 +174,27 @@ export function writePromptEnhancerModelConfig(node, config) {
     return { provider, modelId, modelBackend: backend };
 }
 
+export function readPromptEnhancerVisionModelConfig(node) {
+    const provider = String(getWidget(node, "vision_provider")?.value || "local_transformers_vlm").trim() || "local_transformers_vlm";
+    const defaultModel = provider === "local_transformers_vlm" ? "qwen3_vl_4b_fast" : "";
+    const modelId = String(getWidget(node, "vision_model_id")?.value || defaultModel).trim();
+    return {
+        provider,
+        modelId,
+        modelBackend: String(getWidget(node, "vision_model_backend")?.value || (provider === "ollama" ? "ollama" : "")).trim(),
+    };
+}
+
+export function writePromptEnhancerVisionModelConfig(node, config) {
+    const provider = String(config?.provider || "local_transformers_vlm").trim() || "local_transformers_vlm";
+    const modelId = String(config?.modelId || config?.model_id || config?.model || "").trim();
+    const backend = String(config?.modelBackend || config?.backend || (provider === "ollama" ? "ollama" : "")).trim();
+    setWidgetValue(getWidget(node, "vision_provider"), provider);
+    setWidgetValue(getWidget(node, "vision_model_id"), modelId);
+    setWidgetValue(getWidget(node, "vision_model_backend"), backend);
+    return { provider, modelId, modelBackend: backend };
+}
+
 export function readProviderModelHistory(node) {
     const raw = String(getWidget(node, "provider_model_history")?.value || "{}");
     let parsed = {};
@@ -287,6 +311,8 @@ export function normalizeProviderCatalog(payload) {
                 loaded: Boolean(model.loaded),
                 local_path: String(model.local_path || ""),
                 missing_dependencies: Array.isArray(model.missing_dependencies) ? model.missing_dependencies.map(String) : [],
+                supports_images: Boolean(model.supports_images),
+                generator_supported: Boolean(model.generator_supported ?? true),
             }))
             .filter((model) => model.model_id)
         : [];
@@ -323,6 +349,14 @@ export function modelOptionsForProvider(catalog, provider, currentModelId = "") 
         uniqueValues.unshift(current);
     }
     return uniqueValues;
+}
+
+export function modelSupportsImages(catalog, provider, modelId) {
+    const providerId = String(provider || "ollama");
+    const id = String(modelId || "").trim();
+    const model = normalizeProviderCatalog(catalog).models
+        .find((entry) => entry.provider === providerId && entry.model_id === id);
+    return Boolean(model?.supports_images);
 }
 
 export function updateProviderModelOptions(providerSelector, modelSelector, node, catalogPayload) {
@@ -371,6 +405,45 @@ export function updateProviderModelOptions(providerSelector, modelSelector, node
         modelBackend: selectedModel?.backend || (provider === "ollama" ? "ollama" : ""),
     });
     rememberPromptEnhancerProviderModel(node, written);
+    return true;
+}
+
+export function updateVisionProviderModelOptions(providerSelector, modelSelector, node, catalogPayload) {
+    const catalog = normalizeProviderCatalog(catalogPayload);
+    const config = readPromptEnhancerVisionModelConfig(node);
+    const imageProviders = catalog.providers
+        .filter((provider) => catalog.models.some((model) => (
+            model.provider === provider.id && model.supports_images && model.generator_supported
+        )));
+    const providerValues = imageProviders.map((provider) => provider.id);
+    if (config.provider && !providerValues.includes(config.provider)) {
+        providerValues.unshift(config.provider);
+    }
+    if (providerValues.length === 0) {
+        return false;
+    }
+    const requestedProvider = String(providerSelector?.value || config.provider || providerValues[0]).trim() || providerValues[0];
+    const provider = providerValues.includes(requestedProvider) ? requestedProvider : providerValues[0];
+    if (providerSelector) {
+        providerSelector.options ??= {};
+        providerSelector.options.values = providerValues;
+        providerSelector.value = provider;
+    }
+    const modelValues = [...new Set(catalog.models
+        .filter((model) => model.provider === provider && model.supports_images && model.generator_supported)
+        .map((model) => model.model_id))];
+    if (!modelSelector || modelValues.length === 0) {
+        return false;
+    }
+    modelSelector.options ??= {};
+    modelSelector.options.values = modelValues;
+    modelSelector.value = modelValues.includes(config.modelId) ? config.modelId : modelValues[0];
+    const selectedModel = catalog.models.find((model) => model.provider === provider && model.model_id === modelSelector.value);
+    writePromptEnhancerVisionModelConfig(node, {
+        provider,
+        modelId: modelSelector.value,
+        modelBackend: selectedModel?.backend || (provider === "ollama" ? "ollama" : ""),
+    });
     return true;
 }
 

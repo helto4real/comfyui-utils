@@ -435,6 +435,12 @@ class NodeSchemaContractTests(unittest.TestCase):
         prompt_enhancer_segment_mode_input = next(
             input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "segment_generation_mode"
         )
+        prompt_enhancer_vision_mode_input = next(
+            input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "vision_context_mode"
+        )
+        prompt_enhancer_vision_provider_input = next(
+            input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "vision_provider"
+        )
         prompt_enhancer_keep_alive_unit_input = next(
             input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "ollama_keep_alive_unit"
         )
@@ -451,6 +457,13 @@ class NodeSchemaContractTests(unittest.TestCase):
         self.assertEqual(prompt_enhancer_segment_mode_input.kwargs["io_kind"], "Combo")
         self.assertEqual(prompt_enhancer_segment_mode_input.kwargs["options"], ["all segments", "single segment"])
         self.assertEqual(prompt_enhancer_segment_mode_input.kwargs["default"], "all segments")
+        self.assertEqual(prompt_enhancer_vision_mode_input.kwargs["io_kind"], "Combo")
+        self.assertEqual(
+            prompt_enhancer_vision_mode_input.kwargs["options"],
+            ["auto", "direct to writer", "separate vision model", "off"],
+        )
+        self.assertEqual(prompt_enhancer_vision_mode_input.kwargs["default"], "auto")
+        self.assertEqual(prompt_enhancer_vision_provider_input.kwargs["default"], "local_transformers_vlm")
         self.assertEqual(prompt_enhancer_keep_alive_unit_input.kwargs["options"], ["seconds", "minutes", "hours"])
         self.assertEqual(len(prompt_enhancer_schema.hidden), 1)
         self.assertEqual(
@@ -463,6 +476,7 @@ class NodeSchemaContractTests(unittest.TestCase):
                 "parsed_continuity",
                 "reference_mode",
                 "image_notes",
+                "visual_context",
                 "segment_count",
                 "warnings",
             ],
@@ -578,7 +592,8 @@ Second beat moves toward the doorway. @image1:end
         self.assertIn("First beat ends", result[4])
         self.assertEqual(result[5], "end_guidance")
         self.assertIn("Image 1 is used as end guidance", result[6])
-        self.assertEqual(result[7], 2)
+        self.assertEqual(result[7], "")
+        self.assertEqual(result[8], 2)
         self.assertEqual(requests[0].prompt_type, "multi scene video")
 
     def test_prompt_enhancer_video_script_can_generate_all_segments(self):
@@ -636,7 +651,8 @@ Second beat moves toward the doorway. @image1:end
         self.assertEqual(result[5], "start_frame\n\nend_guidance")
         self.assertIn("Image 1 is used as the starting frame", result[6])
         self.assertIn("Image 1 is used as end guidance", result[6])
-        self.assertEqual(result[7], 2)
+        self.assertEqual(result[7], "")
+        self.assertEqual(result[8], 2)
 
     def test_prompt_enhancer_video_single_segment_validates_active_index(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()
@@ -653,6 +669,152 @@ Second beat moves toward the doorway. @image1:end
                 segment_generation_mode="single segment",
                 script="Only beat.",
             )
+
+    def test_prompt_enhancer_direct_vision_sends_referenced_images_to_writer(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        prompt_node = next(
+            node_cls
+            for node_cls in asyncio.run(extension_module.HeltoUtilsExtension().get_node_list())
+            if node_cls.define_schema().node_id == "HeltoPromptEnhancer"
+        )
+        globals_ = prompt_node.execute.__func__.__globals__
+        original_provider = globals_["PromptProviderRegistry"]
+        original_encode = globals_["encode_images_for_ollama"]
+        original_support = globals_["provider_model_supports_images"]
+        writer_requests = []
+        vision_requests = []
+
+        class FakeRegistry:
+            def generate(self, request, progress=None):
+                writer_requests.append(request)
+                return request.prompt
+
+            def generate_visual_context(self, request, progress=None):
+                vision_requests.append(request)
+                return "visual context"
+
+        globals_["PromptProviderRegistry"] = FakeRegistry
+        globals_["encode_images_for_ollama"] = lambda *args, **kwargs: ["encoded-image-1", "encoded-image-2"]
+        globals_["provider_model_supports_images"] = lambda provider, model_id, backend="": model_id == "qwen3_vl_4b_fast"
+        try:
+            result = prompt_node.execute(
+                seed=3,
+                images=[object(), object()],
+                prompt_type="video",
+                vision_context_mode="direct to writer",
+                segment_generation_mode="single segment",
+                script="A match cut. @image2:end @image2:end",
+                model="llava:latest",
+                model_id="llava:latest",
+            )
+        finally:
+            globals_["PromptProviderRegistry"] = original_provider
+            globals_["encode_images_for_ollama"] = original_encode
+            globals_["provider_model_supports_images"] = original_support
+
+        self.assertEqual(len(writer_requests), 1)
+        self.assertEqual(vision_requests, [])
+        self.assertEqual(writer_requests[0].images, ["encoded-image-2"])
+        self.assertEqual(result[7], "")
+
+    def test_prompt_enhancer_auto_uses_separate_vision_for_text_only_writer(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        prompt_node = next(
+            node_cls
+            for node_cls in asyncio.run(extension_module.HeltoUtilsExtension().get_node_list())
+            if node_cls.define_schema().node_id == "HeltoPromptEnhancer"
+        )
+        globals_ = prompt_node.execute.__func__.__globals__
+        original_provider = globals_["PromptProviderRegistry"]
+        original_encode = globals_["encode_images_for_ollama"]
+        original_support = globals_["provider_model_supports_images"]
+        writer_requests = []
+        vision_requests = []
+
+        class FakeRegistry:
+            def generate(self, request, progress=None):
+                writer_requests.append(request)
+                return request.prompt
+
+            def generate_visual_context(self, request, progress=None):
+                vision_requests.append(request)
+                return "subject raises one hand while rain falls"
+
+        globals_["PromptProviderRegistry"] = FakeRegistry
+        globals_["encode_images_for_ollama"] = lambda *args, **kwargs: ["encoded-image-1", "encoded-image-2"]
+        globals_["provider_model_supports_images"] = lambda provider, model_id, backend="": model_id == "qwen3_vl_4b_fast"
+        try:
+            result = prompt_node.execute(
+                seed=3,
+                images=[object(), object()],
+                prompt_type="video",
+                vision_context_mode="auto",
+                segment_generation_mode="single segment",
+                script="The subject turns toward camera. @image1:character",
+                provider="ollama",
+                model="AutumnAurelium/llama3.1-abliterated:latest",
+                model_id="AutumnAurelium/llama3.1-abliterated:latest",
+                vision_provider="local_transformers_vlm",
+                vision_model_id="qwen3_vl_4b_fast",
+                vision_model_backend="qwen",
+            )
+        finally:
+            globals_["PromptProviderRegistry"] = original_provider
+            globals_["encode_images_for_ollama"] = original_encode
+            globals_["provider_model_supports_images"] = original_support
+
+        self.assertEqual(len(vision_requests), 1)
+        self.assertEqual(vision_requests[0].images, ["encoded-image-1"])
+        self.assertEqual(len(writer_requests), 1)
+        self.assertEqual(writer_requests[0].images, [])
+        self.assertIn("Visual context: subject raises one hand", writer_requests[0].prompt)
+        self.assertEqual(result[7], "subject raises one hand while rain falls")
+
+    def test_prompt_enhancer_image_mode_uses_all_images_for_separate_vision(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        prompt_node = next(
+            node_cls
+            for node_cls in asyncio.run(extension_module.HeltoUtilsExtension().get_node_list())
+            if node_cls.define_schema().node_id == "HeltoPromptEnhancer"
+        )
+        globals_ = prompt_node.execute.__func__.__globals__
+        original_provider = globals_["PromptProviderRegistry"]
+        original_encode = globals_["encode_images_for_ollama"]
+        original_support = globals_["provider_model_supports_images"]
+        writer_requests = []
+        vision_requests = []
+
+        class FakeRegistry:
+            def generate(self, request, progress=None):
+                writer_requests.append(request)
+                return request.prompt
+
+            def generate_visual_context(self, request, progress=None):
+                vision_requests.append(request)
+                return "two reference portraits with warm studio lighting"
+
+        globals_["PromptProviderRegistry"] = FakeRegistry
+        globals_["encode_images_for_ollama"] = lambda *args, **kwargs: ["encoded-image-1", "encoded-image-2"]
+        globals_["provider_model_supports_images"] = lambda provider, model_id, backend="": model_id == "qwen3_vl_4b_fast"
+        try:
+            result = prompt_node.execute(
+                images=[object(), object()],
+                prompt_type="image",
+                vision_context_mode="separate vision model",
+                script="Create a polished portrait",
+                provider="ollama",
+                model="mistral:latest",
+                model_id="mistral:latest",
+            )
+        finally:
+            globals_["PromptProviderRegistry"] = original_provider
+            globals_["encode_images_for_ollama"] = original_encode
+            globals_["provider_model_supports_images"] = original_support
+
+        self.assertEqual(vision_requests[0].images, ["encoded-image-1", "encoded-image-2"])
+        self.assertEqual(writer_requests[0].images, [])
+        self.assertIn("Visual context: two reference portraits", writer_requests[0].prompt)
+        self.assertEqual(result[7], "two reference portraits with warm studio lighting")
 
     def test_privacy_show_any_summarizes_unhelpful_object_values(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()

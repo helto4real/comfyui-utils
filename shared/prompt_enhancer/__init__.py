@@ -9,7 +9,10 @@ from .provider import (
     PromptEnhancerRequest,
     PromptEnhancerSettings,
     PromptProviderRegistry,
+    VISUAL_CONTEXT_SYSTEM_PROMPT,
+    build_visual_context_prompt,
     build_system_prompt,
+    provider_model_supports_images,
     resolve_seed,
 )
 from .progress import PromptEnhancerProgress
@@ -48,7 +51,10 @@ __all__ = [
     "PromptEnhancerSettings",
     "PromptEnhancerProgress",
     "PromptProviderRegistry",
+    "VISUAL_CONTEXT_SYSTEM_PROMPT",
+    "build_visual_context_prompt",
     "build_system_prompt",
+    "provider_model_supports_images",
     "decrypt_prompt_text",
     "load_default_system_prompt",
     "load_system_prompt",

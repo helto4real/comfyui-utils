@@ -14,9 +14,12 @@ from ...shared.prompt_enhancer import (
     PromptEnhancerRequest,
     PromptEnhancerSettings,
     PromptProviderRegistry,
+    VISUAL_CONTEXT_SYSTEM_PROMPT,
+    build_visual_context_prompt,
     build_system_prompt,
     decrypt_prompt_text,
     PromptEnhancerProgress,
+    provider_model_supports_images,
     resolve_seed,
     build_resolved_segment_prompt,
     build_segment_variables,
@@ -31,6 +34,14 @@ VIDEO_PROMPT_TYPES = {"video", "multi scene video"}
 ALL_SEGMENTS_MODE = "all segments"
 SINGLE_SEGMENT_MODE = "single segment"
 SEGMENT_GENERATION_MODES = [ALL_SEGMENTS_MODE, SINGLE_SEGMENT_MODE]
+VISION_AUTO_MODE = "auto"
+VISION_DIRECT_MODE = "direct to writer"
+VISION_SEPARATE_MODE = "separate vision model"
+VISION_OFF_MODE = "off"
+VISION_CONTEXT_MODES = [VISION_AUTO_MODE, VISION_DIRECT_MODE, VISION_SEPARATE_MODE, VISION_OFF_MODE]
+DEFAULT_VISION_PROVIDER = "local_transformers_vlm"
+DEFAULT_VISION_MODEL = "qwen3_vl_4b_fast"
+DEFAULT_VISION_BACKEND = "qwen"
 
 
 class PromptEnhancer(io.ComfyNode):
@@ -69,6 +80,11 @@ class PromptEnhancer(io.ComfyNode):
                     options=SEGMENT_GENERATION_MODES,
                     default=ALL_SEGMENTS_MODE,
                 ),
+                io.Combo.Input(
+                    "vision_context_mode",
+                    options=VISION_CONTEXT_MODES,
+                    default=VISION_AUTO_MODE,
+                ),
                 io.String.Input(
                     "script",
                     multiline=True,
@@ -87,6 +103,9 @@ class PromptEnhancer(io.ComfyNode):
                 io.String.Input("model_id", default=""),
                 io.String.Input("model_backend", default="ollama"),
                 io.String.Input("provider_model_history", default="{}", dynamic_prompts=False),
+                io.String.Input("vision_provider", default=DEFAULT_VISION_PROVIDER),
+                io.String.Input("vision_model_id", default=DEFAULT_VISION_MODEL),
+                io.String.Input("vision_model_backend", default=DEFAULT_VISION_BACKEND),
             ],
             outputs=[
                 io.String.Output("enhanced_prompt"),
@@ -96,6 +115,7 @@ class PromptEnhancer(io.ComfyNode):
                 io.String.Output("parsed_continuity"),
                 io.String.Output("reference_mode"),
                 io.String.Output("image_notes"),
+                io.String.Output("visual_context"),
                 io.Int.Output("segment_count"),
                 io.String.Output("warnings"),
             ],
@@ -122,6 +142,7 @@ class PromptEnhancer(io.ComfyNode):
         prompt_type: str = "image",
         active_segment_index: int = 1,
         segment_generation_mode: str = ALL_SEGMENTS_MODE,
+        vision_context_mode: str = VISION_AUTO_MODE,
         script: str = "",
         variables: str = "[]",
         hide_mode: bool = False,
@@ -130,6 +151,9 @@ class PromptEnhancer(io.ComfyNode):
         ollama_keep_alive: int = DEFAULT_OLLAMA_KEEP_ALIVE,
         ollama_keep_alive_unit: str = "minutes",
         ollama_timeout: int = DEFAULT_OLLAMA_TIMEOUT,
+        vision_provider: str = DEFAULT_VISION_PROVIDER,
+        vision_model_id: str = DEFAULT_VISION_MODEL,
+        vision_model_backend: str = DEFAULT_VISION_BACKEND,
         unique_id: str | None = None,
     ) -> io.NodeOutput:
         unique_id = unique_id or getattr(getattr(cls, "hidden", None), "unique_id", None)
@@ -148,6 +172,13 @@ class PromptEnhancer(io.ComfyNode):
         registry = PromptProviderRegistry()
         model_name = (model or DEFAULT_OLLAMA_MODEL).strip() or DEFAULT_OLLAMA_MODEL
         model_identifier = (model_id or model or DEFAULT_OLLAMA_MODEL).strip()
+        writer_provider = provider or "ollama"
+        writer_backend = model_backend or ""
+        vision_config = {
+            "provider": (vision_provider or "").strip(),
+            "model_id": (vision_model_id or "").strip(),
+            "model_backend": (vision_model_backend or "").strip(),
+        }
         if prompt_kind in VIDEO_PROMPT_TYPES:
             encoded_images = encode_images_for_ollama(images, MAX_PROMPT_IMAGES, progress, preserve_order=True)
             parsed_script = parse_video_prompt_script(resolved_script, image_count=_prompt_image_count(images))
@@ -162,7 +193,37 @@ class PromptEnhancer(io.ComfyNode):
             system_prompts: list[str] = []
             resolved_prompts: list[str] = []
             generated_prompts: list[str] = []
+            visual_contexts: list[str] = []
+            extra_warnings: list[str] = []
             for segment_variables in segment_variables_list:
+                selected_images = _selected_segment_images(encoded_images, segment_variables.get("image_references", []))
+                selected_mode, mode_warnings = _resolve_vision_mode(
+                    vision_context_mode,
+                    selected_images,
+                    writer_provider,
+                    model_identifier,
+                    writer_backend,
+                    vision_config,
+                )
+                extra_warnings.extend(mode_warnings)
+                direct_images = selected_images if selected_mode == VISION_DIRECT_MODE else []
+                visual_context = ""
+                if selected_mode == VISION_SEPARATE_MODE and selected_images:
+                    visual_context = _generate_visual_context(
+                        registry=registry,
+                        prompt_kind=prompt_kind,
+                        prompt=str(segment_variables.get("direction") or ""),
+                        image_notes=str(segment_variables.get("image_notes") or ""),
+                        reference_mode=str(segment_variables.get("reference_mode") or ""),
+                        selected_images=selected_images,
+                        settings=settings,
+                        seed=resolved_seed,
+                        vision_config=vision_config,
+                        progress=progress,
+                        segment_index=_as_int(segment_variables.get("segment_index"), 0),
+                        segment_total=_as_int(segment_variables.get("segment_total"), 0),
+                    )
+                segment_variables["visual_context"] = visual_context
                 system_prompt_for_segment = build_system_prompt(
                     prompt_kind,
                     has_video=video is not None,
@@ -178,13 +239,14 @@ class PromptEnhancer(io.ComfyNode):
                     prompt=resolved_prompt_for_segment,
                     system_prompt=system_prompt_for_segment,
                     seed=resolved_seed,
-                    images=encoded_images,
+                    images=direct_images,
                     settings=settings,
-                    provider=provider or "ollama",
+                    provider=writer_provider,
                     model_id=model_identifier,
-                    model_backend=model_backend or "",
+                    model_backend=writer_backend,
                 )
                 generated_prompts.append(registry.generate(request, progress))
+                visual_contexts.append(visual_context)
 
             generated_prompt = _join_blocks(generated_prompts)
             system_prompt = _join_blocks(system_prompts, keep_empty=True)
@@ -193,29 +255,53 @@ class PromptEnhancer(io.ComfyNode):
             parsed_continuity = _join_segment_values(segment_variables_list, "continuity")
             reference_mode = _join_segment_values(segment_variables_list, "reference_mode")
             image_notes = _join_segment_values(segment_variables_list, "image_notes")
+            visual_context = _join_blocks(visual_contexts, keep_empty=True)
             segment_count = int(segment_variables_list[0].get("segment_total") or 0)
-            warnings = _join_unique_warnings(segment_variables_list)
+            warnings = _join_unique_warnings(segment_variables_list, extra_warnings)
         else:
             encoded_images = encode_images_for_ollama(images, MAX_PROMPT_IMAGES, progress)
+            selected_mode, mode_warnings = _resolve_vision_mode(
+                vision_context_mode,
+                encoded_images,
+                writer_provider,
+                model_identifier,
+                writer_backend,
+                vision_config,
+            )
+            visual_context = ""
+            if selected_mode == VISION_SEPARATE_MODE and encoded_images:
+                visual_context = _generate_visual_context(
+                    registry=registry,
+                    prompt_kind=prompt_kind,
+                    prompt=resolved_script,
+                    image_notes="",
+                    reference_mode="",
+                    selected_images=encoded_images,
+                    settings=settings,
+                    seed=resolved_seed,
+                    vision_config=vision_config,
+                    progress=progress,
+                )
+            direct_images = encoded_images if selected_mode == VISION_DIRECT_MODE else []
             system_prompt = build_system_prompt(prompt_kind, has_video=video is not None, has_audio=audio is not None)
-            resolved_prompt = resolved_script
+            resolved_prompt = _resolved_prompt_with_visual_context(resolved_script, visual_context)
             parsed_direction = ""
             parsed_continuity = ""
             reference_mode = ""
             image_notes = ""
             segment_count = 0
-            warnings = ""
+            warnings = "\n".join(mode_warnings)
             request = PromptEnhancerRequest(
                 model=model_name,
                 prompt_type=prompt_kind,
                 prompt=resolved_prompt,
                 system_prompt=system_prompt,
                 seed=resolved_seed,
-                images=encoded_images,
+                images=direct_images,
                 settings=settings,
-                provider=provider or "ollama",
+                provider=writer_provider,
                 model_id=model_identifier,
-                model_backend=model_backend or "",
+                model_backend=writer_backend,
             )
             generated_prompt = registry.generate(request, progress)
         progress.phase_done("cleanup")
@@ -228,6 +314,7 @@ class PromptEnhancer(io.ComfyNode):
             parsed_continuity,
             reference_mode,
             image_notes,
+            visual_context,
             segment_count,
             warnings,
         )
@@ -247,6 +334,114 @@ def _prompt_image_count(images: Any) -> int:
         return min(int(len(images)), MAX_PROMPT_IMAGES)
     except Exception:
         return 0
+
+
+def _selected_segment_images(encoded_images: list[str], image_references: Any) -> list[str]:
+    selected: list[str] = []
+    seen: set[int] = set()
+    for reference in image_references or []:
+        index = _as_int(getattr(reference, "index", 0), 0)
+        if index < 1 or index in seen:
+            continue
+        seen.add(index)
+        encoded_index = index - 1
+        if 0 <= encoded_index < len(encoded_images):
+            selected.append(encoded_images[encoded_index])
+    return selected
+
+
+def _resolve_vision_mode(
+    requested_mode: str,
+    selected_images: list[str],
+    writer_provider: str,
+    writer_model_id: str,
+    writer_backend: str,
+    vision_config: dict[str, str],
+) -> tuple[str, list[str]]:
+    if not selected_images:
+        return VISION_OFF_MODE, []
+
+    mode = requested_mode if requested_mode in VISION_CONTEXT_MODES else VISION_AUTO_MODE
+    writer_supports_images = provider_model_supports_images(writer_provider, writer_model_id, writer_backend)
+    vision_supports_images = _vision_config_supports_images(vision_config)
+    warnings: list[str] = []
+
+    if mode == VISION_OFF_MODE:
+        return VISION_OFF_MODE, ["Images are connected or referenced, but vision_context_mode is off."]
+
+    if mode == VISION_DIRECT_MODE:
+        if not writer_supports_images:
+            warnings.append(
+                f"Writer model `{writer_model_id}` is not known to support images; direct mode will still send them."
+            )
+        return VISION_DIRECT_MODE, warnings
+
+    if mode == VISION_SEPARATE_MODE:
+        if vision_supports_images:
+            return VISION_SEPARATE_MODE, []
+        return VISION_OFF_MODE, ["Images were selected, but no usable separate vision model is configured."]
+
+    if writer_supports_images:
+        return VISION_DIRECT_MODE, []
+    if vision_supports_images:
+        return VISION_SEPARATE_MODE, []
+    return VISION_OFF_MODE, ["Images were selected, but neither the writer model nor the configured vision model can use them."]
+
+
+def _vision_config_supports_images(vision_config: dict[str, str]) -> bool:
+    provider = vision_config.get("provider", "")
+    model_id = vision_config.get("model_id", "")
+    backend = vision_config.get("model_backend", "")
+    if not provider or not model_id:
+        return False
+    return provider_model_supports_images(provider, model_id, backend)
+
+
+def _generate_visual_context(
+    registry: PromptProviderRegistry,
+    prompt_kind: str,
+    prompt: str,
+    image_notes: str,
+    reference_mode: str,
+    selected_images: list[str],
+    settings: PromptEnhancerSettings,
+    seed: int,
+    vision_config: dict[str, str],
+    progress: PromptEnhancerProgress,
+    segment_index: int | None = None,
+    segment_total: int | None = None,
+) -> str:
+    vision_model_id = vision_config.get("model_id") or DEFAULT_VISION_MODEL
+    request = PromptEnhancerRequest(
+        model=vision_model_id,
+        prompt_type="image",
+        prompt=build_visual_context_prompt(
+            prompt_kind,
+            prompt,
+            image_notes=image_notes,
+            reference_mode=reference_mode,
+            segment_index=segment_index,
+            segment_total=segment_total,
+        ),
+        system_prompt=VISUAL_CONTEXT_SYSTEM_PROMPT,
+        seed=seed,
+        images=selected_images,
+        settings=settings,
+        provider=vision_config.get("provider") or DEFAULT_VISION_PROVIDER,
+        model_id=vision_model_id,
+        model_backend=vision_config.get("model_backend") or DEFAULT_VISION_BACKEND,
+    )
+    return str(registry.generate_visual_context(request, progress) or "").strip()
+
+
+def _resolved_prompt_with_visual_context(prompt: str, visual_context: str) -> str:
+    prompt_text = str(prompt or "").strip()
+    visual_text = str(visual_context or "").strip()
+    if not visual_text:
+        return prompt_text
+    if not prompt_text:
+        return f"Visual context: {visual_text}"
+    return f"{prompt_text}\n\nVisual context: {visual_text}"
 
 
 def _segment_variables_for_mode(
@@ -305,7 +500,7 @@ def _join_segment_values(segment_variables_list: list[dict[str, Any]], key: str)
     return _join_blocks([str(segment_variables.get(key) or "") for segment_variables in segment_variables_list], keep_empty=True)
 
 
-def _join_unique_warnings(segment_variables_list: list[dict[str, Any]]) -> str:
+def _join_unique_warnings(segment_variables_list: list[dict[str, Any]], extra_warnings: list[str] | None = None) -> str:
     warnings: list[str] = []
     seen: set[str] = set()
     for segment_variables in segment_variables_list:
@@ -315,4 +510,10 @@ def _join_unique_warnings(segment_variables_list: list[dict[str, Any]]) -> str:
                 continue
             seen.add(text)
             warnings.append(text)
+    for warning in extra_warnings or []:
+        text = str(warning or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        warnings.append(text)
     return "\n".join(warnings)

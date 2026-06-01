@@ -41,6 +41,7 @@ import {
     isPointInPromptWidget,
     isPromptHideModeEnabled,
     modelOptionsForProvider,
+    modelSupportsImages,
     modelOptionsWithCurrentValue,
     moveAutocompleteSelection,
     normalizeProviderCatalog,
@@ -51,6 +52,7 @@ import {
     promptWidgetBounds,
     readProviderModelHistory,
     readPromptEnhancerModelConfig,
+    readPromptEnhancerVisionModelConfig,
     readPromptText,
     readPromptVariables,
     readPromptEnhancerSettings,
@@ -68,8 +70,10 @@ import {
     updatePromptVariable,
     updateModelOptions,
     updateProviderModelOptions,
+    updateVisionProviderModelOptions,
     writeProviderModelHistory,
     writePromptEnhancerModelConfig,
+    writePromptEnhancerVisionModelConfig,
     writePromptText,
     writePromptVariables,
     writePromptEnhancerSettings,
@@ -514,6 +518,52 @@ test("prompt enhancer provider model selector writes hidden provider fields", ()
     });
     assert.deepEqual(providerSelector.options.values, ["ollama", "local_transformers_vlm"]);
     assert.deepEqual(modelSelector.options.values, ["qwen3_vl_4b_fast"]);
+});
+
+test("prompt enhancer vision model selector uses only image-capable models", () => {
+    const node = {
+        widgets: [
+            { name: "vision_provider", value: "local_transformers_vlm" },
+            { name: "vision_model_id", value: "" },
+            { name: "vision_model_backend", value: "" },
+        ],
+    };
+    const catalog = normalizeProviderCatalog({
+        providers: [
+            { id: "ollama", label: "Ollama" },
+            { id: "local_transformers_vlm", label: "Local Transformers VLM" },
+            { id: "fallback", label: "Fallback" },
+        ],
+        models: [
+            { provider: "ollama", model_id: "llava:latest", backend: "ollama", supports_images: true },
+            { provider: "ollama", model_id: "mistral:latest", backend: "ollama", supports_images: false },
+            { provider: "local_transformers_vlm", model_id: "qwen3_vl_4b_fast", backend: "qwen", supports_images: true },
+            { provider: "fallback", model_id: "fallback_text_backend", backend: "fallback", supports_images: false },
+        ],
+    });
+    const providerSelector = { value: "ollama", options: { values: [] } };
+    const modelSelector = { value: "", options: { values: [] } };
+
+    assert.equal(modelSupportsImages(catalog, "ollama", "llava:latest"), true);
+    assert.equal(modelSupportsImages(catalog, "ollama", "mistral:latest"), false);
+    assert.equal(updateVisionProviderModelOptions(providerSelector, modelSelector, node, catalog), true);
+    assert.deepEqual(providerSelector.options.values, ["ollama", "local_transformers_vlm"]);
+    assert.deepEqual(modelSelector.options.values, ["llava:latest"]);
+    assert.deepEqual(readPromptEnhancerVisionModelConfig(node), {
+        provider: "ollama",
+        modelId: "llava:latest",
+        modelBackend: "ollama",
+    });
+
+    assert.deepEqual(writePromptEnhancerVisionModelConfig(node, {
+        provider: "local_transformers_vlm",
+        modelId: "qwen3_vl_4b_fast",
+        modelBackend: "qwen",
+    }), {
+        provider: "local_transformers_vlm",
+        modelId: "qwen3_vl_4b_fast",
+        modelBackend: "qwen",
+    });
 });
 
 test("prompt enhancer provider model history reads writes and seeds current workflow model", () => {

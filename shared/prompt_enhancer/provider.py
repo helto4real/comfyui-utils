@@ -25,9 +25,29 @@ MAX_PROMPT_IMAGES = 8
 MAX_SEED = 2_147_483_647
 PROVIDER_OLLAMA = "ollama"
 OLLAMA_ESTIMATED_GENERATION_TOKENS = 180
+KNOWN_OLLAMA_VISION_MODEL_MARKERS = (
+    "llava",
+    "bakllava",
+    "moondream",
+    "minicpm-v",
+    "minicpm_v",
+    "qwen-vl",
+    "qwen2-vl",
+    "qwen2.5-vl",
+    "qwen2.5vl",
+    "qwen3-vl",
+    "qwen3vl",
+    "gemma3",
+    "gemma-3",
+)
 
 PROMPT_TYPES = ("image", "video", "multi scene video")
 IMAGE_SYSTEM_PROMPT = load_default_system_prompt("image")
+VISUAL_CONTEXT_SYSTEM_PROMPT = (
+    "You are a concise visual context analyzer for a prompt enhancement node. "
+    "Analyze only the provided reference images in relation to the user's requested prompt. "
+    "Return compact visual notes that another text model can use. Do not write the final prompt."
+)
 
 
 
@@ -166,6 +186,48 @@ def build_system_prompt(
         has_audio=has_audio,
         prompt_values=prompt_values,
     )
+
+
+def ollama_model_supports_images(model_id: str | None) -> bool:
+    model_name = str(model_id or "").strip().lower()
+    return any(marker in model_name for marker in KNOWN_OLLAMA_VISION_MODEL_MARKERS)
+
+
+def provider_model_supports_images(provider: str, model_id: str, model_backend: str = "") -> bool:
+    provider_id = str(provider or PROVIDER_OLLAMA).strip() or PROVIDER_OLLAMA
+    if provider_id == PROVIDER_OLLAMA:
+        return ollama_model_supports_images(model_id)
+    try:
+        from .local_provider import resolve_local_model
+
+        spec = resolve_local_model(model_id)
+    except Exception:
+        return False
+    return bool(spec.supports_images and spec.generator_supported)
+
+
+def build_visual_context_prompt(
+    prompt_type: str,
+    prompt: str,
+    image_notes: str = "",
+    reference_mode: str = "",
+    segment_index: int | None = None,
+    segment_total: int | None = None,
+) -> str:
+    labels: list[tuple[str, object]] = [
+        ("Prompt type", prompt_type or "image"),
+        ("Segment", f"{segment_index} of {segment_total}" if segment_index and segment_total else ""),
+        ("Reference mode", reference_mode),
+        ("Image role notes", image_notes),
+        ("User direction", prompt),
+    ]
+    body = "\n".join(f"{label}: {value}" for label, value in labels if str(value or "").strip())
+    return (
+        f"{body}\n\n"
+        "Describe the relevant visual context in 1-4 concise sentences. "
+        "Focus on subjects, motion-relevant pose/expression, style, setting, and reference roles. "
+        "Do not add instructions, markdown, labels, or a final generation prompt."
+    ).strip()
 
 
 def _sample_indices(count: int, limit: int = MAX_PROMPT_IMAGES) -> list[int]:
@@ -316,3 +378,10 @@ class PromptProviderRegistry:
         from .local_provider import LocalPromptProvider
 
         return LocalPromptProvider().generate(request, progress)
+
+    def generate_visual_context(
+        self,
+        request: PromptEnhancerRequest,
+        progress: PromptEnhancerProgress | None = None,
+    ) -> str:
+        return self.generate(request, progress)

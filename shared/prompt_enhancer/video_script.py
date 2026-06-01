@@ -231,6 +231,12 @@ def build_segment_variables(
     metadata.update(segment.metadata)
     continuity = _combined_continuity(metadata.get("continuity", ""), segment.continuity)
     image_notes = build_image_notes(segment.image_references, metadata)
+    warnings = [*parsed_script.warnings, *segment.warnings]
+    if segment.metadata.get("reference_mode") and segment.inferred_reference_mode != "none" and not segment.image_references:
+        warnings.append(
+            f"Segment {selected_index} sets reference_mode={segment.inferred_reference_mode} "
+            "but has no @imageN references, so no images will be sent for that segment."
+        )
     if not segment.direction.strip():
         raise VideoScriptError(f"Segment {selected_index} has no direction text after parsing.")
 
@@ -249,7 +255,7 @@ def build_segment_variables(
         "prompt_type": prompt_type or "video",
         "has_video": has_video,
         "has_audio": has_audio,
-        "warnings": [*parsed_script.warnings, *segment.warnings],
+        "warnings": warnings,
         "image_references": segment.image_references,
     }
 
@@ -262,6 +268,7 @@ def build_resolved_segment_prompt(segment_variables: dict[str, Any]) -> str:
         ("Continuity", segment_variables.get("continuity")),
         ("Reference mode", segment_variables.get("reference_mode")),
         ("Image notes", segment_variables.get("image_notes")),
+        ("Visual context", segment_variables.get("visual_context")),
         ("Style", segment_variables.get("style")),
         ("Camera", segment_variables.get("camera")),
         ("Duration", segment_variables.get("duration")),

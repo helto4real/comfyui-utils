@@ -23,6 +23,7 @@ import {
     promptEditorLayout,
     readPromptEnhancerModelConfig,
     readPromptEnhancerSettings,
+    readPromptEnhancerVisionModelConfig,
     readPromptText,
     readPromptVariables,
     rememberPromptEnhancerProviderModel,
@@ -37,7 +38,9 @@ import {
     shouldHidePromptWidget,
     updatePromptVariable,
     updateProviderModelOptions,
+    updateVisionProviderModelOptions,
     writePromptEnhancerModelConfig,
+    writePromptEnhancerVisionModelConfig,
     writePromptEnhancerSettings,
     writePromptText,
     writePromptVariables,
@@ -52,6 +55,8 @@ const VARIABLES_BUTTON = "__heltoPromptEnhancerVariablesButton";
 const EDIT_SCRIPT_BUTTON = "__heltoPromptEnhancerEditScriptButton";
 const PROVIDER_SELECTOR = "__heltoPromptEnhancerProviderSelector";
 const MODEL_SELECTOR = "__heltoPromptEnhancerModelSelector";
+const VISION_PROVIDER_SELECTOR = "__heltoPromptEnhancerVisionProviderSelector";
+const VISION_MODEL_SELECTOR = "__heltoPromptEnhancerVisionModelSelector";
 const PROVIDER_CATALOG = "__heltoPromptEnhancerProviderCatalog";
 const PROMPT_HOVER_STATE = "__heltoPromptEnhancerPromptHover";
 const PROMPT_DOM_ELEMENTS = "__heltoPromptEnhancerPromptDomElements";
@@ -606,6 +611,54 @@ function ensureProviderSelector(node) {
     return widget;
 }
 
+function ensureVisionModelSelector(node) {
+    if (node[VISION_MODEL_SELECTOR]) {
+        return node[VISION_MODEL_SELECTOR];
+    }
+    const config = readPromptEnhancerVisionModelConfig(node);
+    const current = config.modelId;
+    const widget = node.addWidget?.("combo", "vision model selector", current, (value) => {
+        const selected = String(value || "").trim();
+        if (selected) {
+            const provider = String(node[VISION_PROVIDER_SELECTOR]?.value || getWidget(node, "vision_provider")?.value || "local_transformers_vlm");
+            const catalog = node[PROVIDER_CATALOG] || { models: [] };
+            const selectedModel = catalog.models?.find?.((model) => model.provider === provider && model.model_id === selected);
+            writePromptEnhancerVisionModelConfig(node, {
+                provider,
+                modelId: selected,
+                modelBackend: selectedModel?.backend || (provider === "ollama" ? "ollama" : ""),
+            });
+            setCanvasDirty(node);
+        }
+    }, { values: [current] });
+    if (widget) {
+        widget.serialize = false;
+        widget.options ??= {};
+        widget.options.serialize = false;
+        node[VISION_MODEL_SELECTOR] = widget;
+    }
+    return widget;
+}
+
+function ensureVisionProviderSelector(node) {
+    if (node[VISION_PROVIDER_SELECTOR]) {
+        return node[VISION_PROVIDER_SELECTOR];
+    }
+    const config = readPromptEnhancerVisionModelConfig(node);
+    const widget = node.addWidget?.("combo", "vision provider", config.provider, () => {
+        const catalog = node[PROVIDER_CATALOG] || { providers: [{ id: config.provider }], models: [] };
+        updateVisionProviderModelOptions(widget, ensureVisionModelSelector(node), node, catalog);
+        setCanvasDirty(node);
+    }, { values: [config.provider] });
+    if (widget) {
+        widget.serialize = false;
+        widget.options ??= {};
+        widget.options.serialize = false;
+        node[VISION_PROVIDER_SELECTOR] = widget;
+    }
+    return widget;
+}
+
 async function fetchProviderModels(node) {
     const settings = readPromptEnhancerSettings(node);
     const response = await fetch("/helto_prompt_enhancer/providers/models", {
@@ -632,6 +685,7 @@ async function refreshModels(node) {
         const catalog = await fetchProviderModels(node);
         node[PROVIDER_CATALOG] = catalog;
         updateProviderModelOptions(ensureProviderSelector(node), ensureModelSelector(node), node, catalog);
+        updateVisionProviderModelOptions(ensureVisionProviderSelector(node), ensureVisionModelSelector(node), node, catalog);
         if (catalog.ollama_error) {
             console.warn("Prompt enhancer Ollama model refresh failed:", catalog.ollama_error);
         }
@@ -1250,6 +1304,8 @@ function ensurePromptEnhancerUi(node) {
     ensurePromptEditor(node);
     ensureProviderSelector(node);
     ensureModelSelector(node);
+    ensureVisionProviderSelector(node);
+    ensureVisionModelSelector(node);
     node[PROMPT_HOVER_STATE] ??= false;
     applyPromptDomHideMode(node);
 

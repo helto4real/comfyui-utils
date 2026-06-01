@@ -14,7 +14,7 @@ from urllib.parse import unquote, urlparse
 from PIL import Image
 
 from .progress import PromptEnhancerProgress
-from .provider import DEFAULT_OLLAMA_KEEP_ALIVE, DEFAULT_OLLAMA_KEEP_ALIVE_UNIT, ollama_keep_alive
+from .provider import DEFAULT_OLLAMA_KEEP_ALIVE, DEFAULT_OLLAMA_KEEP_ALIVE_UNIT, ollama_keep_alive, ollama_model_supports_images
 
 try:
     import folder_paths
@@ -351,7 +351,7 @@ def provider_catalog(ollama_models: list[str] | None = None, ollama_error: str =
             "file_urls": [],
             "local_files": [],
             "missing_dependencies": [],
-            "supports_images": True,
+            "supports_images": ollama_model_supports_images(str(model)),
             "generator_supported": True,
             "status": "remote",
         }

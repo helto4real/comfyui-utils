@@ -356,6 +356,15 @@ A character turns around. @image3:character
         self.assertEqual(first_segment_local.global_metadata, {})
         self.assertEqual(build_segment_variables(first_segment_local, 1)["reference_mode"], "end_guidance")
 
+    def test_video_script_parser_warns_when_reference_mode_has_no_image_reference(self):
+        parsed = parse_video_prompt_script("[reference_mode=start_frame]\nA subject turns toward camera.", image_count=1)
+        variables = build_segment_variables(parsed, 1)
+
+        self.assertEqual(variables["reference_mode"], "start_frame")
+        self.assertEqual(variables["image_references"], [])
+        self.assertIn("has no @imageN references", "\n".join(variables["warnings"]))
+        self.assertIn("no images will be sent", "\n".join(variables["warnings"]))
+
     def test_video_script_parser_validates_references_modes_and_segment_index(self):
         with self.assertRaisesRegex(VideoScriptError, "Unknown image role"):
             parse_video_prompt_script("A view. @image1:background", image_count=1)
