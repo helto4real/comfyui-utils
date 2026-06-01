@@ -29,12 +29,16 @@ import {
 import {
     fetchSystemPrompt,
     hideSerializedSettingsWidgets,
+    isPointInPromptWidget,
+    isPromptHideModeEnabled,
     modelOptionsWithCurrentValue,
+    promptWidgetBounds,
     readPromptEnhancerSettings,
     resetSystemPrompt,
     saveSystemPrompt,
     setGenerateNewEachPrompt,
     setNewFixedPromptSeed,
+    shouldHidePromptWidget,
     updateModelOptions,
     writePromptEnhancerSettings,
 } from "../../web/prompt_enhancer_helpers.js";
@@ -439,6 +443,53 @@ test("prompt enhancer model selector mirrors hidden serialized model", () => {
     assert.equal(modelWidget.value, "c");
     assert.equal(selectorWidget.value, "c");
     assert.deepEqual(callbacks, ["c"]);
+});
+
+test("prompt enhancer hide mode calculates prompt widget hover state", () => {
+    const node = {
+        size: [420, 500],
+        widgets: [
+            { name: "hide_mode", value: true },
+            { name: "prompt", last_y: 120, computedHeight: 96 },
+        ],
+    };
+
+    assert.equal(isPromptHideModeEnabled(node), true);
+    assert.deepEqual(promptWidgetBounds(node), {
+        x: 0,
+        y: 120,
+        width: 420,
+        height: 96,
+    });
+    assert.equal(isPointInPromptWidget(node, [30, 140]), true);
+    assert.equal(isPointInPromptWidget(node, [30, 230]), false);
+    assert.equal(shouldHidePromptWidget(node, false), true);
+    assert.equal(shouldHidePromptWidget(node, true), false);
+
+    node.widgets[0].value = false;
+    assert.equal(shouldHidePromptWidget(node, false), false);
+});
+
+test("prompt enhancer prompt bounds fall back to widget compute size", () => {
+    const node = {
+        size: [360, 400],
+        widgets: [
+            {
+                name: "prompt",
+                last_y: 64,
+                computeSize(width) {
+                    return [width, 144];
+                },
+            },
+        ],
+    };
+
+    assert.deepEqual(promptWidgetBounds(node), {
+        x: 0,
+        y: 64,
+        width: 360,
+        height: 144,
+    });
 });
 
 test("prompt enhancer system prompt helpers fetch save and reset prompts", async () => {

@@ -1079,6 +1079,17 @@
 .helto-prompt-enhancer-textarea:focus {
     border-color: var(--border-active);
 }
+.helto-prompt-enhancer-prompt-hidden {
+    color: transparent !important;
+    -webkit-text-fill-color: transparent !important;
+    caret-color: transparent !important;
+    text-shadow: none !important;
+}
+.helto-prompt-enhancer-prompt-hidden:hover {
+    color: inherit !important;
+    -webkit-text-fill-color: currentColor !important;
+    caret-color: auto !important;
+}
 @media (max-width: 820px) {
     .helto-prompt-enhancer-editor-card {
         min-height: 70vh;

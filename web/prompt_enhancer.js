@@ -7,11 +7,14 @@ import {
     fetchSystemPrompt,
     hideSerializedSettingsWidgets,
     keepFixedPromptSeed,
+    isPointInPromptWidget,
+    promptWidgetBounds,
     readPromptEnhancerSettings,
     resetSystemPrompt,
     saveSystemPrompt,
     setGenerateNewEachPrompt,
     setNewFixedPromptSeed,
+    shouldHidePromptWidget,
     updateModelOptions,
     writePromptEnhancerSettings,
 } from "./prompt_enhancer_helpers.js";
@@ -20,6 +23,8 @@ const BUTTONS_ADDED = "__heltoPromptEnhancerButtonsAdded";
 const SETTINGS_BUTTON = "__heltoPromptEnhancerSettingsButton";
 const MODELS_BUTTON = "__heltoPromptEnhancerModelsButton";
 const MODEL_SELECTOR = "__heltoPromptEnhancerModelSelector";
+const PROMPT_HOVER_STATE = "__heltoPromptEnhancerPromptHover";
+const PROMPT_DOM_ELEMENTS = "__heltoPromptEnhancerPromptDomElements";
 
 function isPromptEnhancerNode(node) {
     return node?.comfyClass === PROMPT_ENHANCER_NODE_CLASS || node?.constructor?.comfyClass === PROMPT_ENHANCER_NODE_CLASS;
@@ -28,6 +33,16 @@ function isPromptEnhancerNode(node) {
 function setCanvasDirty(node) {
     node?.setDirtyCanvas?.(true, true);
     node?.graph?.setDirtyCanvas?.(true, true);
+}
+
+function updatePromptHover(node, nextValue) {
+    const value = Boolean(nextValue);
+    if (node[PROMPT_HOVER_STATE] === value) {
+        return;
+    }
+    node[PROMPT_HOVER_STATE] = value;
+    applyPromptDomHideMode(node);
+    setCanvasDirty(node);
 }
 
 function addButton(node, key, label, callback) {
@@ -115,6 +130,72 @@ function settingsSection(title, rows) {
     `;
 }
 
+function getPromptDomElements(node) {
+    const cached = node[PROMPT_DOM_ELEMENTS];
+    if (Array.isArray(cached) && cached.every((element) => element?.isConnected !== false)) {
+        return cached;
+    }
+
+    const widget = getWidget(node, "prompt");
+    const candidates = [
+        widget?.element,
+        widget?.inputEl,
+        widget?.input,
+        widget?.textarea,
+    ].filter((element) => element instanceof HTMLElement);
+    const elements = [];
+    for (const candidate of candidates) {
+        if (candidate.matches?.("textarea, input")) {
+            elements.push(candidate);
+        }
+        elements.push(...candidate.querySelectorAll?.("textarea, input") ?? []);
+    }
+
+    node[PROMPT_DOM_ELEMENTS] = [...new Set(elements)];
+    return node[PROMPT_DOM_ELEMENTS];
+}
+
+function applyPromptDomHideMode(node) {
+    const shouldHide = shouldHidePromptWidget(node, node[PROMPT_HOVER_STATE]);
+    for (const element of getPromptDomElements(node)) {
+        element.classList.toggle("helto-prompt-enhancer-prompt-hidden", shouldHide);
+    }
+}
+
+function drawHiddenPromptOverlay(node, ctx) {
+    if (!shouldHidePromptWidget(node, node[PROMPT_HOVER_STATE])) {
+        return;
+    }
+    const bounds = promptWidgetBounds(node);
+    if (!bounds) {
+        return;
+    }
+
+    ctx.save();
+    ctx.fillStyle = "rgba(12, 13, 18, 0.96)";
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.14)";
+    ctx.lineWidth = 1;
+    const radius = 6;
+    const x = bounds.x + 6;
+    const y = bounds.y + 2;
+    const width = Math.max(0, bounds.width - 12);
+    const height = Math.max(0, bounds.height - 4);
+    if (width <= 0 || height <= 0) {
+        ctx.restore();
+        return;
+    }
+    if (typeof ctx.roundRect === "function") {
+        ctx.beginPath();
+        ctx.roundRect(x, y, width, height, radius);
+        ctx.fill();
+        ctx.stroke();
+    } else {
+        ctx.fillRect(x, y, width, height);
+        ctx.strokeRect(x, y, width, height);
+    }
+    ctx.restore();
+}
+
 function promptKindLabel(kind) {
     return kind === "image" ? "image" : "video";
 }
@@ -167,7 +248,7 @@ function openSettingsModal(node) {
             <div class="settings-modal-row">
                 <div class="settings-modal-text">
                     <div class="settings-title">Hide mode</div>
-                    <div class="settings-desc">Stored for the upcoming prompt enhancer preview behavior.</div>
+                    <div class="settings-desc">Hides prompt text unless the cursor is over the prompt box.</div>
                 </div>
                 <label class="helto-switch">
                     <input type="checkbox" id="helto-pe-hide-mode" ${hideChecked}>
@@ -231,6 +312,8 @@ function openSettingsModal(node) {
             timeout: body.querySelector("#helto-pe-timeout").value,
         });
         await refreshModels(node);
+        applyPromptDomHideMode(node);
+        setCanvasDirty(node);
         return true;
     });
 
@@ -266,6 +349,8 @@ function ensurePromptEnhancerUi(node) {
     }
     hideSerializedSettingsWidgets(node, collapseHiddenWidgetLayout);
     ensureModelSelector(node);
+    node[PROMPT_HOVER_STATE] ??= false;
+    applyPromptDomHideMode(node);
 
     if (node[BUTTONS_ADDED]) {
         return;
@@ -299,6 +384,9 @@ app.registerExtension({
 
         const onNodeCreated = nodeType.prototype.onNodeCreated;
         const onConfigure = nodeType.prototype.onConfigure;
+        const onMouseMove = nodeType.prototype.onMouseMove;
+        const onMouseLeave = nodeType.prototype.onMouseLeave;
+        const onDrawForeground = nodeType.prototype.onDrawForeground;
 
         nodeType.prototype.onNodeCreated = function () {
             const result = onNodeCreated?.apply(this, arguments);
@@ -309,6 +397,23 @@ app.registerExtension({
         nodeType.prototype.onConfigure = function () {
             const result = onConfigure?.apply(this, arguments);
             ensurePromptEnhancerUi(this);
+            return result;
+        };
+
+        nodeType.prototype.onMouseMove = function (event, localPos) {
+            updatePromptHover(this, isPointInPromptWidget(this, localPos));
+            return onMouseMove?.apply(this, arguments);
+        };
+
+        nodeType.prototype.onMouseLeave = function () {
+            updatePromptHover(this, false);
+            return onMouseLeave?.apply(this, arguments);
+        };
+
+        nodeType.prototype.onDrawForeground = function (ctx) {
+            const result = onDrawForeground?.apply(this, arguments);
+            applyPromptDomHideMode(this);
+            drawHiddenPromptOverlay(this, ctx);
             return result;
         };
     },

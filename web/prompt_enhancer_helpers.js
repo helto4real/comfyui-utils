@@ -86,6 +86,53 @@ export function updateModelOptions(selectorWidget, modelWidget, models) {
     return true;
 }
 
+export function isPromptHideModeEnabled(node) {
+    return Boolean(getWidget(node, "hide_mode")?.value);
+}
+
+export function promptWidgetBounds(node) {
+    const widget = getWidget(node, "prompt");
+    if (!widget) {
+        return null;
+    }
+
+    const width = Number(node?.size?.[0]) || 320;
+    const y = Number.isFinite(widget.last_y) ? widget.last_y : null;
+    if (y === null) {
+        return null;
+    }
+
+    const computedHeight = Number(widget.computedHeight);
+    const explicitHeight = Number(widget.height);
+    const computedSize = widget.computeSize?.(width);
+    const computedSizeHeight = Array.isArray(computedSize) ? Number(computedSize[1]) : NaN;
+    const height = [computedHeight, explicitHeight, computedSizeHeight]
+        .find((value) => Number.isFinite(value) && value > 0) ?? 80;
+
+    return {
+        x: 0,
+        y,
+        width,
+        height,
+    };
+}
+
+export function isPointInPromptWidget(node, point) {
+    const bounds = promptWidgetBounds(node);
+    if (!bounds || !Array.isArray(point)) {
+        return false;
+    }
+    const [x, y] = point;
+    return x >= bounds.x &&
+        x <= bounds.x + bounds.width &&
+        y >= bounds.y &&
+        y <= bounds.y + bounds.height;
+}
+
+export function shouldHidePromptWidget(node, promptHovered = false) {
+    return isPromptHideModeEnabled(node) && !promptHovered;
+}
+
 async function parsePromptEnhancerResponse(response, fallbackMessage) {
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
