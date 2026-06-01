@@ -39,6 +39,7 @@ import {
     moveAutocompleteSelection,
     normalizePromptVariables,
     parsePromptVariablesJson,
+    promptEditorLayout,
     promptWidgetBounds,
     readPromptVariables,
     readPromptEnhancerSettings,
@@ -479,6 +480,21 @@ test("prompt enhancer hide mode calculates prompt widget hover state", () => {
 
     node.widgets[0].value = false;
     assert.equal(shouldHidePromptWidget(node, false), false);
+});
+
+test("prompt enhancer editor layout constrains textarea inside node width", () => {
+    assert.deepEqual(promptEditorLayout({ size: [420, 500] }), {
+        width: 396,
+        height: 180,
+        textareaWidth: 384,
+        textareaHeight: 168,
+    });
+    assert.deepEqual(promptEditorLayout({ size: [120, 500] }), {
+        width: 96,
+        height: 180,
+        textareaWidth: 84,
+        textareaHeight: 168,
+    });
 });
 
 test("prompt enhancer prompt bounds fall back to widget compute size", () => {

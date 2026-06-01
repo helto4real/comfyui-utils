@@ -1,10 +1,9 @@
 import { app } from "/scripts/app.js";
 
 import { selectorApi } from "./api.js";
-import { collapseHiddenWidgetLayout, containPointerEvents, createModal } from "./ui.js";
+import { collapseHiddenWidgetLayout, containPointerEvents, createModal, setWidgetHeight } from "./ui.js";
 import {
     PROMPT_ENHANCER_NODE_CLASS,
-    PROMPT_EDITOR_WIDGET_NAME,
     addPromptVariable,
     autocompleteStateForPrompt,
     getWidget,
@@ -14,6 +13,9 @@ import {
     keepFixedPromptSeed,
     isPointInPromptWidget,
     moveAutocompleteSelection,
+    PROMPT_EDITOR_HEIGHT,
+    PROMPT_EDITOR_WIDGET_NAME,
+    promptEditorLayout,
     promptWidgetBounds,
     readPromptValue,
     readPromptEnhancerSettings,
@@ -77,9 +79,62 @@ function getPromptEditorState(node) {
     return node[PROMPT_EDITOR_STATE] ?? null;
 }
 
+function applyPromptEditorLayout(node) {
+    const state = getPromptEditorState(node);
+    if (!state) return;
+    const layout = promptEditorLayout(node);
+    const widthPx = `${layout.width}px`;
+    const textareaWidthPx = `${layout.textareaWidth}px`;
+    const heightPx = `${layout.height}px`;
+    const textareaHeightPx = `${layout.textareaHeight}px`;
+
+    const { domWidget, frame, textarea, suggestions } = state;
+    if (domWidget) {
+        domWidget.computedHeight = layout.height;
+        setWidgetHeight(domWidget, layout.height);
+        domWidget.computeSize = () => [layout.width, layout.height];
+        if (domWidget.element) {
+            domWidget.element.style.boxSizing = "border-box";
+            domWidget.element.style.width = widthPx;
+            domWidget.element.style.minWidth = widthPx;
+            domWidget.element.style.maxWidth = widthPx;
+            domWidget.element.style.height = heightPx;
+            domWidget.element.style.minHeight = heightPx;
+            domWidget.element.style.maxHeight = heightPx;
+            domWidget.element.style.overflow = "hidden";
+        }
+    }
+
+    if (frame) {
+        frame.style.boxSizing = "border-box";
+        frame.style.width = widthPx;
+        frame.style.minWidth = "0";
+        frame.style.maxWidth = widthPx;
+        frame.style.height = heightPx;
+        frame.style.minHeight = heightPx;
+        frame.style.maxHeight = heightPx;
+        frame.style.overflow = "hidden";
+    }
+    if (textarea) {
+        textarea.style.boxSizing = "border-box";
+        textarea.style.width = textareaWidthPx;
+        textarea.style.minWidth = "0";
+        textarea.style.maxWidth = textareaWidthPx;
+        textarea.style.height = textareaHeightPx;
+        textarea.style.minHeight = textareaHeightPx;
+        textarea.style.maxHeight = textareaHeightPx;
+        textarea.style.overflowX = "hidden";
+        textarea.style.overflowY = "auto";
+    }
+    if (suggestions) {
+        suggestions.style.maxWidth = `${Math.max(0, layout.width - 20)}px`;
+    }
+}
+
 function ensurePromptEditor(node) {
     if (node[PROMPT_EDITOR_STATE]) {
         syncPromptEditorFromWidget(node);
+        applyPromptEditorLayout(node);
         return node[PROMPT_EDITOR_STATE];
     }
     if (typeof node.addDOMWidget !== "function") {
@@ -93,6 +148,7 @@ function ensurePromptEditor(node) {
     textarea.className = "helto-prompt-enhancer-user-prompt";
     textarea.placeholder = "Describe the result you want. Use {{variable_name}} for variables.";
     textarea.spellcheck = false;
+    textarea.wrap = "soft";
     textarea.value = readPromptValue(node);
     const suggestions = document.createElement("div");
     suggestions.className = "helto-prompt-enhancer-suggestions";
@@ -152,7 +208,7 @@ function ensurePromptEditor(node) {
     textarea.addEventListener("mouseenter", () => updatePromptHover(node, true));
     textarea.addEventListener("mouseleave", () => updatePromptHover(node, false));
 
-    const getEditorHeight = () => 180;
+    const getEditorHeight = () => PROMPT_EDITOR_HEIGHT;
     const domWidget = node.addDOMWidget(PROMPT_EDITOR_WIDGET_NAME, "prompt", frame, {
         serialize: false,
         hideOnZoom: false,
@@ -173,6 +229,7 @@ function ensurePromptEditor(node) {
     }
     state.domWidget = domWidget;
     node[PROMPT_EDITOR_STATE] = state;
+    applyPromptEditorLayout(node);
     readPromptVariables(node, selectorApi).then((variables) => {
         state.variables = variables;
         renderPromptSuggestions(node);
@@ -183,6 +240,7 @@ function ensurePromptEditor(node) {
 function syncPromptEditorFromWidget(node) {
     const state = getPromptEditorState(node);
     if (!state) return;
+    applyPromptEditorLayout(node);
     const value = readPromptValue(node);
     if (state.textarea.value !== value && document.activeElement !== state.textarea) {
         state.textarea.value = value;
@@ -701,6 +759,7 @@ app.registerExtension({
         const onConfigure = nodeType.prototype.onConfigure;
         const onMouseMove = nodeType.prototype.onMouseMove;
         const onMouseLeave = nodeType.prototype.onMouseLeave;
+        const onResize = nodeType.prototype.onResize;
         const onDrawForeground = nodeType.prototype.onDrawForeground;
 
         nodeType.prototype.onNodeCreated = function () {
@@ -725,8 +784,15 @@ app.registerExtension({
             return onMouseLeave?.apply(this, arguments);
         };
 
+        nodeType.prototype.onResize = function () {
+            const result = onResize?.apply(this, arguments);
+            applyPromptEditorLayout(this);
+            return result;
+        };
+
         nodeType.prototype.onDrawForeground = function (ctx) {
             const result = onDrawForeground?.apply(this, arguments);
+            applyPromptEditorLayout(this);
             applyPromptDomHideMode(this);
             drawHiddenPromptOverlay(this, ctx);
             return result;

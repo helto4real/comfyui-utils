@@ -1,5 +1,8 @@
 export const PROMPT_ENHANCER_NODE_CLASS = "HeltoPromptEnhancer";
 export const PROMPT_EDITOR_WIDGET_NAME = "prompt editor";
+export const PROMPT_EDITOR_HEIGHT = 180;
+export const PROMPT_EDITOR_HORIZONTAL_INSET = 24;
+export const PROMPT_EDITOR_PADDING = 6;
 export const MAX_FIXED_SEED = 2147483647;
 export const ENCRYPTED_PREFIX = "__HELTO_ENC__:";
 export const VARIABLE_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -36,6 +39,19 @@ export function readPromptValue(node) {
 
 export function writePromptValue(node, value) {
     setWidgetValue(getWidget(node, "prompt"), String(value ?? ""));
+}
+
+export function promptEditorLayout(node, height = PROMPT_EDITOR_HEIGHT) {
+    const rawWidth = Number(node?.size?.[0]);
+    const nodeWidth = Number.isFinite(rawWidth) && rawWidth > 0 ? rawWidth : 320;
+    const width = Math.max(0, nodeWidth - PROMPT_EDITOR_HORIZONTAL_INSET);
+    const textareaWidth = Math.max(0, width - PROMPT_EDITOR_PADDING * 2);
+    return {
+        width,
+        height,
+        textareaWidth,
+        textareaHeight: Math.max(40, height - PROMPT_EDITOR_PADDING * 2),
+    };
 }
 
 export function setGenerateNewEachPrompt(node) {
