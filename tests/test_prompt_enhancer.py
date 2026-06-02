@@ -671,6 +671,58 @@ A character turns around. @image3:character
         self.assertEqual(result, "generated prompt")
         unload.assert_not_called()
 
+    def test_local_provider_exception_unloads_model_even_with_nonzero_keep_alive(self):
+        alias = "qwen3_vl_4b_fast"
+        request = PromptEnhancerRequest(
+            model=alias,
+            prompt_type="image",
+            prompt="A quiet forest",
+            system_prompt="system",
+            seed=1,
+            images=[],
+            settings=PromptEnhancerSettings(keep_alive=5, keep_alive_unit="minutes"),
+            provider=local_provider.PROVIDER_LOCAL_TRANSFORMERS,
+            model_id=alias,
+            model_backend="qwen",
+        )
+
+        with patch.object(local_provider, "_LOADED_MODELS", {alias: {"torch": None}}), \
+                patch.object(local_provider, "ensure_model_downloaded", return_value=Path("/tmp/model")), \
+                patch.object(local_provider, "local_vram_preflight"), \
+                patch.object(local_provider, "decode_request_images", return_value=[]), \
+                patch.object(local_provider, "_generate_qwen", side_effect=RuntimeError("CUDA out of memory")), \
+                patch.object(local_provider, "unload_local_model", return_value={"ok": True, "unloaded": [alias]}) as unload:
+            with self.assertRaisesRegex(RuntimeError, "CUDA out of memory"):
+                local_provider.LocalPromptProvider().generate(request)
+
+        unload.assert_called_once_with(alias)
+
+    def test_local_provider_exception_cleanup_failure_preserves_original_error(self):
+        alias = "qwen3_vl_4b_fast"
+        request = PromptEnhancerRequest(
+            model=alias,
+            prompt_type="image",
+            prompt="A quiet forest",
+            system_prompt="system",
+            seed=1,
+            images=[],
+            settings=PromptEnhancerSettings(keep_alive=5, keep_alive_unit="minutes"),
+            provider=local_provider.PROVIDER_LOCAL_TRANSFORMERS,
+            model_id=alias,
+            model_backend="qwen",
+        )
+
+        with patch.object(local_provider, "_LOADED_MODELS", {alias: {"torch": None}}), \
+                patch.object(local_provider, "ensure_model_downloaded", return_value=Path("/tmp/model")), \
+                patch.object(local_provider, "local_vram_preflight", side_effect=[None, RuntimeError("cleanup failed")]), \
+                patch.object(local_provider, "decode_request_images", return_value=[]), \
+                patch.object(local_provider, "_generate_qwen", side_effect=RuntimeError("CUDA out of memory")), \
+                patch.object(local_provider, "unload_local_model", side_effect=RuntimeError("release failed")) as unload:
+            with self.assertRaisesRegex(RuntimeError, "CUDA out of memory"):
+                local_provider.LocalPromptProvider().generate(request)
+
+        unload.assert_called_once_with(alias)
+
     def test_local_provider_zero_keep_alive_propagates_unload_failure(self):
         alias = "qwen3_vl_4b_fast"
         request = PromptEnhancerRequest(

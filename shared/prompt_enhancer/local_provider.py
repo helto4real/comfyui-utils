@@ -557,26 +557,9 @@ class LocalPromptProvider:
             _release_local_model_if_needed(spec, request, progress)
             return result
 
-        path = ensure_model_downloaded(spec, progress)
-        if path is None:
-            if progress is not None:
-                progress.phase_done("load")
-                progress.phase_start("generate")
-                progress.phase_done("generate")
-            result = fallback_enhance_prompt(getattr(request, "prompt", ""), getattr(request, "prompt_type", "image"))
-            _release_local_model_if_needed(spec, request, progress)
-            return result
-        if progress is not None:
-            progress.phase_start("load")
-        local_vram_preflight()
-        instruction = _instruction(getattr(request, "system_prompt", ""), getattr(request, "prompt", ""))
-        images = decode_request_images(getattr(request, "images", []) or [])
-        if spec.backend == "qwen":
-            result = clean_prompt_text(_generate_qwen(spec, path, images, instruction, progress))
-            _release_local_model_if_needed(spec, request, progress)
-            return result
-        if spec.backend == "florence":
-            if not images:
+        try:
+            path = ensure_model_downloaded(spec, progress)
+            if path is None:
                 if progress is not None:
                     progress.phase_done("load")
                     progress.phase_start("generate")
@@ -584,14 +567,35 @@ class LocalPromptProvider:
                 result = fallback_enhance_prompt(getattr(request, "prompt", ""), getattr(request, "prompt_type", "image"))
                 _release_local_model_if_needed(spec, request, progress)
                 return result
-            result = clean_prompt_text(_generate_florence(spec, path, images[0], instruction, progress))
-            _release_local_model_if_needed(spec, request, progress)
-            return result
-        if spec.backend == "llama_cpp_vision":
-            result = clean_prompt_text(_generate_llama_cpp_vision(spec, path, images, instruction, progress))
-            _release_local_model_if_needed(spec, request, progress)
-            return result
-        raise LocalProviderError(f"Unsupported local Prompt Enhancer backend: {spec.backend}")
+            if progress is not None:
+                progress.phase_start("load")
+            local_vram_preflight()
+            instruction = _instruction(getattr(request, "system_prompt", ""), getattr(request, "prompt", ""))
+            images = decode_request_images(getattr(request, "images", []) or [])
+            if spec.backend == "qwen":
+                result = clean_prompt_text(_generate_qwen(spec, path, images, instruction, progress))
+                _release_local_model_if_needed(spec, request, progress)
+                return result
+            if spec.backend == "florence":
+                if not images:
+                    if progress is not None:
+                        progress.phase_done("load")
+                        progress.phase_start("generate")
+                        progress.phase_done("generate")
+                    result = fallback_enhance_prompt(getattr(request, "prompt", ""), getattr(request, "prompt_type", "image"))
+                    _release_local_model_if_needed(spec, request, progress)
+                    return result
+                result = clean_prompt_text(_generate_florence(spec, path, images[0], instruction, progress))
+                _release_local_model_if_needed(spec, request, progress)
+                return result
+            if spec.backend == "llama_cpp_vision":
+                result = clean_prompt_text(_generate_llama_cpp_vision(spec, path, images, instruction, progress))
+                _release_local_model_if_needed(spec, request, progress)
+                return result
+            raise LocalProviderError(f"Unsupported local Prompt Enhancer backend: {spec.backend}")
+        except Exception:
+            _cleanup_local_model_after_exception(spec)
+            raise
 
 
 def _release_local_model_if_needed(
@@ -612,6 +616,25 @@ def _release_local_model_if_needed(
         unload_local_model(spec.alias)
     if progress is not None:
         progress.phase_done("release")
+
+
+def _cleanup_local_model_after_exception(spec: LocalModelSpec) -> None:
+    try:
+        if spec.alias in _LOADED_MODELS:
+            unload_local_model(spec.alias)
+    except Exception:
+        pass
+    try:
+        local_vram_preflight()
+    except Exception:
+        pass
+    gc.collect()
+    try:
+        import torch
+
+        _clear_torch_cuda_cache(torch)
+    except Exception:
+        pass
 
 
 def _load_qwen_model(spec: LocalModelSpec, path: Path) -> dict[str, Any]:
