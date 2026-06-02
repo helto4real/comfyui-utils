@@ -63,6 +63,14 @@ export function configurePrivacyShowAnyTextarea(textarea) {
     return textarea;
 }
 
+export function privacyShowAnyTextareaState(text, revealed, emptyPlaceholder = "Run the node to display text.") {
+    const plain = String(text ?? "");
+    return {
+        value: revealed ? plain : "",
+        placeholder: plain ? "" : emptyPlaceholder,
+    };
+}
+
 export function getPrivacyShowAnyWidgetStartY(node, domWidget, fallback = 92) {
     if (Number.isFinite(domWidget?.last_y)) return domWidget.last_y;
     if (Number.isFinite(domWidget?.y)) return domWidget.y;

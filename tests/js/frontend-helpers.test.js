@@ -93,6 +93,7 @@ import {
     getVuePrivacyShowAnyVisualHeight,
     hidePrivacyShowAnyStateWidget,
     isEncryptedText as isPrivacyEncryptedText,
+    privacyShowAnyTextareaState,
     serializedEncryptedWidgetValue,
 } from "../../web/privacy_show_any_helpers.js";
 
@@ -1309,6 +1310,21 @@ test("privacy show any textarea defaults to read-only multiline wrapping", () =>
     assert.equal(textarea.readOnly, true);
     assert.equal(textarea.wrap, "soft");
     assert.equal(textarea.spellcheck, false);
+});
+
+test("privacy show any textarea reveals only when panel hover state is active", () => {
+    assert.deepEqual(
+        privacyShowAnyTextareaState("secret text", false),
+        { value: "", placeholder: "" },
+    );
+    assert.deepEqual(
+        privacyShowAnyTextareaState("secret text", true),
+        { value: "secret text", placeholder: "" },
+    );
+    assert.deepEqual(
+        privacyShowAnyTextareaState("", true),
+        { value: "", placeholder: "Run the node to display text." },
+    );
 });
 
 test("privacy show any sizing fills remaining node body with a floor", () => {

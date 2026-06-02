@@ -19,6 +19,7 @@ import {
     getVuePrivacyShowAnyVisualHeight,
     getWidget,
     hidePrivacyShowAnyStateWidget,
+    privacyShowAnyTextareaState,
     serializedEncryptedWidgetValue,
 } from "./privacy_show_any_helpers.js";
 
@@ -527,14 +528,19 @@ function createDisplayElement(node) {
         textRevealed: false,
     };
 
-    textarea.addEventListener("pointerenter", () => {
+    const revealText = () => {
         display.textRevealed = true;
         syncDisplayTextVisibility(display);
-    });
-    textarea.addEventListener("pointerleave", () => {
+    };
+    const hideText = () => {
         display.textRevealed = false;
         syncDisplayTextVisibility(display);
-    });
+    };
+
+    frame.addEventListener("pointerenter", revealText);
+    frame.addEventListener("pointerleave", hideText);
+    panel.addEventListener("pointerenter", revealText);
+    panel.addEventListener("pointerleave", hideText);
 
     syncDisplayTextVisibility(display);
     return display;
@@ -596,9 +602,9 @@ function detachStateWidgetFromInteractiveList(node, stateWidget) {
 function syncDisplayTextVisibility(display) {
     if (!display?.textarea) return;
 
-    const text = String(display.node?.[DISPLAY_TEXT_KEY] ?? "");
-    display.textarea.value = display.textRevealed ? text : "";
-    display.textarea.placeholder = text ? "" : "Run the node to display text.";
+    const state = privacyShowAnyTextareaState(display.node?.[DISPLAY_TEXT_KEY], display.textRevealed);
+    display.textarea.value = state.value;
+    display.textarea.placeholder = state.placeholder;
 }
 
 function setDisplayText(node, text, persist = true) {
