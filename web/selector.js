@@ -18,6 +18,7 @@ import {
     initializeSelectorProperties,
     isSameOrChildPath,
     normalizeFilterPath,
+    normalizeFolderPath,
     SORT_OPTIONS,
     sortImagesInPlace,
 } from "./state.js";
@@ -1157,7 +1158,7 @@ app.registerExtension({
             
             addBtn.onclick = (e) => {
                 if (e) containEvent(e);
-                const path = addInput.value.trim();
+                const path = normalizeFolderPath(addInput.value);
                 if (path && !foldersList.includes(path)) {
                     foldersList.push(path);
                     addInput.value = "";

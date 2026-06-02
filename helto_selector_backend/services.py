@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from .crypto import decrypt_selection, encrypt_selection
@@ -14,6 +15,25 @@ def _string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [item for item in value if isinstance(item, str) and item]
+
+
+def _normalize_folder_path(path: str) -> str:
+    normalized = os.path.normpath(path.strip())
+    return normalized if Path(normalized).parts else ""
+
+
+def _folder_list(value: Any) -> list[str]:
+    folders: list[str] = []
+    seen_paths: set[str] = set()
+
+    for item in _string_list(value):
+        normalized = _normalize_folder_path(item)
+        if not normalized or normalized in seen_paths:
+            continue
+        folders.append(normalized)
+        seen_paths.add(normalized)
+
+    return folders
 
 
 def _truthy(value: Any) -> bool:
@@ -29,7 +49,7 @@ class ScanFoldersPayload:
     @classmethod
     def from_request_data(cls, data: Mapping[str, Any]) -> "ScanFoldersPayload":
         return cls(
-            folders=_string_list(data.get("folders", [])),
+            folders=_folder_list(data.get("folders", [])),
             recursive=_truthy(data.get("recursive", False)),
             previous_paths=_string_list(data.get("previous_paths") or []),
         )
@@ -45,7 +65,7 @@ class DeleteImagesPayload:
     def from_request_data(cls, data: Mapping[str, Any]) -> "DeleteImagesPayload":
         return cls(
             paths=_string_list(data.get("paths") or []),
-            folders=_string_list(data.get("folders") or []),
+            folders=_folder_list(data.get("folders") or []),
             recursive=_truthy(data.get("recursive", False)),
         )
 

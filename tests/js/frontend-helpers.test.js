@@ -19,7 +19,9 @@ import {
     initializeSelectorProperties,
     isSameOrChildPath,
     normalizeFilterPath,
+    normalizeFolderPath,
     sortImagesInPlace,
+    uniqueFolderPaths,
 } from "../../web/state.js";
 import {
     previewKeysForNode,
@@ -226,7 +228,15 @@ test("selector property defaults and folder labels match existing behavior", () 
     assert.equal(properties.privacyMode, true);
     assert.equal(properties.resizeMode, "zoom to fit");
 
-    const savedProperties = initializeSelectorProperties({ privacyMode: false });
+    const savedProperties = initializeSelectorProperties({
+        folders: ["/root/a/", "/root/a"],
+        folderFilter: "/root/a/",
+        subfolderFilter: "/root/a/child/",
+        privacyMode: false,
+    });
+    assert.deepEqual(savedProperties.folders, ["/root/a"]);
+    assert.equal(savedProperties.folderFilter, "/root/a");
+    assert.equal(savedProperties.subfolderFilter, "/root/a/child");
     assert.equal(savedProperties.privacyMode, false);
 
     const allFolders = [
@@ -246,6 +256,21 @@ test("path filter helpers normalize slash style and child matching", () => {
     assert.equal(normalizeFilterPath("C:\\images\\nested\\"), "C:/images/nested");
     assert.equal(isSameOrChildPath("/root/a/child/file.png", "/root/a"), true);
     assert.equal(isSameOrChildPath("/root/ab/file.png", "/root/a"), false);
+});
+
+test("folder path helpers normalize and dedupe folder entries", () => {
+    assert.equal(normalizeFolderPath("/home/thhel/comfy/input/"), "/home/thhel/comfy/input");
+    assert.equal(normalizeFolderPath("/home/thhel/comfy//input/./"), "/home/thhel/comfy/input");
+    assert.equal(normalizeFolderPath("C:\\images\\nested\\"), "C:/images/nested");
+    assert.deepEqual(
+        uniqueFolderPaths([
+            "/home/thhel/comfy/input/",
+            "/home/thhel/comfy/input",
+            "/home/thhel/comfy//output",
+            "",
+        ]),
+        ["/home/thhel/comfy/input", "/home/thhel/comfy/output"],
+    );
 });
 
 test("sortImagesInPlace preserves current sort modes", () => {

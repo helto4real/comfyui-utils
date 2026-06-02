@@ -362,6 +362,27 @@ class ServiceLayerTests(unittest.TestCase):
         self.assertEqual(delete_payload.folders, [])
         self.assertTrue(delete_payload.recursive)
 
+    def test_request_payload_helpers_normalize_and_dedupe_folder_paths(self):
+        scan_payload = ScanFoldersPayload.from_request_data({
+            "folders": [
+                "/home/thhel/comfy/input/",
+                "/home/thhel/comfy/input",
+                "/home/thhel/comfy//output/./",
+            ],
+            "recursive": False,
+        })
+        delete_payload = DeleteImagesPayload.from_request_data({
+            "paths": [],
+            "folders": [
+                "/home/thhel/comfy/input/",
+                "/home/thhel/comfy/input",
+            ],
+            "recursive": False,
+        })
+
+        self.assertEqual(scan_payload.folders, ["/home/thhel/comfy/input", "/home/thhel/comfy/output"])
+        self.assertEqual(delete_payload.folders, ["/home/thhel/comfy/input"])
+
     def test_encrypt_decrypt_and_clear_cache_payload_helpers(self):
         encrypted = encrypt_payload({"data": json.dumps(["/tmp/a.png"])})["encrypted"]
         decrypted = decrypt_payload({"encrypted": encrypted})["data"]

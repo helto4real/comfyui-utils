@@ -17,9 +17,16 @@ export function initializeSelectorProperties(properties) {
     for (const [key, value] of Object.entries(DEFAULT_NODE_PROPERTIES)) {
         if (key === "folders") {
             if (!properties.folders || !Array.isArray(properties.folders)) properties.folders = [];
+            properties.folders = uniqueFolderPaths(properties.folders);
         } else if (properties[key] === undefined) {
             properties[key] = value;
         }
+    }
+    if (properties.folderFilter && properties.folderFilter !== "all") {
+        properties.folderFilter = normalizeFolderPath(properties.folderFilter);
+    }
+    if (properties.subfolderFilter && properties.subfolderFilter !== "all") {
+        properties.subfolderFilter = normalizeFolderPath(properties.subfolderFilter);
     }
     return properties;
 }
@@ -71,6 +78,50 @@ export function getSubfolderOptions(allFolders, selectedRoot) {
 
 export function normalizeFilterPath(path) {
     return (path || "").replace(/\\/g, "/").replace(/\/+$/, "");
+}
+
+export function normalizeFolderPath(path) {
+    const rawPath = typeof path === "string" ? path.trim().replace(/\\/g, "/") : "";
+    if (!rawPath) return "";
+
+    let prefix = "";
+    let remainingPath = rawPath;
+    const driveMatch = rawPath.match(/^[A-Za-z]:(?:\/|$)/);
+
+    if (driveMatch) {
+        prefix = `${rawPath.slice(0, 2)}/`;
+        remainingPath = rawPath.slice(driveMatch[0].length);
+    } else if (rawPath.startsWith("/")) {
+        prefix = "/";
+        remainingPath = rawPath.replace(/^\/+/, "");
+    }
+
+    const parts = [];
+    for (const part of remainingPath.split("/")) {
+        if (!part || part === ".") continue;
+        if (part === ".." && parts.length > 0 && parts.at(-1) !== "..") {
+            parts.pop();
+            continue;
+        }
+        if (part === ".." && prefix) continue;
+        parts.push(part);
+    }
+
+    return `${prefix}${parts.join("/")}`.replace(/\/+$/, "") || prefix;
+}
+
+export function uniqueFolderPaths(paths) {
+    const folders = [];
+    const seenPaths = new Set();
+
+    for (const path of Array.isArray(paths) ? paths : []) {
+        const normalized = normalizeFolderPath(path);
+        if (!normalized || seenPaths.has(normalized)) continue;
+        folders.push(normalized);
+        seenPaths.add(normalized);
+    }
+
+    return folders;
 }
 
 export function isSameOrChildPath(path, parentPath) {
