@@ -195,6 +195,37 @@ export function writePromptEnhancerVisionModelConfig(node, config) {
     return { provider, modelId, modelBackend: backend };
 }
 
+export function syncPromptEnhancerSelectorsFromSerializedState(
+    node,
+    providerSelector,
+    modelSelector,
+    visionProviderSelector,
+    visionModelSelector,
+) {
+    const config = readPromptEnhancerModelConfig(node);
+    syncSelectorValue(providerSelector, config.provider);
+    syncSelectorValue(modelSelector, config.modelId);
+
+    const visionConfig = readPromptEnhancerVisionModelConfig(node);
+    syncSelectorValue(visionProviderSelector, visionConfig.provider);
+    syncSelectorValue(visionModelSelector, visionConfig.modelId);
+    return { model: config, vision: visionConfig };
+}
+
+function syncSelectorValue(selector, value) {
+    const nextValue = String(value || "").trim();
+    if (!selector || !nextValue) {
+        return;
+    }
+    selector.options ??= {};
+    const values = Array.isArray(selector.options.values) ? selector.options.values.map(String) : [];
+    if (!values.includes(nextValue)) {
+        values.unshift(nextValue);
+    }
+    selector.options.values = values;
+    selector.value = nextValue;
+}
+
 export function readProviderModelHistory(node) {
     const raw = String(getWidget(node, "provider_model_history")?.value || "{}");
     let parsed = {};

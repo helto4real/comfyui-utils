@@ -38,6 +38,7 @@ import {
     setNewFixedPromptSeed,
     shouldRefreshPromptVariables,
     shouldHidePromptWidget,
+    syncPromptEnhancerSelectorsFromSerializedState,
     updatePromptVariable,
     updateProviderModelOptions,
     updateVisionProviderModelOptions,
@@ -60,6 +61,7 @@ const MODEL_SELECTOR = "__heltoPromptEnhancerModelSelector";
 const VISION_PROVIDER_SELECTOR = "__heltoPromptEnhancerVisionProviderSelector";
 const VISION_MODEL_SELECTOR = "__heltoPromptEnhancerVisionModelSelector";
 const PROVIDER_CATALOG = "__heltoPromptEnhancerProviderCatalog";
+const PROVIDER_REFRESH_SEQUENCE = "__heltoPromptEnhancerProviderRefreshSequence";
 const PROMPT_HOVER_STATE = "__heltoPromptEnhancerPromptHover";
 const PROMPT_DOM_ELEMENTS = "__heltoPromptEnhancerPromptDomElements";
 const PROMPT_EDITOR_STATE = "__heltoPromptEnhancerPromptEditor";
@@ -690,19 +692,34 @@ async function fetchProviderModels(node) {
 }
 
 async function refreshModels(node) {
+    const sequence = (Number(node[PROVIDER_REFRESH_SEQUENCE]) || 0) + 1;
+    node[PROVIDER_REFRESH_SEQUENCE] = sequence;
     const button = node[MODELS_BUTTON];
-    const previousName = button?.name;
+    const previousName = button?.name === "refreshing models" ? "refresh models" : button?.name;
     if (button) button.name = "refreshing models";
     setCanvasDirty(node);
     try {
         const catalog = await fetchProviderModels(node);
+        if (node[PROVIDER_REFRESH_SEQUENCE] !== sequence) {
+            return;
+        }
         node[PROVIDER_CATALOG] = catalog;
+        syncPromptEnhancerSelectorsFromSerializedState(
+            node,
+            ensureProviderSelector(node),
+            ensureModelSelector(node),
+            ensureVisionProviderSelector(node),
+            ensureVisionModelSelector(node),
+        );
         updateProviderModelOptions(ensureProviderSelector(node), ensureModelSelector(node), node, catalog);
         updateVisionProviderModelOptions(ensureVisionProviderSelector(node), ensureVisionModelSelector(node), node, catalog);
         if (catalog.ollama_error) {
             console.warn("Prompt enhancer Ollama model refresh failed:", catalog.ollama_error);
         }
     } catch (err) {
+        if (node[PROVIDER_REFRESH_SEQUENCE] !== sequence) {
+            return;
+        }
         console.warn("Prompt enhancer model refresh failed:", err);
         app.extensionManager?.toast?.add?.({
             severity: "error",
@@ -711,8 +728,10 @@ async function refreshModels(node) {
             life: 5000,
         });
     } finally {
-        if (button) button.name = previousName || "refresh models";
-        setCanvasDirty(node);
+        if (node[PROVIDER_REFRESH_SEQUENCE] === sequence) {
+            if (button) button.name = previousName || "refresh models";
+            setCanvasDirty(node);
+        }
     }
 }
 
@@ -1330,10 +1349,18 @@ function ensurePromptEnhancerUi(node) {
     ensureModelSelector(node);
     ensureVisionProviderSelector(node);
     ensureVisionModelSelector(node);
+    syncPromptEnhancerSelectorsFromSerializedState(
+        node,
+        ensureProviderSelector(node),
+        ensureModelSelector(node),
+        ensureVisionProviderSelector(node),
+        ensureVisionModelSelector(node),
+    );
     node[PROMPT_HOVER_STATE] ??= false;
     applyPromptDomHideMode(node);
 
     if (node[BUTTONS_ADDED]) {
+        refreshModels(node);
         return;
     }
     node[BUTTONS_ADDED] = true;

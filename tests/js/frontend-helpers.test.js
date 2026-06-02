@@ -67,6 +67,7 @@ import {
     seedProviderModelHistory,
     shouldRefreshPromptVariables,
     shouldHidePromptWidget,
+    syncPromptEnhancerSelectorsFromSerializedState,
     promptAutocompleteShortcutAction,
     promptAutocompleteShortcutGuardAction,
     updatePromptVariable,
@@ -647,6 +648,69 @@ test("prompt enhancer provider switch restores remembered model and falls back w
     assert.equal(updateProviderModelOptions(providerSelector, modelSelector, node, catalog), true);
     assert.equal(modelSelector.value, "qwen3_vl_4b_fast");
     assert.deepEqual(readProviderModelHistory(node).local_transformers_vlm, {
+        modelId: "qwen3_vl_4b_fast",
+        modelBackend: "qwen",
+    });
+});
+
+test("prompt enhancer provider reload sync keeps serialized provider over stale visible selector", () => {
+    const node = {
+        widgets: [
+            { name: "provider", value: "local_transformers_vlm" },
+            { name: "model_id", value: "qwen3_vl_8b_quality" },
+            { name: "model_backend", value: "qwen" },
+            {
+                name: "provider_model_history",
+                value: JSON.stringify({
+                    ollama: { modelId: "llava:latest", modelBackend: "ollama" },
+                    local_transformers_vlm: { modelId: "qwen3_vl_8b_quality", modelBackend: "qwen" },
+                }),
+            },
+            { name: "vision_provider", value: "local_transformers_vlm" },
+            { name: "vision_model_id", value: "qwen3_vl_4b_fast" },
+            { name: "vision_model_backend", value: "qwen" },
+            { name: "model", value: "qwen3_vl_8b_quality" },
+        ],
+    };
+    const catalog = normalizeProviderCatalog({
+        providers: [
+            { id: "ollama", label: "Ollama" },
+            { id: "local_transformers_vlm", label: "Local Transformers VLM" },
+        ],
+        models: [
+            { provider: "ollama", model_id: "llava:latest", backend: "ollama", supports_images: true },
+            { provider: "local_transformers_vlm", model_id: "qwen3_vl_4b_fast", backend: "qwen", supports_images: true },
+            { provider: "local_transformers_vlm", model_id: "qwen3_vl_8b_quality", backend: "qwen", supports_images: true },
+        ],
+    });
+    const providerSelector = { value: "ollama", options: { values: ["ollama"] } };
+    const modelSelector = { value: "llava:latest", options: { values: ["llava:latest"] } };
+    const visionProviderSelector = { value: "ollama", options: { values: ["ollama"] } };
+    const visionModelSelector = { value: "llava:latest", options: { values: ["llava:latest"] } };
+
+    const synced = syncPromptEnhancerSelectorsFromSerializedState(
+        node,
+        providerSelector,
+        modelSelector,
+        visionProviderSelector,
+        visionModelSelector,
+    );
+
+    assert.equal(synced.model.provider, "local_transformers_vlm");
+    assert.equal(providerSelector.value, "local_transformers_vlm");
+    assert.equal(modelSelector.value, "qwen3_vl_8b_quality");
+    assert.equal(visionProviderSelector.value, "local_transformers_vlm");
+    assert.equal(visionModelSelector.value, "qwen3_vl_4b_fast");
+    assert.equal(updateProviderModelOptions(providerSelector, modelSelector, node, catalog), true);
+    assert.equal(updateVisionProviderModelOptions(visionProviderSelector, visionModelSelector, node, catalog), true);
+    assert.deepEqual(readPromptEnhancerModelConfig(node), {
+        provider: "local_transformers_vlm",
+        modelId: "qwen3_vl_8b_quality",
+        modelBackend: "qwen",
+        legacyModel: "qwen3_vl_8b_quality",
+    });
+    assert.deepEqual(readPromptEnhancerVisionModelConfig(node), {
+        provider: "local_transformers_vlm",
         modelId: "qwen3_vl_4b_fast",
         modelBackend: "qwen",
     });
