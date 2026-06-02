@@ -82,10 +82,14 @@ import {
 } from "../../web/prompt_enhancer_helpers.js";
 import {
     PRIVACY_SHOW_ANY_STATE_WIDGET,
+    PRIVACY_SHOW_ANY_STATE_PROPERTY,
+    collectPrivacyShowAnyNodes,
     configurePrivacyShowAnyTextarea,
     decryptTextState,
+    encryptedPrivacyShowAnyState,
     encryptTextState,
     extractPrivacyShowAnyText,
+    flushPrivacyShowAnyEncryption,
     getPrivacyShowAnyTextAreaHeight,
     getPrivacyShowAnyWidgetHeight,
     getPrivacyShowAnyWidgetStartY,
@@ -94,7 +98,10 @@ import {
     hidePrivacyShowAnyStateWidget,
     isEncryptedText as isPrivacyEncryptedText,
     privacyShowAnyTextareaState,
+    sanitizePrivacyShowAnySerializedProperties,
+    serializedEncryptedPropertyValue,
     serializedEncryptedWidgetValue,
+    setEncryptedPrivacyShowAnyState,
 } from "../../web/privacy_show_any_helpers.js";
 
 function appWithSettings(settings) {
@@ -1300,6 +1307,100 @@ test("privacy show any serializes only encrypted text state", async () => {
     assert.equal(serializedEncryptedWidgetValue({ value: encrypted }), encrypted);
     assert.equal(serializedEncryptedWidgetValue({ value: "private" }), "");
     assert.equal(await encryptTextState("private", { encrypt: async () => ({ encrypted: "private" }) }), "");
+});
+
+test("privacy show any writes encrypted state to widget and property only", () => {
+    const node = { properties: {} };
+    const widget = { name: PRIVACY_SHOW_ANY_STATE_WIDGET, value: "" };
+
+    assert.equal(setEncryptedPrivacyShowAnyState(node, widget, "__HELTO_ENC__:abc"), "__HELTO_ENC__:abc");
+    assert.equal(widget.value, "__HELTO_ENC__:abc");
+    assert.equal(node.properties[PRIVACY_SHOW_ANY_STATE_PROPERTY], "__HELTO_ENC__:abc");
+    assert.equal(serializedEncryptedPropertyValue(node), "__HELTO_ENC__:abc");
+
+    assert.equal(setEncryptedPrivacyShowAnyState(node, widget, "plain text"), "");
+    assert.equal(widget.value, "");
+    assert.equal(PRIVACY_SHOW_ANY_STATE_PROPERTY in node.properties, false);
+});
+
+test("privacy show any restore state prefers encrypted widget then encrypted property", () => {
+    const node = {
+        properties: { [PRIVACY_SHOW_ANY_STATE_PROPERTY]: "__HELTO_ENC__:property" },
+        widgets: [{ name: PRIVACY_SHOW_ANY_STATE_WIDGET, value: "__HELTO_ENC__:widget" }],
+    };
+
+    assert.equal(encryptedPrivacyShowAnyState(node), "__HELTO_ENC__:widget");
+    node.widgets[0].value = "";
+    assert.equal(encryptedPrivacyShowAnyState(node), "__HELTO_ENC__:property");
+    node.properties[PRIVACY_SHOW_ANY_STATE_PROPERTY] = "plain text";
+    assert.equal(encryptedPrivacyShowAnyState(node), "");
+});
+
+test("privacy show any serialized properties keep only encrypted state", () => {
+    const info = {
+        properties: { [PRIVACY_SHOW_ANY_STATE_PROPERTY]: "plain text", other: "kept" },
+    };
+
+    assert.equal(sanitizePrivacyShowAnySerializedProperties(info, "__HELTO_ENC__:abc"), "__HELTO_ENC__:abc");
+    assert.deepEqual(info.properties, {
+        [PRIVACY_SHOW_ANY_STATE_PROPERTY]: "__HELTO_ENC__:abc",
+        other: "kept",
+    });
+
+    assert.equal(sanitizePrivacyShowAnySerializedProperties(info, "plain text"), "");
+    assert.deepEqual(info.properties, { other: "kept" });
+});
+
+test("privacy show any collects nodes from graph, inner nodes, and subgraphs", () => {
+    const rootPrivacyNode = { comfyClass: "HeltoPrivacyShowAny" };
+    const innerPrivacyNode = { type: "HeltoPrivacyShowAny" };
+    const subgraphPrivacyNode = { comfyClass: "HeltoPrivacyShowAny" };
+    const containerNode = {
+        comfyClass: "Container",
+        getInnerNodes() {
+            return [innerPrivacyNode, rootPrivacyNode];
+        },
+    };
+    const graph = {
+        computeExecutionOrder() {
+            return [rootPrivacyNode, containerNode, { comfyClass: "Other" }];
+        },
+        subgraphs: new Map([
+            ["subgraph", { _nodes: [subgraphPrivacyNode, innerPrivacyNode] }],
+        ]),
+    };
+
+    assert.deepEqual(
+        collectPrivacyShowAnyNodes(graph),
+        [rootPrivacyNode, innerPrivacyNode, subgraphPrivacyNode],
+    );
+});
+
+test("privacy show any waits for pending encryption and fails closed on rejection", async () => {
+    const pendingKey = "__pendingEncryption";
+    const events = [];
+    const encryptedNode = {
+        comfyClass: "HeltoPrivacyShowAny",
+        [pendingKey]: new Promise((resolve) => setTimeout(() => {
+            events.push("encrypted");
+            resolve("__HELTO_ENC__:ok");
+        }, 0)),
+    };
+    const failedNode = {
+        comfyClass: "HeltoPrivacyShowAny",
+        [pendingKey]: Promise.reject(new Error("offline")),
+        stateWidget: { value: "plain text" },
+    };
+    const graph = { _nodes: [encryptedNode, failedNode] };
+
+    const nodes = await flushPrivacyShowAnyEncryption(graph, pendingKey, (node) => {
+        node.stateWidget.value = "";
+        events.push("failed");
+    });
+
+    assert.deepEqual(nodes, [encryptedNode, failedNode]);
+    assert.deepEqual(events.sort(), ["encrypted", "failed"]);
+    assert.equal(failedNode.stateWidget.value, "");
 });
 
 test("privacy show any textarea defaults to read-only multiline wrapping", () => {

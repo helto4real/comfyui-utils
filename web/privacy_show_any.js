@@ -11,6 +11,7 @@ import {
     decryptTextState,
     encryptTextState,
     extractPrivacyShowAnyText,
+    flushPrivacyShowAnyEncryption,
     configurePrivacyShowAnyTextarea,
     getPrivacyShowAnyTextAreaHeight,
     getPrivacyShowAnyWidgetHeight,
@@ -19,7 +20,10 @@ import {
     getVuePrivacyShowAnyVisualHeight,
     getWidget,
     hidePrivacyShowAnyStateWidget,
+    encryptedPrivacyShowAnyState,
     privacyShowAnyTextareaState,
+    sanitizePrivacyShowAnySerializedProperties,
+    setEncryptedPrivacyShowAnyState,
     serializedEncryptedWidgetValue,
 } from "./privacy_show_any_helpers.js";
 
@@ -33,8 +37,10 @@ const CANVAS_INTERACTION_PATCHED_KEY = "__heltoPrivacyShowAnyCanvasInteractionPa
 const DOM_LAYOUT_STATE_KEY = "__heltoPrivacyShowAnyDomLayoutState";
 const STATE_WIDGET_KEY = "__heltoPrivacyShowAnyStateWidget";
 const SERIALIZATION_PATCHED_KEY = "__heltoPrivacyShowAnySerializationPatched";
+const LIFECYCLE_FLUSH_PATCHED_KEY = "__heltoPrivacyShowAnyLifecycleFlushPatched";
 
 ensureStylesheet();
+installPrivacyShowAnyLifecycleFlush();
 
 function ensureStylesheet() {
     if (document.getElementById("helto-utils-styles")) return;
@@ -49,6 +55,25 @@ function setCanvasDirty(node) {
     node?.setDirtyCanvas?.(true, true);
     node?.graph?.setDirtyCanvas?.(true, true);
     app.canvas?.setDirty?.(true, true);
+}
+
+function captureWorkflowState(node) {
+    node?.graph?.change?.();
+    const trackers = [
+        app.extensionManager?.workflow?.activeWorkflow?.changeTracker,
+        app.workflowManager?.activeWorkflow?.changeTracker,
+    ];
+    for (const tracker of trackers) {
+        try {
+            if (typeof tracker?.captureCanvasState === "function") {
+                tracker.captureCanvasState();
+            } else {
+                tracker?.checkState?.();
+            }
+        } catch (_err) {
+            // Older ComfyUI builds can expose different workflow manager surfaces.
+        }
+    }
 }
 
 function classifyRendererName(mode) {
@@ -624,19 +649,58 @@ function setDisplayText(node, text, persist = true) {
 
 async function persistEncryptedState(node, text) {
     const stateWidget = getStateWidget(node);
-    if (!stateWidget) return "";
+    const plain = String(text ?? "");
+    if (!plain) {
+        setEncryptedPrivacyShowAnyState(node, stateWidget, "");
+        captureWorkflowState(node);
+        return "";
+    }
     try {
-        stateWidget.value = await encryptTextState(text, selectorApi);
+        const encrypted = await encryptTextState(plain, selectorApi);
+        const safe = setEncryptedPrivacyShowAnyState(node, stateWidget, encrypted);
+        captureWorkflowState(node);
+        return safe;
     } catch (err) {
         console.error("Privacy Show Any encryption failed:", err);
-        stateWidget.value = "";
+        setEncryptedPrivacyShowAnyState(node, stateWidget, "");
+        captureWorkflowState(node);
     }
-    return stateWidget.value || "";
+    return "";
+}
+
+async function flushPrivacyShowAnyState(graph = app.rootGraph) {
+    await flushPrivacyShowAnyEncryption(graph, ENCRYPT_PROMISE_KEY, (node, err) => {
+        console.error("Privacy Show Any encryption flush failed:", err);
+        setEncryptedPrivacyShowAnyState(node, getStateWidget(node), "");
+        captureWorkflowState(node);
+    });
+}
+
+function installPrivacyShowAnyLifecycleFlush() {
+    if (app[LIFECYCLE_FLUSH_PATCHED_KEY]) return;
+
+    const originalLoadGraphData = app.loadGraphData;
+    if (typeof originalLoadGraphData === "function") {
+        app.loadGraphData = async function (...args) {
+            await flushPrivacyShowAnyState(this.rootGraph ?? app.rootGraph);
+            return originalLoadGraphData.apply(this, args);
+        };
+    }
+
+    const originalGraphToPrompt = app.graphToPrompt;
+    if (typeof originalGraphToPrompt === "function") {
+        app.graphToPrompt = async function (graph = this.rootGraph, ...args) {
+            await flushPrivacyShowAnyState(graph ?? this.rootGraph ?? app.rootGraph);
+            return originalGraphToPrompt.apply(this, [graph, ...args]);
+        };
+    }
+
+    app[LIFECYCLE_FLUSH_PATCHED_KEY] = true;
 }
 
 async function restoreEncryptedState(node) {
     const stateWidget = getStateWidget(node);
-    const encrypted = stateWidget?.value || "";
+    const encrypted = encryptedPrivacyShowAnyState(node, stateWidget);
     if (!encrypted) {
         setDisplayText(node, "", false);
         return;
@@ -677,9 +741,11 @@ function installPrivacyShowAnySerialization(node) {
     node.onSerialize = function (info) {
         const result = originalOnSerialize?.apply(this, arguments);
         const stateWidget = getStateWidget(this);
+        const encrypted = encryptedPrivacyShowAnyState(this, stateWidget);
         if (info && stateWidget) {
-            info.widgets_values = [serializedEncryptedWidgetValue(stateWidget)];
+            info.widgets_values = [serializedEncryptedWidgetValue({ value: encrypted })];
         }
+        sanitizePrivacyShowAnySerializedProperties(info, encrypted);
         return result;
     };
 
