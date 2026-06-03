@@ -5,6 +5,10 @@ import {
     runWithPreviewPriming,
     storeOutputForPreviewKeys,
 } from "./hide_mode_helpers.js";
+import {
+    SAVE_IMAGE_RELEASE_ROUTE,
+    buildPauseResumePrompt,
+} from "./pause_control_helpers.js";
 
 const NODE_CLASSES = new Map([
     ["HeltoSaveImageAdvanced", "Save Image Advanced"],
@@ -20,6 +24,8 @@ const HIDDEN_IMAGES = "__heltoHideModeHiddenImages";
 const HIDDEN_NODE_IMAGES = "__heltoHideModeHiddenNodeImages";
 const HIDDEN_IMAGE_INDEX = "__heltoHideModeHiddenImageIndex";
 const HIDE_MODE_WIDGET = "__heltoHideModeWidget";
+const PAUSE_CONTROL_WIDGET = "__heltoPauseControlWidget";
+const PAUSE_CONTROL_STATE = "__heltoPauseControlState";
 const PREVIEW_HIDDEN_STATE = "__heltoHideModePreviewHiddenState";
 const PREVIEW_WIDGET_STYLES = "__heltoHideModePreviewWidgetStyles";
 const PREVIEW_MEDIA_STYLES = "__heltoHideModePreviewMediaStyles";
@@ -303,6 +309,148 @@ function ensureHideModeWidget(node) {
     widget.options.serialize = false;
     node[HIDE_MODE_WIDGET] = widget;
     node.setSize?.(node.computeSize?.() ?? node.size);
+}
+
+function pauseControlFromOutput(output) {
+    const controls = output?.helto_pause_control;
+    return Array.isArray(controls) && controls.length > 0 ? controls[0] : null;
+}
+
+function pauseControlState(node) {
+    node[PAUSE_CONTROL_STATE] ??= {
+        hasMedia: false,
+        paused: false,
+        released: false,
+        revision: null,
+        busy: false,
+    };
+    return node[PAUSE_CONTROL_STATE];
+}
+
+function updatePauseControlState(node, control = {}) {
+    const state = pauseControlState(node);
+    if ("has_media" in control) state.hasMedia = Boolean(control.has_media);
+    if ("paused" in control) state.paused = Boolean(control.paused);
+    if ("released" in control) state.released = Boolean(control.released);
+    if ("revision" in control) state.revision = control.revision ?? null;
+    updatePauseControlWidget(node);
+}
+
+function pauseControlLabel(state) {
+    if (state.busy) {
+        return "queueing";
+    }
+    if (state.paused && !state.released) {
+        return "continue";
+    }
+    return "run again";
+}
+
+function setPauseControlBusy(node, busy) {
+    pauseControlState(node).busy = Boolean(busy);
+    updatePauseControlWidget(node);
+}
+
+function updatePauseControlWidget(node) {
+    const widget = node[PAUSE_CONTROL_WIDGET];
+    if (!widget) {
+        return;
+    }
+
+    const state = pauseControlState(node);
+    widget.name = pauseControlLabel(state);
+    widget.disabled = !state.hasMedia || state.busy;
+    widget.options ??= {};
+    widget.options.disabled = widget.disabled;
+    setCanvasDirty(node);
+}
+
+function moveWidgetToTop(node, widget) {
+    const widgets = node.widgets;
+    if (!Array.isArray(widgets) || !widget) {
+        return;
+    }
+
+    const currentIndex = widgets.indexOf(widget);
+    if (currentIndex <= 0) {
+        return;
+    }
+
+    widgets.splice(currentIndex, 1);
+    widgets.unshift(widget);
+}
+
+function ensurePauseControlWidget(node) {
+    if (node[PAUSE_CONTROL_WIDGET]) {
+        updatePauseControlWidget(node);
+        return;
+    }
+
+    const existingWidget = node.widgets?.find((widget) => widget.name === "continue" || widget.name === "run again");
+    const widget = existingWidget ?? node.addWidget?.("button", "continue", null, () => handlePauseControlButton(node));
+    if (!widget) {
+        return;
+    }
+
+    widget.callback = () => handlePauseControlButton(node);
+    widget.serialize = false;
+    widget.options ??= {};
+    widget.options.serialize = false;
+    node[PAUSE_CONTROL_WIDGET] = widget;
+    moveWidgetToTop(node, widget);
+    updatePauseControlWidget(node);
+    node.setSize?.(node.computeSize?.() ?? node.size);
+}
+
+async function postPauseRelease(node) {
+    const state = pauseControlState(node);
+    const body = JSON.stringify({
+        node_id: String(node.id),
+        revision: state.revision,
+    });
+    const response = await (api.fetchApi?.(SAVE_IMAGE_RELEASE_ROUTE, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+    }) ?? fetch(SAVE_IMAGE_RELEASE_ROUTE, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+    }));
+    const payload = await response.json();
+    if (!response.ok || payload?.ok === false) {
+        throw new Error(payload?.error || "Failed to release stored image.");
+    }
+    return payload;
+}
+
+async function queuePauseResumePrompt(node) {
+    const prompt = await app.graphToPrompt();
+    const { prompt: nextPrompt, downstreamNodeIds } = buildPauseResumePrompt(prompt, node.id, "images");
+    if (downstreamNodeIds.length === 0) {
+        throw new Error("No downstream nodes are connected to the images output.");
+    }
+
+    await postPauseRelease(node);
+    return api.queuePrompt?.(-1, nextPrompt) ?? app.queuePrompt?.(0);
+}
+
+async function handlePauseControlButton(node) {
+    const state = pauseControlState(node);
+    if (!state.hasMedia || state.busy) {
+        return;
+    }
+
+    setPauseControlBusy(node, true);
+    try {
+        await queuePauseResumePrompt(node);
+        state.paused = false;
+        state.released = true;
+    } catch (error) {
+        console.error("[Helto pause control]", error);
+    } finally {
+        setPauseControlBusy(node, false);
+    }
 }
 
 function handleHideModeToggle(node, value) {
@@ -1549,6 +1697,7 @@ function scheduleRestoredVueOutputRefresh(node, options = {}) {
 function setupImageHideMode(node) {
     ensureHideModeProperty(node);
     ensureHideModeWidget(node);
+    ensurePauseControlWidget(node);
     node[HOVER_STATE] = false;
 
     const originalOnConfigure = node.onConfigure;
@@ -1556,6 +1705,7 @@ function setupImageHideMode(node) {
         const result = originalOnConfigure?.apply(this, args);
         ensureHideModeProperty(this);
         ensureHideModeWidget(this);
+        ensurePauseControlWidget(this);
         setHideModeValue(this, this.properties?.[PROPERTY_NAME]);
         syncImageHideOutputImages(this);
         return result;
@@ -1584,6 +1734,7 @@ function setupImageHideMode(node) {
     const originalOnExecuted = node.onExecuted;
     node.onExecuted = function (output, ...args) {
         const result = originalOnExecuted?.call(this, output, ...args);
+        updatePauseControlState(this, pauseControlFromOutput(output) ?? {});
         if (applyPrivateImagePreviews(this, output?.helto_private_images)) {
             syncImageHideOutputImages(this);
         }
@@ -1622,6 +1773,7 @@ function setupImageHideMode(node) {
     };
 
     syncImageHideOutputImages(node);
+    updatePauseControlWidget(node);
 }
 
 function setupVideoHideMode(node) {

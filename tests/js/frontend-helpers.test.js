@@ -29,6 +29,11 @@ import {
     storeOutputForPreviewKeys,
 } from "../../web/hide_mode_helpers.js";
 import {
+    buildPauseResumePrompt,
+    dependencyNodeIdsForPromptOutput,
+    downstreamNodeIdsFromOutput,
+} from "../../web/pause_control_helpers.js";
+import {
     acceptPromptAutocompleteSuggestion,
     addPromptVariable,
     autocompleteStateForPrompt,
@@ -354,6 +359,73 @@ test("hide mode helpers remove temporary hidden state when none existed", () => 
     });
 
     assert.equal(Object.hasOwn(node, "hideOutputImages"), false);
+});
+
+test("pause control finds downstream nodes from the save image output only", () => {
+    const prompt = {
+        workflow: {
+            nodes: [
+                { id: 1, outputs: [{ name: "images" }] },
+                { id: 2, outputs: [{ name: "images" }, { name: "mask" }] },
+                { id: 3, outputs: [{ name: "images" }] },
+                { id: 4, outputs: [] },
+                { id: 5, outputs: [] },
+            ],
+            links: [
+                [10, 1, 0, 2, 0, "IMAGE"],
+                [11, 2, 0, 3, 0, "IMAGE"],
+                [12, 3, 0, 4, 0, "IMAGE"],
+                [13, 2, 1, 5, 0, "MASK"],
+            ],
+        },
+    };
+
+    assert.deepEqual([...downstreamNodeIdsFromOutput(prompt, 2, "images")], [3, 4]);
+});
+
+test("pause control keeps downstream dependencies but removes save node input links", () => {
+    const prompt = {
+        output: {
+            "1": { class_type: "Generator", inputs: { seed: 123 } },
+            "2": { class_type: "HeltoSaveImageAdvanced", inputs: { images: [1, 0], folder: "/tmp/out" } },
+            "3": { class_type: "UpscaleModelLoader", inputs: { model_name: "model.pth" } },
+            "4": { class_type: "UpscaleImage", inputs: { image: [2, 0], upscale_model: [3, 0] } },
+            "5": { class_type: "PreviewImage", inputs: { images: [4, 0] } },
+            "6": { class_type: "OtherOutput", inputs: { images: [1, 0] } },
+        },
+        workflow: {
+            nodes: [
+                { id: 1, outputs: [{ name: "images" }] },
+                { id: 2, outputs: [{ name: "images" }] },
+                { id: 3, outputs: [{ name: "upscale_model" }] },
+                { id: 4, outputs: [{ name: "IMAGE" }] },
+                { id: 5, outputs: [] },
+                { id: 6, outputs: [] },
+            ],
+            links: [
+                [10, 1, 0, 2, 0, "IMAGE"],
+                [11, 2, 0, 4, 0, "IMAGE"],
+                [12, 3, 0, 4, 1, "UPSCALE_MODEL"],
+                [13, 4, 0, 5, 0, "IMAGE"],
+                [14, 1, 0, 6, 0, "IMAGE"],
+            ],
+        },
+    };
+
+    assert.deepEqual(
+        [...dependencyNodeIdsForPromptOutput(prompt.output, new Set([5]), new Set([2]))].sort((a, b) => a - b),
+        [2, 3, 4, 5],
+    );
+
+    const { prompt: resumePrompt, downstreamNodeIds, keptNodeIds } = buildPauseResumePrompt(prompt, 2, "images");
+
+    assert.deepEqual(downstreamNodeIds, [4, 5]);
+    assert.deepEqual(keptNodeIds.sort((a, b) => a - b), [2, 3, 4, 5]);
+    assert.deepEqual(resumePrompt.output["2"].inputs, { folder: "/tmp/out" });
+    assert.equal(resumePrompt.output["1"], undefined);
+    assert.equal(resumePrompt.output["6"], undefined);
+    assert.deepEqual(resumePrompt.workflow.nodes.map((node) => node.id).sort((a, b) => a - b), [2, 3, 4, 5]);
+    assert.deepEqual(resumePrompt.workflow.links.map((link) => link[0]).sort((a, b) => a - b), [11, 12, 13]);
 });
 
 test("layout controller does not expose size callbacks during ambiguous Vue mount", () => {

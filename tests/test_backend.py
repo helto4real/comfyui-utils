@@ -1213,6 +1213,74 @@ Second beat moves toward the doorway. @image1:end
             ]
             self.assertEqual(plain_mp4s, [])
 
+    def test_save_image_pause_mode_stores_image_and_blocks_downstream_quietly(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        node_cls = extension_module.SaveImageAdvanced
+        module_globals = node_cls.execute.__func__.__globals__
+        execution_blocker = module_globals["ExecutionBlocker"]
+        original_save_images = node_cls.__dict__["_save_images"]
+        original_private_records = node_cls.__dict__["_private_preview_records"]
+        original_hidden = getattr(node_cls, "hidden", None)
+        saved_calls = []
+
+        node_cls._save_images = classmethod(lambda cls, images, save_dir, filename_prefix: saved_calls.append(images) or [])
+        node_cls._private_preview_records = classmethod(lambda cls, images, filename_prefix: [])
+        node_cls.hidden = types.SimpleNamespace(unique_id="pause-node")
+        node_cls.state["previews"].clear()
+        node_cls.state["media"].clear()
+        node_cls.state["releases"].clear()
+        try:
+            images = ["image-tensor"]
+            result = node_cls.execute(images=images, pause_mode=True)
+        finally:
+            node_cls._save_images = original_save_images
+            node_cls._private_preview_records = original_private_records
+            node_cls.hidden = original_hidden
+
+        self.assertIsInstance(result[0], execution_blocker)
+        self.assertEqual(saved_calls, [images])
+        self.assertEqual(node_cls.state["media"]["pause-node"]["images"], images)
+        self.assertTrue(node_cls.state["media"]["pause-node"]["paused"])
+        control = result.kwargs["ui"]["helto_pause_control"][0]
+        self.assertTrue(control["has_media"])
+        self.assertTrue(control["paused"])
+        self.assertEqual(control["mode"], "paused")
+
+    def test_save_image_release_reemits_stored_image_without_saving_again(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        node_cls = extension_module.SaveImageAdvanced
+        original_save_images = node_cls.__dict__["_save_images"]
+        original_private_records = node_cls.__dict__["_private_preview_records"]
+        original_hidden = getattr(node_cls, "hidden", None)
+        saved_calls = []
+
+        node_cls._save_images = classmethod(lambda cls, images, save_dir, filename_prefix: saved_calls.append(images) or [])
+        node_cls._private_preview_records = classmethod(lambda cls, images, filename_prefix: [])
+        node_cls.hidden = types.SimpleNamespace(unique_id="release-node")
+        node_cls.state["previews"].clear()
+        node_cls.state["media"].clear()
+        node_cls.state["releases"].clear()
+        try:
+            images = ["image-tensor"]
+            first = node_cls.execute(images=images, pause_mode=False)
+            revision = first.kwargs["ui"]["helto_pause_control"][0]["revision"]
+            release = node_cls.request_release("release-node", revision)
+            second = node_cls.execute(images=None, pause_mode=True)
+        finally:
+            node_cls._save_images = original_save_images
+            node_cls._private_preview_records = original_private_records
+            node_cls.hidden = original_hidden
+
+        self.assertTrue(release["ok"])
+        self.assertEqual(second[0], images)
+        self.assertEqual(saved_calls, [images])
+        self.assertFalse(node_cls.state["media"]["release-node"]["paused"])
+        self.assertNotIn("release-node", node_cls.state["releases"])
+        control = second.kwargs["ui"]["helto_pause_control"][0]
+        self.assertEqual(control["mode"], "released")
+        self.assertTrue(control["released"])
+        self.assertFalse(control["paused"])
+
     def test_save_video_private_preview_names_are_unique_per_node(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()
         node_cls = extension_module.SaveVideoAdvanced
@@ -1606,6 +1674,10 @@ Second beat moves toward the doorway. @image1:end
                 output.kwargs = kwargs
                 return output
 
+        class FakeExecutionBlocker:
+            def __init__(self, message):
+                self.message = message
+
         def fake_socket(kind):
             class FakeInput(FakeField):
                 def __init__(self, id=None, *args, **kwargs):
@@ -1742,6 +1814,8 @@ Second beat moves toward the doorway. @image1:end
             "comfy": types.ModuleType("comfy"),
             "comfy.cli_args": types.ModuleType("comfy.cli_args"),
             "comfy.utils": types.ModuleType("comfy.utils"),
+            "comfy_execution": types.ModuleType("comfy_execution"),
+            "comfy_execution.graph": types.ModuleType("comfy_execution.graph"),
         }
         modules["comfy_api.latest"].ComfyExtension = FakeComfyExtension
         modules["comfy_api.latest"].InputImpl = FakeInputImpl
@@ -1763,6 +1837,7 @@ Second beat moves toward the doorway. @image1:end
         modules["comfy.comfy_types.node_typing"].IO = types.SimpleNamespace(ANY="*")
         modules["comfy.cli_args"].args = types.SimpleNamespace(disable_metadata=False)
         modules["comfy.utils"].ProgressBar = lambda _total: types.SimpleNamespace(update_absolute=lambda *_args: None)
+        modules["comfy_execution.graph"].ExecutionBlocker = FakeExecutionBlocker
 
         package_name = "helto_utils_schema_test"
         previous_modules = {name: sys.modules.get(name) for name in modules}
