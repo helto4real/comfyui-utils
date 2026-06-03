@@ -1,5 +1,6 @@
 export const SAVE_IMAGE_RELEASE_ROUTE = "/helto_save_image_advanced/release";
 export const SAVE_VIDEO_RELEASE_ROUTE = "/helto_save_video_advanced/release";
+export const PAUSE_CONTROL_RUNTIME_WIDGET_NAMES = new Set(["continue", "run again", "queueing", "hide mode"]);
 
 function asNumberSet(values) {
     return new Set([...values].map((value) => Number(value)).filter(Number.isFinite));
@@ -142,4 +143,97 @@ export function buildPauseResumePrompt(prompt, startNodeId, outputName = "images
         downstreamNodeIds: [...downstream],
         keptNodeIds: [...keepIds],
     };
+}
+
+export function isPauseControlRuntimeWidget(widget, runtimeNames = PAUSE_CONTROL_RUNTIME_WIDGET_NAMES) {
+    return runtimeNames.has(widget?.name);
+}
+
+export function serializableWidgets(node, runtimeNames = PAUSE_CONTROL_RUNTIME_WIDGET_NAMES) {
+    return (Array.isArray(node?.widgets) ? node.widgets : []).filter((widget) => {
+        return !isPauseControlRuntimeWidget(widget, runtimeNames)
+            && widget?.serialize !== false
+            && widget?.options?.serialize !== false;
+    });
+}
+
+export function serializedWidgetValues(node, runtimeNames = PAUSE_CONTROL_RUNTIME_WIDGET_NAMES) {
+    return serializableWidgets(node, runtimeNames).map((widget, index) => {
+        if (typeof widget.serializeValue === "function") {
+            const value = widget.serializeValue(node, index);
+            if (!value || typeof value.then !== "function") {
+                return value;
+            }
+        }
+        return widget.value;
+    });
+}
+
+export function serializedWidgetValueMap(node, runtimeNames = PAUSE_CONTROL_RUNTIME_WIDGET_NAMES) {
+    const values = {};
+    for (const widget of serializableWidgets(node, runtimeNames)) {
+        if (typeof widget.serializeValue === "function") {
+            const value = widget.serializeValue(node);
+            if (!value || typeof value.then !== "function") {
+                values[widget.name] = value;
+                continue;
+            }
+        }
+        values[widget.name] = widget.value;
+    }
+    return values;
+}
+
+export function sanitizeSerializedWidgetValues(node, info, runtimeNames = PAUSE_CONTROL_RUNTIME_WIDGET_NAMES) {
+    if (!info) {
+        return;
+    }
+    info.widgets_values = serializedWidgetValueMap(node, runtimeNames);
+}
+
+function restoreWidgetValue(widget, value) {
+    if (value !== undefined) {
+        widget.value = value;
+    }
+}
+
+function restoreSerializedWidgetValueMap(node, values, runtimeNames) {
+    const widgets = serializableWidgets(node, runtimeNames);
+    for (const widget of widgets) {
+        if (Object.prototype.hasOwnProperty.call(values, widget.name)) {
+            restoreWidgetValue(widget, values[widget.name]);
+        }
+    }
+}
+
+function restoreSerializedWidgetValueArray(node, values, runtimeNames) {
+    const widgets = serializableWidgets(node, runtimeNames);
+    const allWidgets = Array.isArray(node?.widgets) ? node.widgets : [];
+
+    if (values.length === allWidgets.length) {
+        for (let index = 0; index < allWidgets.length; index += 1) {
+            const widget = allWidgets[index];
+            if (!isPauseControlRuntimeWidget(widget, runtimeNames)
+                && widget?.serialize !== false
+                && widget?.options?.serialize !== false) {
+                restoreWidgetValue(widget, values[index]);
+            }
+        }
+        return;
+    }
+
+    for (let index = 0; index < widgets.length && index < values.length; index += 1) {
+        restoreWidgetValue(widgets[index], values[index]);
+    }
+}
+
+export function restoreSerializedWidgetValues(node, values, runtimeNames = PAUSE_CONTROL_RUNTIME_WIDGET_NAMES) {
+    if (Array.isArray(values)) {
+        restoreSerializedWidgetValueArray(node, values, runtimeNames);
+        return;
+    }
+
+    if (values && typeof values === "object") {
+        restoreSerializedWidgetValueMap(node, values, runtimeNames);
+    }
 }

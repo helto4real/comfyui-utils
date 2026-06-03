@@ -9,6 +9,8 @@ import {
     SAVE_IMAGE_RELEASE_ROUTE,
     SAVE_VIDEO_RELEASE_ROUTE,
     buildPauseResumePrompt,
+    restoreSerializedWidgetValues,
+    sanitizeSerializedWidgetValues,
 } from "./pause_control_helpers.js";
 
 const NODE_CLASSES = new Map([
@@ -387,7 +389,7 @@ function ensurePauseControlWidget(node) {
         return;
     }
 
-    const existingWidget = node.widgets?.find((widget) => widget.name === "continue" || widget.name === "run again");
+    const existingWidget = node.widgets?.find((widget) => widget.name === "continue" || widget.name === "run again" || widget.name === "queueing");
     const widget = existingWidget ?? node.addWidget?.("button", "continue", null, () => handlePauseControlButton(node));
     if (!widget) {
         return;
@@ -1703,11 +1705,13 @@ function setupImageHideMode(node) {
     node[HOVER_STATE] = false;
 
     const originalOnConfigure = node.onConfigure;
-    node.onConfigure = function (...args) {
-        const result = originalOnConfigure?.apply(this, args);
+    node.onConfigure = function (config, ...args) {
+        const result = originalOnConfigure?.apply(this, [config, ...args]);
         ensureHideModeProperty(this);
         ensureHideModeWidget(this);
         ensurePauseControlWidget(this);
+        restoreSerializedWidgetValues(this, config?.widgets_values);
+        sanitizeSerializedWidgetValues(this, this);
         setHideModeValue(this, this.properties?.[PROPERTY_NAME]);
         syncImageHideOutputImages(this);
         return result;
@@ -1721,6 +1725,7 @@ function setupImageHideMode(node) {
         if (info) {
             info.properties ??= {};
             info.properties[PROPERTY_NAME] = this.properties[PROPERTY_NAME];
+            sanitizeSerializedWidgetValues(this, info);
         }
 
         return result;
@@ -1789,13 +1794,19 @@ function setupVideoHideMode(node) {
     managedHideModeNodes.add(node);
 
     const originalOnConfigure = node.onConfigure;
-    node.onConfigure = function (...args) {
-        const result = originalOnConfigure?.apply(this, args);
+    node.onConfigure = function (config, ...args) {
+        const result = originalOnConfigure?.apply(this, [config, ...args]);
         ensureHideModeProperty(this);
         ensureHideModeWidget(this);
         if (getNodeClass(this) === VIDEO_NODE_CLASS) {
             ensurePauseControlWidget(this);
         }
+        restoreSerializedWidgetValues(this, config?.widgets_values);
+        if (getNodeClass(this) === VIDEO_NODE_CLASS) {
+            refreshFormatWidgets(this, this.widgets?.find((widget) => widget.name === "format")?.value);
+            restoreSerializedWidgetValues(this, config?.widgets_values);
+        }
+        sanitizeSerializedWidgetValues(this, this);
         ensureVideoPreviewMediaType(this);
         setHideModeValue(this, this.properties?.[PROPERTY_NAME]);
         scheduleRestoredVueOutputRefresh(this);
@@ -1811,6 +1822,7 @@ function setupVideoHideMode(node) {
         if (info) {
             info.properties ??= {};
             info.properties[PROPERTY_NAME] = this.properties[PROPERTY_NAME];
+            sanitizeSerializedWidgetValues(this, info);
         }
 
         return result;

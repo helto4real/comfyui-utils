@@ -32,6 +32,10 @@ import {
     buildPauseResumePrompt,
     dependencyNodeIdsForPromptOutput,
     downstreamNodeIdsFromOutput,
+    restoreSerializedWidgetValues,
+    sanitizeSerializedWidgetValues,
+    serializedWidgetValueMap,
+    serializedWidgetValues,
 } from "../../web/pause_control_helpers.js";
 import {
     acceptPromptAutocompleteSuggestion,
@@ -470,6 +474,126 @@ test("pause control builds resume prompt from the save video images output", () 
     assert.equal(resumePrompt.output["6"], undefined);
     assert.deepEqual(resumePrompt.workflow.nodes.map((node) => node.id).sort((a, b) => a - b), [2, 3, 4, 5]);
     assert.deepEqual(resumePrompt.workflow.links.map((link) => link[0]).sort((a, b) => a - b), [12, 13, 14]);
+});
+
+test("pause control serialization skips runtime widgets at the top", () => {
+    const node = {
+        widgets: [
+            { name: "run again", value: null, serialize: false, options: { serialize: false } },
+            { name: "hide mode", value: true, serialize: false, options: { serialize: false } },
+            { name: "folder", value: "/tmp/out" },
+            { name: "filename_prefix", value: "clip" },
+            { name: "pause_mode", value: true },
+            { name: "privacy_mode", value: false },
+        ],
+    };
+    const info = {};
+
+    sanitizeSerializedWidgetValues(node, info);
+
+    assert.deepEqual(serializedWidgetValues(node), ["/tmp/out", "clip", true, false]);
+    assert.deepEqual(serializedWidgetValueMap(node), {
+        folder: "/tmp/out",
+        filename_prefix: "clip",
+        pause_mode: true,
+        privacy_mode: false,
+    });
+    assert.deepEqual(info.widgets_values, {
+        folder: "/tmp/out",
+        filename_prefix: "clip",
+        pause_mode: true,
+        privacy_mode: false,
+    });
+});
+
+test("pause control restore maps saved values onto serializable widgets only", () => {
+    const node = {
+        widgets: [
+            { name: "continue", value: null, serialize: false, options: { serialize: false } },
+            { name: "folder", value: "" },
+            { name: "filename_prefix", value: "video" },
+            { name: "pause_mode", value: false },
+            { name: "privacy_mode", value: true },
+        ],
+    };
+
+    restoreSerializedWidgetValues(node, ["/tmp/restored", "upscale", true, false]);
+
+    assert.equal(node.widgets[0].value, null);
+    assert.equal(node.widgets[1].value, "/tmp/restored");
+    assert.equal(node.widgets[2].value, "upscale");
+    assert.equal(node.widgets[3].value, true);
+    assert.equal(node.widgets[4].value, false);
+});
+
+test("pause control restore maps saved name values onto serializable widgets", () => {
+    const node = {
+        widgets: [
+            { name: "run again", value: null, serialize: false, options: { serialize: false } },
+            { name: "folder", value: "" },
+            { name: "filename_prefix", value: "video" },
+            { name: "pause_mode", value: false },
+            { name: "privacy_mode", value: true },
+        ],
+    };
+
+    restoreSerializedWidgetValues(node, {
+        filename_prefix: "upscale",
+        privacy_mode: false,
+        folder: "/tmp/restored",
+        pause_mode: true,
+    });
+
+    assert.equal(node.widgets[0].value, null);
+    assert.equal(node.widgets[1].value, "/tmp/restored");
+    assert.equal(node.widgets[2].value, "upscale");
+    assert.equal(node.widgets[3].value, true);
+    assert.equal(node.widgets[4].value, false);
+});
+
+test("pause control restore ignores runtime slots in old full widget arrays", () => {
+    const node = {
+        widgets: [
+            { name: "run again", value: null, serialize: false, options: { serialize: false } },
+            { name: "folder", value: "" },
+            { name: "filename_prefix", value: "video" },
+            { name: "pause_mode", value: false },
+        ],
+    };
+
+    restoreSerializedWidgetValues(node, [null, "/tmp/restored", "clip", true]);
+
+    assert.equal(node.widgets[0].value, null);
+    assert.equal(node.widgets[1].value, "/tmp/restored");
+    assert.equal(node.widgets[2].value, "clip");
+    assert.equal(node.widgets[3].value, true);
+});
+
+test("pause control restore survives video format widget refresh between passes", () => {
+    const node = {
+        widgets: [
+            { name: "run again", value: null, serialize: false, options: { serialize: false } },
+            { name: "folder", value: "" },
+            { name: "format", value: "video/h264-mp4" },
+            { name: "pause_mode", value: false },
+        ],
+    };
+    const savedValues = {
+        folder: "/tmp/video",
+        format: "video/webm",
+        crf: 21,
+        pause_mode: true,
+    };
+
+    restoreSerializedWidgetValues(node, savedValues);
+    const formatIndex = node.widgets.findIndex((widget) => widget.name === "format");
+    node.widgets.splice(formatIndex + 1, 0, { name: "crf", value: 30 });
+    restoreSerializedWidgetValues(node, savedValues);
+
+    assert.equal(node.widgets[1].value, "/tmp/video");
+    assert.equal(node.widgets[2].value, "video/webm");
+    assert.equal(node.widgets[3].value, 21);
+    assert.equal(node.widgets[4].value, true);
 });
 
 test("layout controller does not expose size callbacks during ambiguous Vue mount", () => {
