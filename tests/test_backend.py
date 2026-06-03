@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import asyncio
+import base64
 import json
 import os
 import sys
@@ -15,6 +16,7 @@ from pathlib import Path
 from PIL import Image
 import torch
 
+from helto_selector_backend import crypto as selector_crypto
 from helto_selector_backend.crypto import decrypt_selection, encrypt_selection
 from helto_selector_backend.image_processing import (
     parse_selected_paths,
@@ -92,6 +94,37 @@ class ImageProcessingTests(unittest.TestCase):
 
         self.assertEqual(parsed, ["/tmp/a.png"])
 
+    def test_encrypted_selection_uses_fast_privacy_payload_when_available(self):
+        if selector_crypto.shared_privacy.AESGCM is None:
+            self.skipTest("cryptography is not available")
+
+        key = b"3" * 32
+        encrypted = encrypt_selection(json.dumps(["/tmp/a.png"]), key=key)
+        payload = base64.b64decode(encrypted[len(selector_crypto.ENC_PREFIX):].encode("utf-8"))
+
+        self.assertTrue(payload.startswith(selector_crypto.shared_privacy.ENC_MAGIC_V2))
+        self.assertEqual(decrypt_selection(encrypted, key=key), json.dumps(["/tmp/a.png"]))
+
+    def test_encrypted_selection_reads_legacy_no_header_payloads(self):
+        key = b"4" * 32
+        plain = json.dumps(["/tmp/legacy.png"])
+        legacy_payload = selector_crypto._legacy_encrypt_bytes(key, plain.encode("utf-8"))
+        encrypted = selector_crypto.ENC_PREFIX + base64.b64encode(legacy_payload).decode("utf-8")
+
+        self.assertFalse(legacy_payload.startswith(selector_crypto.shared_privacy.ENC_MAGIC_V1))
+        self.assertEqual(decrypt_selection(encrypted, key=key), plain)
+
+    def test_selector_encrypt_bytes_falls_back_to_shared_v1_without_fast_crypto(self):
+        key = b"5" * 32
+        original_aesgcm = selector_crypto.shared_privacy.AESGCM
+        try:
+            selector_crypto.shared_privacy.AESGCM = None
+            encrypted = selector_crypto.encrypt_bytes(key, b"selector payload")
+            self.assertTrue(encrypted.startswith(selector_crypto.shared_privacy.ENC_MAGIC_V1))
+            self.assertEqual(selector_crypto.decrypt_bytes(key, encrypted), b"selector payload")
+        finally:
+            selector_crypto.shared_privacy.AESGCM = original_aesgcm
+
 
 class ScanningAndThumbnailTests(unittest.TestCase):
     def test_scan_image_folders_returns_expected_metadata(self):
@@ -164,11 +197,33 @@ class ScanningAndThumbnailTests(unittest.TestCase):
             self.assertEqual(plain_bytes, encrypted_mode_bytes)
             self.assertFalse(os.path.exists(plain_cache))
             self.assertTrue(os.path.exists(encrypted_cache))
+            if selector_crypto.shared_privacy.AESGCM is not None:
+                with open(encrypted_cache, "rb") as f:
+                    self.assertTrue(f.read().startswith(selector_crypto.shared_privacy.ENC_MAGIC_V2))
 
             plain_again_bytes = get_thumbnail_bytes(image_path, False, cache_dir=cache_dir, key=key)
             self.assertEqual(plain_bytes, plain_again_bytes)
             self.assertTrue(os.path.exists(plain_cache))
             self.assertFalse(os.path.exists(encrypted_cache))
+
+    def test_thumbnail_cache_reads_and_migrates_legacy_encrypted_payload(self):
+        key = b"6" * 32
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = os.path.join(tmpdir, "image.png")
+            cache_dir = os.path.join(tmpdir, "cache")
+            os.makedirs(cache_dir)
+            write_image(image_path, (16, 16), (123, 45, 67))
+            plain_cache, encrypted_cache = thumbnail_cache_paths(image_path, cache_dir)
+            legacy_bytes = b"legacy webp bytes"
+
+            with open(encrypted_cache, "wb") as f:
+                f.write(selector_crypto._legacy_encrypt_bytes(key, legacy_bytes))
+
+            self.assertEqual(get_thumbnail_bytes(image_path, False, cache_dir=cache_dir, key=key), legacy_bytes)
+            self.assertTrue(os.path.exists(plain_cache))
+            self.assertFalse(os.path.exists(encrypted_cache))
+            with open(plain_cache, "rb") as f:
+                self.assertEqual(f.read(), legacy_bytes)
 
     def test_delete_thumbnail_cache_for_paths_removes_plain_and_encrypted_variants(self):
         with tempfile.TemporaryDirectory() as tmpdir:

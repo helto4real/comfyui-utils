@@ -5,8 +5,21 @@ import hashlib
 import hmac
 import os
 import secrets
+import sys
+import tempfile
+import types
 
 from .constants import CONFIG_DIR, ENC_PREFIX, ensure_runtime_dirs
+
+try:
+    from shared import privacy as shared_privacy
+except ModuleNotFoundError as exc:
+    if exc.name != "folder_paths":
+        raise
+    folder_paths = types.ModuleType("folder_paths")
+    folder_paths.get_temp_directory = tempfile.gettempdir
+    sys.modules["folder_paths"] = folder_paths
+    from shared import privacy as shared_privacy
 
 KEY_PATH = os.path.join(CONFIG_DIR, "key.bin")
 
@@ -34,20 +47,30 @@ def _derive_keystream(key: bytes, iv: bytes, length: int) -> bytes:
     return bytes(keystream[:length])
 
 
-def encrypt_bytes(key: bytes, plaintext: bytes) -> bytes:
+def _legacy_encrypt_bytes(key: bytes, plaintext: bytes) -> bytes:
     iv = secrets.token_bytes(16)
     keystream = _derive_keystream(key, iv, len(plaintext))
     ciphertext = bytes(a ^ b for a, b in zip(plaintext, keystream))
     return iv + ciphertext
 
 
-def decrypt_bytes(key: bytes, ciphertext: bytes) -> bytes:
+def _legacy_decrypt_bytes(key: bytes, ciphertext: bytes) -> bytes:
     if len(ciphertext) < 16:
         raise ValueError("Ciphertext too short")
     iv = ciphertext[:16]
     encrypted = ciphertext[16:]
     keystream = _derive_keystream(key, iv, len(encrypted))
     return bytes(a ^ b for a, b in zip(encrypted, keystream))
+
+
+def encrypt_bytes(key: bytes, plaintext: bytes) -> bytes:
+    return shared_privacy.encrypt_bytes(plaintext, key=key)
+
+
+def decrypt_bytes(key: bytes, ciphertext: bytes) -> bytes:
+    if ciphertext.startswith((shared_privacy.ENC_MAGIC_V1, shared_privacy.ENC_MAGIC_V2, shared_privacy.ENC_MAGIC_V3)):
+        return shared_privacy.decrypt_bytes(ciphertext, key=key)
+    return _legacy_decrypt_bytes(key, ciphertext)
 
 
 def encrypt_string(key: bytes, text: str) -> str:
@@ -74,4 +97,3 @@ def decrypt_selection(encrypted_text: str, key: bytes = ENCRYPTION_KEY) -> str:
     except Exception as e:
         print(f"[HeltoSelector] Error decrypting selection state: {e}")
         return "[]"
-
