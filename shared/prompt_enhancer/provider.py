@@ -137,6 +137,14 @@ def _json_stream_request(url: str, payload: dict[str, Any], timeout: int) -> Ite
         raise RuntimeError(f"Ollama request failed: {exc.reason}") from exc
 
 
+def _check_interrupted(progress: PromptEnhancerProgress | None = None) -> None:
+    checker = getattr(progress, "check_interrupted", None)
+    if callable(checker):
+        checker()
+        return
+    PromptEnhancerProgress.check_interrupted()
+
+
 def normalize_ollama_url(url: str | None) -> str:
     normalized = (url or DEFAULT_OLLAMA_URL).strip().rstrip("/")
     return normalized or DEFAULT_OLLAMA_URL
@@ -333,12 +341,23 @@ class OllamaPromptProvider:
         if progress is not None:
             return self._generate_streaming(endpoint, payload, keep_alive, request, progress)
 
-        response = _json_request(endpoint, payload, request.settings.timeout)
+        response = None
+        raised = False
+        try:
+            response = _json_request(endpoint, payload, request.settings.timeout)
+        except BaseException:
+            raised = True
+            raise
+        finally:
+            if keep_alive == "0s":
+                try:
+                    _json_request(endpoint, {"model": request.model, "keep_alive": 0, "stream": False}, request.settings.timeout)
+                except Exception:
+                    if not raised:
+                        raise
         if not isinstance(response, dict) or "response" not in response:
             raise RuntimeError("Ollama response did not include generated text.")
         generated_prompt = str(response.get("response") or "").strip()
-        if keep_alive == "0s":
-            _json_request(endpoint, {"model": request.model, "keep_alive": 0, "stream": False}, request.settings.timeout)
         return generated_prompt
 
     def _generate_streaming(
@@ -354,8 +373,10 @@ class OllamaPromptProvider:
         progress.phase_start("generate")
         chunks: list[str] = []
         chunk_count = 0
+        raised = False
         try:
             for item in _json_stream_request(endpoint, streaming_payload, request.settings.timeout):
+                _check_interrupted(progress)
                 text = item.get("response")
                 if text:
                     chunks.append(str(text))
@@ -373,15 +394,23 @@ class OllamaPromptProvider:
                 raise RuntimeError("Ollama response did not include generated text.")
             chunks = [str(response.get("response") or "")]
             chunk_count = OLLAMA_ESTIMATED_GENERATION_TOKENS
+        except BaseException:
+            raised = True
+            raise
+        finally:
+            if keep_alive == "0s":
+                try:
+                    progress.phase_start("release")
+                    _json_request(endpoint, {"model": request.model, "keep_alive": 0, "stream": False}, request.settings.timeout)
+                    progress.phase_done("release")
+                except Exception:
+                    if not raised:
+                        raise
 
         if chunk_count:
             progress.generation_tokens(chunk_count, max(chunk_count, OLLAMA_ESTIMATED_GENERATION_TOKENS))
         progress.phase_done("generate")
         generated_prompt = "".join(chunks).strip()
-        if keep_alive == "0s":
-            progress.phase_start("release")
-            _json_request(endpoint, {"model": request.model, "keep_alive": 0, "stream": False}, request.settings.timeout)
-            progress.phase_done("release")
         return generated_prompt
 
 

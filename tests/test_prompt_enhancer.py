@@ -311,6 +311,40 @@ class PromptEnhancerProviderTests(unittest.TestCase):
         self.assertEqual(request.call_args.args[1], {"model": "llava:latest", "keep_alive": 0, "stream": False})
         self.assertIn(("release", "done"), progress_events)
 
+    def test_ollama_stop_unloads_zero_keep_alive_model(self):
+        class StopGeneration(BaseException):
+            pass
+
+        settings = PromptEnhancerSettings(ollama_url=DEFAULT_OLLAMA_URL, keep_alive=0, keep_alive_unit="seconds", timeout=9)
+        prompt_request = PromptEnhancerRequest(
+            model="llava:latest",
+            prompt_type="image",
+            prompt="make it cinematic",
+            system_prompt="system text",
+            seed=123,
+            images=[],
+            settings=settings,
+        )
+
+        class FakeProgress:
+            def phase_start(self, phase):
+                pass
+
+            def phase_done(self, phase):
+                pass
+
+            def check_interrupted(self):
+                raise StopGeneration()
+
+        with patch("shared.prompt_enhancer.provider._json_stream_request", return_value=[{"response": " late"}]), patch(
+            "shared.prompt_enhancer.provider._json_request", return_value={"done": True}
+        ) as request:
+            with self.assertRaises(StopGeneration):
+                OllamaPromptProvider().generate(prompt_request, FakeProgress())
+
+        request.assert_called_once()
+        self.assertEqual(request.call_args.args[1], {"model": "llava:latest", "keep_alive": 0, "stream": False})
+
     def test_prompt_variables_parse_plain_and_encrypted_json(self):
         plain = json_dumps([
             {"name": "style", "mode": "random", "values": ["cinematic", "documentary"], "fixed_index": 4},
@@ -693,6 +727,35 @@ A character turns around. @image3:character
                 patch.object(local_provider, "_generate_qwen", side_effect=RuntimeError("CUDA out of memory")), \
                 patch.object(local_provider, "unload_local_model", return_value={"ok": True, "unloaded": [alias]}) as unload:
             with self.assertRaisesRegex(RuntimeError, "CUDA out of memory"):
+                local_provider.LocalPromptProvider().generate(request)
+
+        unload.assert_called_once_with(alias)
+
+    def test_local_provider_stop_unloads_model_even_with_nonzero_keep_alive(self):
+        class StopGeneration(BaseException):
+            pass
+
+        alias = "qwen3_vl_4b_fast"
+        request = PromptEnhancerRequest(
+            model=alias,
+            prompt_type="image",
+            prompt="A quiet forest",
+            system_prompt="system",
+            seed=1,
+            images=[],
+            settings=PromptEnhancerSettings(keep_alive=5, keep_alive_unit="minutes"),
+            provider=local_provider.PROVIDER_LOCAL_TRANSFORMERS,
+            model_id=alias,
+            model_backend="qwen",
+        )
+
+        with patch.object(local_provider, "_LOADED_MODELS", {alias: {"torch": None}}), \
+                patch.object(local_provider, "ensure_model_downloaded", return_value=Path("/tmp/model")), \
+                patch.object(local_provider, "local_vram_preflight"), \
+                patch.object(local_provider, "decode_request_images", return_value=[]), \
+                patch.object(local_provider, "_generate_qwen", side_effect=StopGeneration()), \
+                patch.object(local_provider, "unload_local_model", return_value={"ok": True, "unloaded": [alias]}) as unload:
+            with self.assertRaises(StopGeneration):
                 local_provider.LocalPromptProvider().generate(request)
 
         unload.assert_called_once_with(alias)

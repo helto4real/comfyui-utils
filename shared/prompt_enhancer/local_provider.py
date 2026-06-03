@@ -374,6 +374,7 @@ def provider_catalog(ollama_models: list[str] | None = None, ollama_error: str =
 
 
 def ensure_model_downloaded(spec: LocalModelSpec, progress: PromptEnhancerProgress | None = None) -> Path | None:
+    _check_interrupted(progress)
     path = model_path_for(spec)
     if path is None:
         if progress is not None:
@@ -394,6 +395,7 @@ def ensure_model_downloaded(spec: LocalModelSpec, progress: PromptEnhancerProgre
     if spec.file_urls:
         files = list(zip(model_files_for(spec), model_file_paths_for(spec), strict=True))
         for position, (model_file, target_path) in enumerate(files, start=1):
+            _check_interrupted(progress)
             if target_path.exists():
                 if progress is not None:
                     progress.phase_fraction("download", position / len(files))
@@ -413,17 +415,20 @@ def ensure_model_downloaded(spec: LocalModelSpec, progress: PromptEnhancerProgre
                 raise LocalProviderError(f"Downloaded '{model_file.url}' but expected file was not found at {target_path}")
             if progress is not None:
                 progress.phase_fraction("download", position / len(files))
+            _check_interrupted(progress)
         return path
 
     path.parent.mkdir(parents=True, exist_ok=True)
     if progress is not None:
         progress.phase_start("download")
+    _check_interrupted(progress)
     snapshot_download(
         repo_id=spec.repo_id,
         local_dir=str(path),
         local_dir_use_symlinks=False,
         token=hf_auth_token(),
     )
+    _check_interrupted(progress)
     if progress is not None:
         progress.phase_done("download")
     return path
@@ -543,6 +548,7 @@ def fallback_enhance_prompt(prompt: str, prompt_type: str = "image") -> str:
 class LocalPromptProvider:
     def generate(self, request: Any, progress: PromptEnhancerProgress | None = None) -> str:
         spec = resolve_local_model(getattr(request, "model_id", "") or getattr(request, "model", ""))
+        _check_interrupted(progress)
         if not spec.generator_supported:
             raise LocalProviderError(
                 f"Model '{spec.alias}' is a ComfyUI text-encoder checkpoint, not a standalone prompt-generating model."
@@ -552,6 +558,7 @@ class LocalPromptProvider:
                 progress.phase_done("download")
                 progress.phase_done("load")
                 progress.phase_start("generate")
+                _check_interrupted(progress)
                 progress.phase_done("generate")
             result = fallback_enhance_prompt(getattr(request, "prompt", ""), getattr(request, "prompt_type", "image"))
             _release_local_model_if_needed(spec, request, progress)
@@ -569,7 +576,9 @@ class LocalPromptProvider:
                 return result
             if progress is not None:
                 progress.phase_start("load")
+            _check_interrupted(progress)
             local_vram_preflight()
+            _check_interrupted(progress)
             instruction = _instruction(getattr(request, "system_prompt", ""), getattr(request, "prompt", ""))
             images = decode_request_images(getattr(request, "images", []) or [])
             if spec.backend == "qwen":
@@ -581,6 +590,7 @@ class LocalPromptProvider:
                     if progress is not None:
                         progress.phase_done("load")
                         progress.phase_start("generate")
+                        _check_interrupted(progress)
                         progress.phase_done("generate")
                     result = fallback_enhance_prompt(getattr(request, "prompt", ""), getattr(request, "prompt_type", "image"))
                     _release_local_model_if_needed(spec, request, progress)
@@ -593,7 +603,7 @@ class LocalPromptProvider:
                 _release_local_model_if_needed(spec, request, progress)
                 return result
             raise LocalProviderError(f"Unsupported local Prompt Enhancer backend: {spec.backend}")
-        except Exception:
+        except BaseException:
             _cleanup_local_model_after_exception(spec)
             raise
 
@@ -616,6 +626,14 @@ def _release_local_model_if_needed(
         unload_local_model(spec.alias)
     if progress is not None:
         progress.phase_done("release")
+
+
+def _check_interrupted(progress: PromptEnhancerProgress | None = None) -> None:
+    checker = getattr(progress, "check_interrupted", None)
+    if callable(checker):
+        checker()
+        return
+    PromptEnhancerProgress.check_interrupted()
 
 
 def _cleanup_local_model_after_exception(spec: LocalModelSpec) -> None:
@@ -677,6 +695,7 @@ def _generate_qwen(
     if progress is not None:
         progress.phase_done("load")
         progress.phase_start("generate")
+    _check_interrupted(progress)
     model = loaded["model"]
     processor = loaded["processor"]
     torch = loaded["torch"]
@@ -700,6 +719,7 @@ def _generate_qwen(
     if stopping_criteria is not None:
         generate_kwargs["stopping_criteria"] = stopping_criteria
     outputs = model.generate(**generate_kwargs)
+    _check_interrupted(progress)
     if progress is not None:
         progress.phase_done("generate")
     return processor.batch_decode(outputs[:, input_len:], skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
@@ -731,6 +751,7 @@ def _generate_florence(
     if progress is not None:
         progress.phase_done("load")
         progress.phase_start("generate")
+    _check_interrupted(progress)
     model = loaded["model"]
     processor = loaded["processor"]
     torch = loaded["torch"]
@@ -744,6 +765,7 @@ def _generate_florence(
     if stopping_criteria is not None:
         generate_kwargs["stopping_criteria"] = stopping_criteria
     outputs = model.generate(**generate_kwargs)
+    _check_interrupted(progress)
     if progress is not None:
         progress.phase_done("generate")
     return processor.batch_decode(outputs, skip_special_tokens=True)[0]
@@ -763,6 +785,7 @@ def _generation_progress_criteria(
 
     class ProgressCriteria(StoppingCriteria):
         def __call__(self, input_ids, scores, **kwargs):  # noqa: ANN001, ANN003
+            _check_interrupted(progress)
             try:
                 generated = max(0, int(input_ids.shape[-1]) - int(prompt_token_count))
             except Exception:
@@ -810,6 +833,7 @@ def _generate_llama_cpp_vision(
     if progress is not None:
         progress.phase_done("load")
         progress.phase_start("generate")
+    _check_interrupted(progress)
     model = loaded["model"]
     content: list[dict[str, Any]] = []
     for index, image in enumerate(images, start=1):
@@ -826,6 +850,7 @@ def _generate_llama_cpp_vision(
         chunks: list[str] = []
         try:
             for item in model.create_chat_completion(**payload, stream=True):
+                _check_interrupted(progress)
                 text = _llama_cpp_chunk_text(item)
                 if text:
                     chunks.append(text)
