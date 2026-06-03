@@ -14,12 +14,22 @@ from typing import Any
 
 import folder_paths
 
+try:
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+except Exception:
+    AESGCM = None
+
 
 PACKAGE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_DIR = PACKAGE_DIR / "config"
 KEY_PATH = CONFIG_DIR / "privacy_key.bin"
-ENC_MAGIC = b"HELTO_PRIV1:"
+ENC_MAGIC_V1 = b"HELTO_PRIV1:"
+ENC_MAGIC_V2 = b"HELTO_PRIV2:"
+ENC_MAGIC_V3 = b"HELTO_PRIV3:"
+ENC_MAGIC = ENC_MAGIC_V1
 TOKEN_VERSION = 1
+AESGCM_MAX_BYTES = (2 ** 31) - 1
+AESGCM_CHUNK_SIZE = 64 * 1024 * 1024
 
 
 def ensure_privacy_dirs() -> None:
@@ -49,30 +59,128 @@ def _derive_keystream(key: bytes, iv: bytes, length: int) -> bytes:
     return bytes(stream[:length])
 
 
-def encrypt_bytes(plaintext: bytes, key: bytes | None = None) -> bytes:
-    key = key or _key()
+def _encrypt_bytes_v1(plaintext: bytes, key: bytes) -> bytes:
     iv = secrets.token_bytes(16)
     stream = _derive_keystream(key, iv, len(plaintext))
     ciphertext = bytes(a ^ b for a, b in zip(plaintext, stream))
-    tag = hmac.new(key, ENC_MAGIC + iv + ciphertext, hashlib.sha256).digest()
-    return ENC_MAGIC + iv + ciphertext + tag
+    tag = hmac.new(key, ENC_MAGIC_V1 + iv + ciphertext, hashlib.sha256).digest()
+    return ENC_MAGIC_V1 + iv + ciphertext + tag
 
 
-def decrypt_bytes(encrypted: bytes, key: bytes | None = None) -> bytes:
-    key = key or _key()
-    if not encrypted.startswith(ENC_MAGIC):
-        raise ValueError("Encrypted payload has an invalid header.")
-    payload = encrypted[len(ENC_MAGIC):]
+def _decrypt_bytes_v1(encrypted: bytes, key: bytes) -> bytes:
+    payload = encrypted[len(ENC_MAGIC_V1):]
     if len(payload) < 48:
         raise ValueError("Encrypted payload is too short.")
     iv = payload[:16]
     tag = payload[-32:]
     ciphertext = payload[16:-32]
-    expected = hmac.new(key, ENC_MAGIC + iv + ciphertext, hashlib.sha256).digest()
+    expected = hmac.new(key, ENC_MAGIC_V1 + iv + ciphertext, hashlib.sha256).digest()
     if not hmac.compare_digest(tag, expected):
         raise ValueError("Encrypted payload failed authentication.")
     stream = _derive_keystream(key, iv, len(ciphertext))
     return bytes(a ^ b for a, b in zip(ciphertext, stream))
+
+
+def _encrypt_bytes_v2(plaintext: bytes, key: bytes) -> bytes:
+    nonce = secrets.token_bytes(12)
+    ciphertext = AESGCM(key).encrypt(nonce, plaintext, ENC_MAGIC_V2)
+    return ENC_MAGIC_V2 + nonce + ciphertext
+
+
+def _decrypt_bytes_v2(encrypted: bytes, key: bytes) -> bytes:
+    if AESGCM is None:
+        raise ValueError("Fast encrypted payload requires the cryptography package.")
+    payload = encrypted[len(ENC_MAGIC_V2):]
+    if len(payload) < 28:
+        raise ValueError("Encrypted payload is too short.")
+    nonce = payload[:12]
+    ciphertext = payload[12:]
+    try:
+        return AESGCM(key).decrypt(nonce, ciphertext, ENC_MAGIC_V2)
+    except Exception as exc:
+        raise ValueError("Encrypted payload failed authentication.") from exc
+
+
+def _chunk_aad(header: bytes, counter: int) -> bytes:
+    return ENC_MAGIC_V3 + header + counter.to_bytes(8, "big")
+
+
+def _encrypt_bytes_v3(plaintext: bytes, key: bytes) -> bytes:
+    chunk_size = int(AESGCM_CHUNK_SIZE)
+    if chunk_size <= 0:
+        raise ValueError("AES-GCM chunk size must be positive.")
+
+    nonce_prefix = secrets.token_bytes(4)
+    header = chunk_size.to_bytes(8, "big") + len(plaintext).to_bytes(8, "big") + nonce_prefix
+    aesgcm = AESGCM(key)
+    chunks = [ENC_MAGIC_V3, header]
+    for counter, start in enumerate(range(0, len(plaintext), chunk_size)):
+        chunk = plaintext[start:start + chunk_size]
+        nonce = nonce_prefix + counter.to_bytes(8, "big")
+        chunks.append(aesgcm.encrypt(nonce, chunk, _chunk_aad(header, counter)))
+    return b"".join(chunks)
+
+
+def _decrypt_bytes_v3(encrypted: bytes, key: bytes) -> bytes:
+    if AESGCM is None:
+        raise ValueError("Fast encrypted payload requires the cryptography package.")
+
+    payload = encrypted[len(ENC_MAGIC_V3):]
+    if len(payload) < 20:
+        raise ValueError("Encrypted payload is too short.")
+
+    header = payload[:20]
+    chunk_size = int.from_bytes(header[:8], "big")
+    total_length = int.from_bytes(header[8:16], "big")
+    nonce_prefix = header[16:20]
+    if chunk_size <= 0:
+        raise ValueError("Encrypted payload has an invalid chunk size.")
+
+    aesgcm = AESGCM(key)
+    chunks = []
+    offset = 20
+    remaining = total_length
+    counter = 0
+    while remaining > 0:
+        plaintext_length = min(chunk_size, remaining)
+        ciphertext_length = plaintext_length + 16
+        end = offset + ciphertext_length
+        if end > len(payload):
+            raise ValueError("Encrypted payload is truncated.")
+
+        nonce = nonce_prefix + counter.to_bytes(8, "big")
+        try:
+            chunks.append(aesgcm.decrypt(nonce, payload[offset:end], _chunk_aad(header, counter)))
+        except Exception as exc:
+            raise ValueError("Encrypted payload failed authentication.") from exc
+
+        offset = end
+        remaining -= plaintext_length
+        counter += 1
+
+    if offset != len(payload):
+        raise ValueError("Encrypted payload has trailing data.")
+    return b"".join(chunks)
+
+
+def encrypt_bytes(plaintext: bytes, key: bytes | None = None) -> bytes:
+    key = key or _key()
+    if AESGCM is not None:
+        if len(plaintext) > AESGCM_MAX_BYTES:
+            return _encrypt_bytes_v3(plaintext, key)
+        return _encrypt_bytes_v2(plaintext, key)
+    return _encrypt_bytes_v1(plaintext, key)
+
+
+def decrypt_bytes(encrypted: bytes, key: bytes | None = None) -> bytes:
+    key = key or _key()
+    if encrypted.startswith(ENC_MAGIC_V3):
+        return _decrypt_bytes_v3(encrypted, key)
+    if encrypted.startswith(ENC_MAGIC_V2):
+        return _decrypt_bytes_v2(encrypted, key)
+    if encrypted.startswith(ENC_MAGIC_V1):
+        return _decrypt_bytes_v1(encrypted, key)
+    raise ValueError("Encrypted payload has an invalid header.")
 
 
 def _b64url(data: bytes) -> str:

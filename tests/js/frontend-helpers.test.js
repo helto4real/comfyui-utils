@@ -428,6 +428,50 @@ test("pause control keeps downstream dependencies but removes save node input li
     assert.deepEqual(resumePrompt.workflow.links.map((link) => link[0]).sort((a, b) => a - b), [11, 12, 13]);
 });
 
+test("pause control builds resume prompt from the save video images output", () => {
+    const prompt = {
+        output: {
+            "1": { class_type: "VideoGenerator", inputs: { seed: 123 } },
+            "2": {
+                class_type: "HeltoSaveVideoAdvanced",
+                inputs: { images: [1, 0], audio: [1, 1], filename_prefix: "clip" },
+            },
+            "3": { class_type: "UpscaleModelLoader", inputs: { model_name: "model.pth" } },
+            "4": { class_type: "UpscaleImage", inputs: { image: [2, 0], upscale_model: [3, 0] } },
+            "5": { class_type: "PreviewImage", inputs: { images: [4, 0] } },
+            "6": { class_type: "SaveAudio", inputs: { audio: [2, 1] } },
+        },
+        workflow: {
+            nodes: [
+                { id: 1, outputs: [{ name: "images" }, { name: "audio" }] },
+                { id: 2, outputs: [{ name: "images" }, { name: "audio" }, { name: "filenames" }] },
+                { id: 3, outputs: [{ name: "upscale_model" }] },
+                { id: 4, outputs: [{ name: "IMAGE" }] },
+                { id: 5, outputs: [] },
+                { id: 6, outputs: [] },
+            ],
+            links: [
+                [10, 1, 0, 2, 0, "IMAGE"],
+                [11, 1, 1, 2, 1, "AUDIO"],
+                [12, 2, 0, 4, 0, "IMAGE"],
+                [13, 3, 0, 4, 1, "UPSCALE_MODEL"],
+                [14, 4, 0, 5, 0, "IMAGE"],
+                [15, 2, 1, 6, 0, "AUDIO"],
+            ],
+        },
+    };
+
+    const { prompt: resumePrompt, downstreamNodeIds, keptNodeIds } = buildPauseResumePrompt(prompt, 2, "images");
+
+    assert.deepEqual(downstreamNodeIds, [4, 5]);
+    assert.deepEqual(keptNodeIds.sort((a, b) => a - b), [2, 3, 4, 5]);
+    assert.deepEqual(resumePrompt.output["2"].inputs, { filename_prefix: "clip" });
+    assert.equal(resumePrompt.output["1"], undefined);
+    assert.equal(resumePrompt.output["6"], undefined);
+    assert.deepEqual(resumePrompt.workflow.nodes.map((node) => node.id).sort((a, b) => a - b), [2, 3, 4, 5]);
+    assert.deepEqual(resumePrompt.workflow.links.map((link) => link[0]).sort((a, b) => a - b), [12, 13, 14]);
+});
+
 test("layout controller does not expose size callbacks during ambiguous Vue mount", () => {
     let mountedNodeEl = null;
     let cssNodeHeight = 720;

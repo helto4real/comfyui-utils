@@ -7,6 +7,7 @@ import {
 } from "./hide_mode_helpers.js";
 import {
     SAVE_IMAGE_RELEASE_ROUTE,
+    SAVE_VIDEO_RELEASE_ROUTE,
     buildPauseResumePrompt,
 } from "./pause_control_helpers.js";
 
@@ -404,22 +405,23 @@ function ensurePauseControlWidget(node) {
 
 async function postPauseRelease(node) {
     const state = pauseControlState(node);
+    const route = getNodeClass(node) === VIDEO_NODE_CLASS ? SAVE_VIDEO_RELEASE_ROUTE : SAVE_IMAGE_RELEASE_ROUTE;
     const body = JSON.stringify({
         node_id: String(node.id),
         revision: state.revision,
     });
-    const response = await (api.fetchApi?.(SAVE_IMAGE_RELEASE_ROUTE, {
+    const response = await (api.fetchApi?.(route, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body,
-    }) ?? fetch(SAVE_IMAGE_RELEASE_ROUTE, {
+    }) ?? fetch(route, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body,
     }));
     const payload = await response.json();
     if (!response.ok || payload?.ok === false) {
-        throw new Error(payload?.error || "Failed to release stored image.");
+        throw new Error(payload?.error || "Failed to release stored media.");
     }
     return payload;
 }
@@ -1779,6 +1781,9 @@ function setupImageHideMode(node) {
 function setupVideoHideMode(node) {
     ensureHideModeProperty(node);
     ensureHideModeWidget(node);
+    if (getNodeClass(node) === VIDEO_NODE_CLASS) {
+        ensurePauseControlWidget(node);
+    }
     ensureVideoPreviewMediaType(node);
     node[HOVER_STATE] = false;
     managedHideModeNodes.add(node);
@@ -1788,6 +1793,9 @@ function setupVideoHideMode(node) {
         const result = originalOnConfigure?.apply(this, args);
         ensureHideModeProperty(this);
         ensureHideModeWidget(this);
+        if (getNodeClass(this) === VIDEO_NODE_CLASS) {
+            ensurePauseControlWidget(this);
+        }
         ensureVideoPreviewMediaType(this);
         setHideModeValue(this, this.properties?.[PROPERTY_NAME]);
         scheduleRestoredVueOutputRefresh(this);
@@ -1818,6 +1826,9 @@ function setupVideoHideMode(node) {
     node.onExecuted = function (output, ...args) {
         storeOutputForPreviewKeys(app, this, output);
         syncPrivatePreviewUrls(this, output);
+        if (getNodeClass(this) === VIDEO_NODE_CLASS) {
+            updatePauseControlState(this, pauseControlFromOutput(output) ?? {});
+        }
         ensureVideoPreviewMediaType(this);
         const result = runWithPreviewPriming(this, () => originalOnExecuted?.call(this, output, ...args));
         scheduleHideModeSync(this);
@@ -1861,6 +1872,9 @@ function setupVideoHideMode(node) {
     };
 
     syncHideOutputImages(node);
+    if (getNodeClass(node) === VIDEO_NODE_CLASS) {
+        updatePauseControlWidget(node);
+    }
 }
 
 function getNodeData(node) {

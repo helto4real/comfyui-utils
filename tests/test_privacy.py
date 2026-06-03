@@ -47,6 +47,60 @@ class PrivacyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             privacy.verify_media_token(token + "x", key=key)
 
+    def test_fast_crypto_writes_v2_payload_when_available(self):
+        from shared import privacy
+
+        if privacy.AESGCM is None:
+            self.skipTest("cryptography is not available")
+
+        key = b"2" * 32
+        encrypted = privacy.encrypt_bytes(b"large private payload", key=key)
+
+        self.assertTrue(encrypted.startswith(privacy.ENC_MAGIC_V2))
+        self.assertEqual(privacy.decrypt_bytes(encrypted, key=key), b"large private payload")
+
+    def test_fast_crypto_uses_chunked_v3_for_large_payloads(self):
+        from shared import privacy
+
+        if privacy.AESGCM is None:
+            self.skipTest("cryptography is not available")
+
+        key = b"5" * 32
+        original_max_bytes = privacy.AESGCM_MAX_BYTES
+        original_chunk_size = privacy.AESGCM_CHUNK_SIZE
+        try:
+            privacy.AESGCM_MAX_BYTES = 8
+            privacy.AESGCM_CHUNK_SIZE = 7
+            plaintext = b"chunked private payload"
+            encrypted = privacy.encrypt_bytes(plaintext, key=key)
+            self.assertTrue(encrypted.startswith(privacy.ENC_MAGIC_V3))
+            self.assertEqual(privacy.decrypt_bytes(encrypted, key=key), plaintext)
+        finally:
+            privacy.AESGCM_MAX_BYTES = original_max_bytes
+            privacy.AESGCM_CHUNK_SIZE = original_chunk_size
+
+    def test_decrypt_bytes_keeps_v1_payloads_readable(self):
+        from shared import privacy
+
+        key = b"3" * 32
+        encrypted = privacy._encrypt_bytes_v1(b"old private payload", key)
+
+        self.assertTrue(encrypted.startswith(privacy.ENC_MAGIC_V1))
+        self.assertEqual(privacy.decrypt_bytes(encrypted, key=key), b"old private payload")
+
+    def test_encrypt_bytes_falls_back_to_v1_without_fast_crypto(self):
+        from shared import privacy
+
+        key = b"4" * 32
+        original_aesgcm = privacy.AESGCM
+        try:
+            privacy.AESGCM = None
+            encrypted = privacy.encrypt_bytes(b"fallback private payload", key=key)
+            self.assertTrue(encrypted.startswith(privacy.ENC_MAGIC_V1))
+            self.assertEqual(privacy.decrypt_bytes(encrypted, key=key), b"fallback private payload")
+        finally:
+            privacy.AESGCM = original_aesgcm
+
     def test_encrypted_preview_file_decrypts_to_png(self):
         from io import BytesIO
 

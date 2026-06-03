@@ -1,4 +1,5 @@
 export const SAVE_IMAGE_RELEASE_ROUTE = "/helto_save_image_advanced/release";
+export const SAVE_VIDEO_RELEASE_ROUTE = "/helto_save_video_advanced/release";
 
 function asNumberSet(values) {
     return new Set([...values].map((value) => Number(value)).filter(Number.isFinite));

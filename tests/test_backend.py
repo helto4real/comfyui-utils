@@ -8,10 +8,12 @@ import sys
 import tempfile
 import types
 import unittest
+from collections.abc import Mapping
 from io import BytesIO
 from pathlib import Path
 
 from PIL import Image
+import torch
 
 from helto_selector_backend.crypto import decrypt_selection, encrypt_selection
 from helto_selector_backend.image_processing import (
@@ -1194,8 +1196,7 @@ Second beat moves toward the doorway. @image1:end
                 node_cls._save_video = original_save_video
 
             self.assertEqual(result[2], (False, []))
-            preview = result.kwargs["ui"]
-            record = preview.values[0]
+            record = result.kwargs["ui"]["images"][0]
             payload = privacy_globals["verify_media_token"](record["token"])
             encrypted_path = Path(payload["path"])
 
@@ -1281,6 +1282,246 @@ Second beat moves toward the doorway. @image1:end
         self.assertTrue(control["released"])
         self.assertFalse(control["paused"])
 
+    def test_save_video_pause_mode_writes_encrypted_bundle_and_blocks_downstream_quietly(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        node_cls = extension_module.SaveVideoAdvanced
+        module_globals = node_cls.execute.__func__.__globals__
+        execution_blocker = module_globals["ExecutionBlocker"]
+        original_save_video = node_cls.__dict__["_save_video"]
+        original_hidden = getattr(node_cls, "hidden", None)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            privacy_globals = self._configure_private_video_test_runtime(node_cls, tmpdir)
+            saved_calls = []
+
+            def fake_save_video(cls, frames, audio, save_dir, filename_prefix, counter, **_kwargs):
+                saved_calls.append((frames, audio))
+                output_path = os.path.join(save_dir, f"{filename_prefix}_{counter:05}.mp4")
+                with open(output_path, "wb") as stream:
+                    stream.write(b"private pause preview")
+                return [output_path]
+
+            node_cls._save_video = classmethod(fake_save_video)
+            node_cls.hidden = types.SimpleNamespace(unique_id="video-pause-node")
+            node_cls.state["previews"].clear()
+            node_cls.state["media"].clear()
+            node_cls.state["releases"].clear()
+            try:
+                images = torch.arange(24, dtype=torch.float32).reshape(2, 2, 2, 3)
+                audio = {
+                    "waveform": torch.arange(8, dtype=torch.float32).reshape(1, 2, 4),
+                    "sample_rate": 44100,
+                }
+                result = node_cls.execute(
+                    images=images,
+                    audio=audio,
+                    save_output=False,
+                    pause_mode=True,
+                    privacy_mode=True,
+                )
+            finally:
+                node_cls._save_video = original_save_video
+                node_cls.hidden = original_hidden
+
+            self.assertIsInstance(result[0], execution_blocker)
+            self.assertIsInstance(result[1], execution_blocker)
+            self.assertIsInstance(result[2], execution_blocker)
+            self.assertEqual(len(saved_calls), 1)
+
+            stored = node_cls.state["media"]["video-pause-node"]
+            bundle_path = Path(stored["path"])
+            self.assertTrue(stored["encrypted"])
+            self.assertTrue(stored["paused"])
+            self.assertTrue(bundle_path.is_file())
+            self.assertEqual(bundle_path.suffix, ".enc")
+
+            plaintext = privacy_globals["decrypt_bytes"](bundle_path.read_bytes())
+            bundle = torch.load(BytesIO(plaintext), map_location="cpu")
+            self.assertTrue(torch.equal(bundle["images"], images))
+            self.assertTrue(torch.equal(bundle["audio"]["waveform"], audio["waveform"]))
+            self.assertEqual(bundle["audio"]["sample_rate"], audio["sample_rate"])
+            self.assertEqual(bundle["filenames"], (False, []))
+
+            control = result.kwargs["ui"]["helto_pause_control"][0]
+            self.assertTrue(control["has_media"])
+            self.assertTrue(control["paused"])
+            self.assertEqual(control["mode"], "paused")
+
+            plain_bundles = [
+                path for path in Path(tmpdir).rglob("*.pt")
+                if "helto_private" not in path.parts
+            ]
+            self.assertEqual(plain_bundles, [])
+
+    def test_save_video_release_reemits_plain_bundle_without_saving_again(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        node_cls = extension_module.SaveVideoAdvanced
+        original_save_video = node_cls.__dict__["_save_video"]
+        original_hidden = getattr(node_cls, "hidden", None)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._configure_private_video_test_runtime(node_cls, tmpdir)
+            saved_calls = []
+
+            def fake_save_video(cls, frames, audio, save_dir, filename_prefix, counter, **_kwargs):
+                saved_calls.append((frames, audio))
+                os.makedirs(save_dir, exist_ok=True)
+                output_path = os.path.join(save_dir, f"{filename_prefix}_{counter:05}.mp4")
+                with open(output_path, "wb") as stream:
+                    stream.write(b"saved replay video")
+                return [output_path]
+
+            node_cls._save_video = classmethod(fake_save_video)
+            node_cls.hidden = types.SimpleNamespace(unique_id="video-release-node")
+            node_cls.state["previews"].clear()
+            node_cls.state["media"].clear()
+            node_cls.state["releases"].clear()
+            try:
+                images = torch.arange(24, dtype=torch.float32).reshape(2, 2, 2, 3)
+                audio = {
+                    "waveform": torch.arange(8, dtype=torch.float32).reshape(1, 2, 4),
+                    "sample_rate": 48000,
+                }
+                first = node_cls.execute(
+                    images=images,
+                    audio=audio,
+                    folder=os.path.join(tmpdir, "output"),
+                    save_output=True,
+                    pause_mode=False,
+                    privacy_mode=False,
+                )
+                revision = first.kwargs["ui"]["helto_pause_control"][0]["revision"]
+                release = node_cls.request_release("video-release-node", revision)
+                second = node_cls.execute(images=None, audio=None, pause_mode=True)
+            finally:
+                node_cls._save_video = original_save_video
+                node_cls.hidden = original_hidden
+
+            self.assertTrue(release["ok"])
+            self.assertEqual(len(saved_calls), 1)
+            self.assertTrue(torch.equal(second[0], images))
+            self.assertTrue(torch.equal(second[1]["waveform"], audio["waveform"]))
+            self.assertEqual(second[1]["sample_rate"], audio["sample_rate"])
+            self.assertEqual(second[2], first[2])
+            self.assertTrue(second[2][0])
+            self.assertEqual(Path(second[2][1][0]).read_bytes(), b"saved replay video")
+
+            stored = node_cls.state["media"]["video-release-node"]
+            self.assertFalse(stored["encrypted"])
+            self.assertFalse(stored["paused"])
+            self.assertTrue(Path(stored["path"]).is_file())
+            self.assertNotIn("video-release-node", node_cls.state["releases"])
+
+            control = second.kwargs["ui"]["helto_pause_control"][0]
+            self.assertEqual(control["mode"], "released")
+            self.assertTrue(control["released"])
+            self.assertFalse(control["paused"])
+
+    def test_save_video_replay_materializes_lazy_audio_mapping_before_serializing(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        node_cls = extension_module.SaveVideoAdvanced
+        original_save_video = node_cls.__dict__["_save_video"]
+        original_hidden = getattr(node_cls, "hidden", None)
+
+        class FakeLazyAudio(Mapping):
+            def __init__(self, payload):
+                self.payload = payload
+                self.resolved = False
+
+            def __getitem__(self, key):
+                self.resolved = True
+                return self.payload[key]
+
+            def __iter__(self):
+                self.resolved = True
+                return iter(self.payload)
+
+            def __len__(self):
+                self.resolved = True
+                return len(self.payload)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._configure_private_video_test_runtime(node_cls, tmpdir)
+
+            def fake_save_video(cls, frames, audio, save_dir, filename_prefix, counter, **_kwargs):
+                _ = audio["waveform"]
+                os.makedirs(save_dir, exist_ok=True)
+                output_path = os.path.join(save_dir, f"{filename_prefix}_{counter:05}.mp4")
+                with open(output_path, "wb") as stream:
+                    stream.write(b"lazy audio video")
+                return [output_path]
+
+            node_cls._save_video = classmethod(fake_save_video)
+            node_cls.hidden = types.SimpleNamespace(unique_id="video-lazy-audio-node")
+            node_cls.state["previews"].clear()
+            node_cls.state["media"].clear()
+            node_cls.state["releases"].clear()
+            try:
+                images = torch.arange(24, dtype=torch.float32).reshape(2, 2, 2, 3)
+                audio_payload = {
+                    "waveform": torch.arange(8, dtype=torch.float32).reshape(1, 2, 4),
+                    "sample_rate": 44100,
+                }
+                audio = FakeLazyAudio(audio_payload)
+                first = node_cls.execute(
+                    images=images,
+                    audio=audio,
+                    save_output=False,
+                    pause_mode=False,
+                    privacy_mode=False,
+                )
+                revision = first.kwargs["ui"]["helto_pause_control"][0]["revision"]
+                stored = node_cls.state["media"]["video-lazy-audio-node"]
+                bundle = torch.load(stored["path"], map_location="cpu", weights_only=True)
+                release = node_cls.request_release("video-lazy-audio-node", revision)
+                second = node_cls.execute(images=None, audio=None, pause_mode=True)
+            finally:
+                node_cls._save_video = original_save_video
+                node_cls.hidden = original_hidden
+
+            self.assertTrue(audio.resolved)
+            self.assertIs(type(bundle["audio"]), dict)
+            self.assertTrue(torch.equal(bundle["audio"]["waveform"], audio_payload["waveform"]))
+            self.assertEqual(bundle["audio"]["sample_rate"], audio_payload["sample_rate"])
+            self.assertTrue(release["ok"])
+            self.assertTrue(torch.equal(second[1]["waveform"], audio_payload["waveform"]))
+            self.assertEqual(second[1]["sample_rate"], audio_payload["sample_rate"])
+
+    def test_save_video_release_discards_stale_incompatible_replay_bundle(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        node_cls = extension_module.SaveVideoAdvanced
+        original_hidden = getattr(node_cls, "hidden", None)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._configure_private_video_test_runtime(node_cls, tmpdir)
+            bundle_path = Path(tmpdir) / "stale.pt"
+            bundle_path.write_bytes(b"not a torch replay bundle")
+            node_cls.hidden = types.SimpleNamespace(unique_id="video-stale-node")
+            node_cls.state["previews"].clear()
+            node_cls.state["media"].clear()
+            node_cls.state["releases"].clear()
+            node_cls.state["media"]["video-stale-node"] = {
+                "path": str(bundle_path),
+                "encrypted": False,
+                "revision": 1,
+                "paused": True,
+            }
+            try:
+                release = node_cls.request_release("video-stale-node", 1)
+                result = node_cls.execute(images=None, audio=None, pause_mode=True)
+            finally:
+                node_cls.hidden = original_hidden
+
+            self.assertTrue(release["ok"])
+            self.assertEqual(result[0], None)
+            self.assertEqual(result[1], None)
+            self.assertEqual(result[2], (True, []))
+            self.assertFalse(bundle_path.exists())
+            self.assertNotIn("video-stale-node", node_cls.state["media"])
+            control = result.kwargs["ui"]["helto_pause_control"][0]
+            self.assertFalse(control["has_media"])
+            self.assertEqual(control["mode"], "empty")
+
     def test_save_video_private_preview_names_are_unique_per_node(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()
         node_cls = extension_module.SaveVideoAdvanced
@@ -1311,7 +1552,7 @@ Second beat moves toward the doorway. @image1:end
                         save_output=False,
                         privacy_mode=True,
                     )
-                    records.append(result.kwargs["ui"].values[0])
+                    records.append(result.kwargs["ui"]["images"][0])
             finally:
                 node_cls._save_video = original_save_video
                 node_cls.hidden = original_hidden
@@ -1372,7 +1613,7 @@ Second beat moves toward the doorway. @image1:end
             self.assertEqual(len(output_files), 1)
             self.assertEqual(Path(output_files[0]).read_bytes(), b"saved video")
 
-            record = result.kwargs["ui"].values[0]
+            record = result.kwargs["ui"]["images"][0]
             payload = privacy_globals["verify_media_token"](record["token"])
             encrypted_path = Path(payload["path"])
             self.assertTrue(payload["encrypted"])

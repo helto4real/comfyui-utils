@@ -7,21 +7,33 @@ import shutil
 import subprocess
 import tempfile
 import uuid
+from collections.abc import Mapping
 from datetime import date
+from io import BytesIO
 from pathlib import Path
 from string import Template
 from typing import Any
 
+from aiohttp import web
 import folder_paths
 import numpy as np
+import server
 import torch
 from comfy.cli_args import args as comfy_args
 from comfy.utils import ProgressBar
 from comfy_api.latest import io, ui
+from comfy_execution.graph import ExecutionBlocker
 from PIL import Image, ExifTags
 from PIL.PngImagePlugin import PngInfo
 
-from ...shared.privacy import content_type_for_path, private_media_record, write_encrypted_temp_file
+from ...shared.privacy import (
+    content_type_for_path,
+    decrypt_bytes,
+    encrypt_bytes,
+    private_media_record,
+    private_temp_dir,
+    write_encrypted_temp_file,
+)
 
 
 _COUNTER_RE_TEMPLATE = r"^{prefix}_(?P<counter>\d+)(?:-audio)?\.[^.]+$"
@@ -334,6 +346,8 @@ def _find_ffmpeg() -> str | None:
 class SaveVideoAdvanced(io.ComfyNode):
     state = {
         "previews": {},
+        "media": {},
+        "releases": {},
     }
 
     @classmethod
@@ -375,6 +389,7 @@ class SaveVideoAdvanced(io.ComfyNode):
                 ),
                 io.Boolean.Input("pingpong", default=False),
                 io.Boolean.Input("save_output", default=True),
+                io.Boolean.Input("pause_mode", display_name="pause mode", default=False),
                 io.Boolean.Input("privacy_mode", default=True),
             ],
             outputs=[
@@ -411,19 +426,49 @@ class SaveVideoAdvanced(io.ComfyNode):
         format: str = "video/h264-mp4",
         pingpong: bool = False,
         save_output: bool = True,
+        pause_mode: bool = False,
         privacy_mode: bool = True,
         **kwargs,
     ) -> io.NodeOutput:
         node_id = cls._node_id()
         cached_preview = cls.state["previews"].get(node_id)
+        release = cls._consume_release(node_id)
+
+        if release is not None:
+            stored = cls._load_replay_bundle(node_id)
+            if stored is not None:
+                cls.state["media"][node_id]["paused"] = False
+                control = cls._pause_control_payload(node_id, mode="released", released=True)
+                return io.NodeOutput(
+                    stored["images"],
+                    stored["audio"],
+                    stored["filenames"],
+                    ui=cls._with_pause_control(cached_preview, control),
+                )
 
         if images is None:
-            return io.NodeOutput(None, audio, (save_output, []), ui=cached_preview)
+            return io.NodeOutput(
+                None,
+                audio,
+                (save_output, []),
+                ui=cls._with_pause_control(
+                    cached_preview,
+                    cls._pause_control_payload(node_id, mode="empty"),
+                ),
+            )
 
         decoded_images = cls._prepare_images(images, vae)
         frames = [frame for frame in decoded_images]
         if len(frames) == 0:
-            return io.NodeOutput(decoded_images, audio, (save_output, []), ui=cached_preview)
+            return io.NodeOutput(
+                decoded_images,
+                audio,
+                (save_output, []),
+                ui=cls._with_pause_control(
+                    cached_preview,
+                    cls._pause_control_payload(node_id, mode="empty"),
+                ),
+            )
         if pingpong:
             frames = _to_pingpong(frames)
 
@@ -468,19 +513,215 @@ class SaveVideoAdvanced(io.ComfyNode):
                 preview = ui.PreviewVideo([cls._private_preview_record(final_path)])
             else:
                 preview = ui.PreviewVideo([cls._preview_result(final_path)])
-            cls.state["previews"][node_id] = preview
 
             returned_files = output_files if save_output or not privacy_mode else []
+            filenames = (save_output, returned_files)
+            revision = cls._store_replay_bundle(
+                node_id,
+                images=decoded_images,
+                audio=audio,
+                filenames=filenames,
+                paused=bool(pause_mode),
+                privacy_mode=bool(privacy_mode),
+            )
+            control = cls._pause_control_payload(
+                node_id,
+                mode="paused" if pause_mode else "ready",
+                paused=bool(pause_mode),
+                revision=revision,
+            )
+            preview = cls._with_pause_control(preview, control)
+            cls.state["previews"][node_id] = preview
+
             if save_output:
                 print(f"Save Video Advanced saved {len(output_files)} file(s) to: {save_dir}")
             elif privacy_mode:
                 print("Save Video Advanced created an encrypted private preview without saving output files.")
             else:
                 print(f"Save Video Advanced saved {len(output_files)} temp file(s) to: {save_dir}")
-            return io.NodeOutput(decoded_images, audio, (save_output, returned_files), ui=preview)
+
+            if pause_mode:
+                blocker = ExecutionBlocker(None)
+                return io.NodeOutput(blocker, blocker, blocker, ui=preview)
+
+            return io.NodeOutput(decoded_images, audio, filenames, ui=preview)
         finally:
             if staging_dir is not None:
                 shutil.rmtree(staging_dir, ignore_errors=True)
+
+    @classmethod
+    def _store_replay_bundle(
+        cls,
+        node_id: str,
+        *,
+        images,
+        audio,
+        filenames,
+        paused: bool,
+        privacy_mode: bool,
+    ) -> int:
+        previous = cls.state["media"].get(node_id)
+        if previous is not None:
+            cls._delete_replay_bundle(previous)
+
+        existing_revision = int(previous.get("revision", 0)) if previous else 0
+        revision = existing_revision + 1
+        encrypted = bool(privacy_mode)
+        path = cls._write_replay_bundle(
+            {
+                "images": cls._to_cpu_value(images),
+                "audio": cls._to_cpu_value(audio),
+                "filenames": filenames,
+            },
+            encrypted=encrypted,
+        )
+        cls.state["media"][node_id] = {
+            "path": str(path),
+            "encrypted": encrypted,
+            "revision": revision,
+            "paused": paused,
+        }
+        return revision
+
+    @staticmethod
+    def _to_cpu_value(value):
+        if isinstance(value, torch.Tensor):
+            return value.detach().cpu()
+        if isinstance(value, dict):
+            return {key: SaveVideoAdvanced._to_cpu_value(item) for key, item in value.items()}
+        if isinstance(value, Mapping):
+            return {key: SaveVideoAdvanced._to_cpu_value(value[key]) for key in value}
+        if isinstance(value, list):
+            return [SaveVideoAdvanced._to_cpu_value(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(SaveVideoAdvanced._to_cpu_value(item) for item in value)
+        return value
+
+    @classmethod
+    def _write_replay_bundle(cls, payload: dict[str, Any], *, encrypted: bool) -> Path:
+        buffer = BytesIO()
+        torch.save(payload, buffer)
+        if encrypted:
+            output_path = private_temp_dir("save_video_advanced_replay") / f"{uuid.uuid4().hex}.pt.enc"
+            output_path.write_bytes(encrypt_bytes(buffer.getvalue()))
+            return output_path
+
+        output_dir = Path(folder_paths.get_temp_directory()) / "helto_save_video_advanced_replay"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / f"{uuid.uuid4().hex}.pt"
+        output_path.write_bytes(buffer.getvalue())
+        return output_path
+
+    @classmethod
+    def _load_replay_bundle(cls, node_id: str) -> dict[str, Any] | None:
+        stored = cls.state["media"].get(node_id)
+        if stored is None:
+            return None
+
+        path = Path(stored.get("path", ""))
+        if not path.is_file():
+            return None
+
+        try:
+            data = path.read_bytes()
+            if stored.get("encrypted"):
+                data = decrypt_bytes(data)
+
+            buffer = BytesIO(data)
+            return torch.load(buffer, map_location="cpu", weights_only=True)
+        except Exception:
+            cls._delete_replay_bundle(stored)
+            cls.state["media"].pop(node_id, None)
+            return None
+
+    @staticmethod
+    def _delete_replay_bundle(stored: dict[str, Any]) -> None:
+        path = Path(stored.get("path", ""))
+        try:
+            if path.is_file() or path.is_symlink():
+                path.unlink()
+        except Exception:
+            pass
+
+    @classmethod
+    def request_release(cls, node_id: str, revision=None) -> dict:
+        stored = cls.state["media"].get(node_id)
+        if stored is None or not Path(stored.get("path", "")).is_file():
+            return {
+                "ok": False,
+                "error": "No stored video is available for this node.",
+                "status": 404,
+            }
+
+        current_revision = int(stored.get("revision", 0))
+        if revision is not None:
+            try:
+                requested_revision = int(revision)
+            except (TypeError, ValueError):
+                requested_revision = None
+            if requested_revision != current_revision:
+                return {
+                    "ok": False,
+                    "error": "Stored video revision is no longer current.",
+                    "revision": current_revision,
+                    "status": 409,
+                }
+
+        cls.state["releases"][node_id] = {"revision": current_revision}
+        return {
+            "ok": True,
+            "has_media": True,
+            "revision": current_revision,
+            "paused": bool(stored.get("paused", False)),
+        }
+
+    @classmethod
+    def _consume_release(cls, node_id: str) -> dict | None:
+        return cls.state["releases"].pop(node_id, None)
+
+    @classmethod
+    def _pause_control_payload(
+        cls,
+        node_id: str,
+        mode: str,
+        *,
+        paused: bool | None = None,
+        released: bool = False,
+        revision: int | None = None,
+    ) -> dict:
+        stored = cls.state["media"].get(node_id)
+        has_media = bool(stored and Path(stored.get("path", "")).is_file())
+        if stored is not None:
+            revision = int(stored.get("revision", 0)) if revision is None else revision
+            paused = bool(stored.get("paused", False)) if paused is None else paused
+
+        return {
+            "has_media": has_media,
+            "mode": mode,
+            "paused": bool(paused) if paused is not None else False,
+            "released": released,
+            "revision": revision,
+        }
+
+    @staticmethod
+    def _preview_as_dict(preview) -> dict:
+        if preview is None:
+            return {}
+        if isinstance(preview, dict):
+            return {key: list(value) if isinstance(value, tuple) else value for key, value in preview.items()}
+        as_dict = getattr(preview, "as_dict", None)
+        if callable(as_dict):
+            return as_dict()
+        values = getattr(preview, "values", None)
+        if values is not None:
+            return {"images": values, "animated": (True,)}
+        return {}
+
+    @classmethod
+    def _with_pause_control(cls, preview, control: dict) -> dict:
+        payload = cls._preview_as_dict(preview)
+        payload["helto_pause_control"] = [control]
+        return payload
 
     @classmethod
     def _prepare_images(cls, images, vae):
@@ -928,3 +1169,15 @@ class SaveVideoAdvanced(io.ComfyNode):
             if match:
                 counters.append(int(match.group("counter")))
         return max(counters, default=0) + 1
+
+
+@server.PromptServer.instance.routes.post("/helto_save_video_advanced/release")
+async def release_save_video_advanced(request):
+    try:
+        data = await request.json()
+        node_id = str(data.get("node_id", ""))
+        result = SaveVideoAdvanced.request_release(node_id, data.get("revision"))
+        status = int(result.pop("status", 200))
+        return web.json_response(result, status=status)
+    except Exception as exc:
+        return web.json_response({"ok": False, "error": str(exc)}, status=400)
