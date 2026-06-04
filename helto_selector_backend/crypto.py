@@ -11,15 +11,34 @@ import types
 
 from .constants import CONFIG_DIR, ENC_PREFIX, ensure_runtime_dirs
 
-try:
-    from shared import privacy as shared_privacy
-except ModuleNotFoundError as exc:
-    if exc.name != "folder_paths":
-        raise
+def _install_folder_paths_stub() -> None:
     folder_paths = types.ModuleType("folder_paths")
     folder_paths.get_temp_directory = tempfile.gettempdir
     sys.modules["folder_paths"] = folder_paths
-    from shared import privacy as shared_privacy
+
+
+def _import_shared_privacy():
+    try:
+        try:
+            from ..shared import privacy
+        except ImportError as exc:
+            if str(exc) != "attempted relative import beyond top-level package":
+                raise
+            from shared import privacy
+    except ModuleNotFoundError as exc:
+        if exc.name != "folder_paths":
+            raise
+        _install_folder_paths_stub()
+        try:
+            from ..shared import privacy
+        except ImportError as fallback_exc:
+            if str(fallback_exc) != "attempted relative import beyond top-level package":
+                raise
+            from shared import privacy
+    return privacy
+
+
+shared_privacy = _import_shared_privacy()
 
 KEY_PATH = os.path.join(CONFIG_DIR, "key.bin")
 

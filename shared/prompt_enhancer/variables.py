@@ -8,7 +8,9 @@ from typing import Any
 try:
     from ...helto_selector_backend.constants import ENC_PREFIX
     from ...helto_selector_backend.crypto import decrypt_selection
-except ImportError:
+except ImportError as exc:
+    if str(exc) != "attempted relative import beyond top-level package":
+        raise
     from helto_selector_backend.constants import ENC_PREFIX
     from helto_selector_backend.crypto import decrypt_selection
 

@@ -2135,7 +2135,9 @@ Second beat moves toward the doorway. @image1:end
         modules["comfy.utils"].ProgressBar = lambda _total: types.SimpleNamespace(update_absolute=lambda *_args: None)
         modules["comfy_execution.graph"].ExecutionBlocker = FakeExecutionBlocker
 
-        package_name = "helto_utils_schema_test"
+        init_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "__init__.py"))
+        repo_root = os.path.dirname(init_path)
+        package_name = repo_root.replace(".", "_x_") if isolate_custom_node_root else "helto_utils_schema_test"
         previous_modules = {name: sys.modules.get(name) for name in modules}
         previous_package_modules = {
             name: module
@@ -2147,16 +2149,21 @@ Second beat moves toward the doorway. @image1:end
             for name, module in sys.modules.items()
             if name == "helto_selector_backend" or name.startswith("helto_selector_backend.")
         }
+        previous_shared_modules = {
+            name: module
+            for name, module in sys.modules.items()
+            if name == "shared" or name.startswith("shared.")
+        }
         previous_sys_path = list(sys.path)
         for name in previous_package_modules:
             sys.modules.pop(name, None)
         if isolate_custom_node_root:
             for name in previous_selector_modules:
                 sys.modules.pop(name, None)
+            for name in previous_shared_modules:
+                sys.modules.pop(name, None)
 
         sys.modules.update(modules)
-        init_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "__init__.py"))
-        repo_root = os.path.dirname(init_path)
         if isolate_custom_node_root:
             sys.path[:] = [
                 entry for entry in sys.path
@@ -2186,7 +2193,10 @@ Second beat moves toward the doorway. @image1:end
                 for name in list(sys.modules):
                     if name == "helto_selector_backend" or name.startswith("helto_selector_backend."):
                         sys.modules.pop(name, None)
+                    if name == "shared" or name.startswith("shared."):
+                        sys.modules.pop(name, None)
                 sys.modules.update(previous_selector_modules)
+                sys.modules.update(previous_shared_modules)
                 sys.path[:] = previous_sys_path
 
 
