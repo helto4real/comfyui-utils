@@ -24,8 +24,11 @@ import {
     uniqueFolderPaths,
 } from "../../web/state.js";
 import {
+    expandNodeToComputedSize,
     previewKeysForNode,
+    restoreNodeSize,
     runWithPreviewPriming,
+    scheduleNodeSizeRestore,
     storeOutputForPreviewKeys,
 } from "../../web/hide_mode_helpers.js";
 import {
@@ -339,6 +342,90 @@ test("hide mode helpers store outputs for node and graph preview keys", () => {
 
     assert.equal(app.nodeOutputs["12"], output);
     assert.equal(app.nodeOutputs["subgraph:12"], output);
+});
+
+test("hide mode helpers preserve restored node size when computed size is smaller", () => {
+    const setSizeCalls = [];
+    const node = {
+        size: [600, 500],
+        computeSize: () => [300, 200],
+        setSize: (size) => setSizeCalls.push(size),
+    };
+
+    assert.deepEqual(expandNodeToComputedSize(node), [600, 500]);
+    assert.deepEqual(setSizeCalls, []);
+});
+
+test("hide mode helpers expand node size when computed size is larger", () => {
+    const node = {
+        size: [200, 100],
+        computeSize: () => [300, 200],
+        setSize(size) {
+            this.size = size;
+        },
+    };
+
+    assert.deepEqual(expandNodeToComputedSize(node), [300, 200]);
+    assert.deepEqual(node.size, [300, 200]);
+});
+
+test("hide mode helpers fall back to computed size when current size is invalid", () => {
+    const node = {
+        size: [Number.NaN, undefined],
+        computeSize: () => [300, 200],
+        setSize(size) {
+            this.size = size;
+        },
+    };
+
+    assert.deepEqual(expandNodeToComputedSize(node), [300, 200]);
+    assert.deepEqual(node.size, [300, 200]);
+});
+
+test("hide mode helpers reassert restored node size through setSize", () => {
+    const setSizeCalls = [];
+    const node = {
+        size: [600, 500],
+        setSize: (size) => setSizeCalls.push(size),
+    };
+
+    assert.deepEqual(restoreNodeSize(node, [600, 500]), [600, 500]);
+    assert.deepEqual(setSizeCalls, [[600, 500]]);
+});
+
+test("hide mode helpers restore hydration size without shrinking larger dimensions", () => {
+    const originalSetTimeout = globalThis.setTimeout;
+    const originalRequestAnimationFrame = globalThis.requestAnimationFrame;
+    const callbacks = [];
+    globalThis.setTimeout = (callback) => {
+        callbacks.push(callback);
+        return 0;
+    };
+    globalThis.requestAnimationFrame = (callback) => {
+        callbacks.push(callback);
+        return 0;
+    };
+
+    try {
+        const setSizeCalls = [];
+        const node = {
+            size: [700, 400],
+            setSize(size) {
+                setSizeCalls.push(size);
+                this.size = size;
+            },
+        };
+
+        assert.deepEqual(scheduleNodeSizeRestore(node, [600, 500]), [600, 500]);
+        for (const callback of callbacks) callback();
+        assert.equal(setSizeCalls.length, 9);
+        for (const size of setSizeCalls) {
+            assert.deepEqual(size, [700, 500]);
+        }
+    } finally {
+        globalThis.setTimeout = originalSetTimeout;
+        globalThis.requestAnimationFrame = originalRequestAnimationFrame;
+    }
 });
 
 test("hide mode helpers prime native preview execution then restore hidden state", () => {

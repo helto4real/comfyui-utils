@@ -1,8 +1,10 @@
 import { app } from "/scripts/app.js";
 import { api } from "/scripts/api.js";
 import {
+    expandNodeToComputedSize,
     previewKeysForNode,
     runWithPreviewPriming,
+    scheduleNodeSizeRestore,
     storeOutputForPreviewKeys,
 } from "./hide_mode_helpers.js";
 import {
@@ -39,6 +41,7 @@ const VUE_NODE_POSITION_STYLE = "__heltoHideModeVueNodePositionStyle";
 const DEBUG_STORAGE_KEY = "heltoHideModeDebug";
 const RESTORED_OUTPUT_REFRESHED = "__heltoHideModeRestoredOutputRefreshed";
 const RESTORE_REFRESH_SCHEDULED = "__heltoHideModeRestoreRefreshScheduled";
+const RESTORED_NODE_SIZE = "__heltoHideModeRestoredNodeSize";
 const FORMAT_WIDGETS = "__heltoVideoFormatWidgets";
 const FORMAT_WIDGET_COUNT = "__heltoVideoFormatWidgetCount";
 const FORMAT_WIDGET_CALLBACK = "__heltoVideoFormatWidgetCallback";
@@ -311,7 +314,7 @@ function ensureHideModeWidget(node) {
     widget.options ??= {};
     widget.options.serialize = false;
     node[HIDE_MODE_WIDGET] = widget;
-    node.setSize?.(node.computeSize?.() ?? node.size);
+    expandNodeToComputedSize(node);
 }
 
 function pauseControlFromOutput(output) {
@@ -402,7 +405,7 @@ function ensurePauseControlWidget(node) {
     node[PAUSE_CONTROL_WIDGET] = widget;
     moveWidgetToTop(node, widget);
     updatePauseControlWidget(node);
-    node.setSize?.(node.computeSize?.() ?? node.size);
+    expandNodeToComputedSize(node);
 }
 
 async function postPauseRelease(node) {
@@ -1678,6 +1681,7 @@ function refreshRestoredVueOutput(node, { force = false } = {}) {
             prompt_id: "helto_hide_mode_restored_preview",
         },
     }));
+    scheduleNodeSizeRestore(node, node[RESTORED_NODE_SIZE]);
 }
 
 function scheduleRestoredVueOutputRefresh(node, options = {}) {
@@ -1714,6 +1718,8 @@ function setupImageHideMode(node) {
         sanitizeSerializedWidgetValues(this, this);
         setHideModeValue(this, this.properties?.[PROPERTY_NAME]);
         syncImageHideOutputImages(this);
+        this[RESTORED_NODE_SIZE] = config?.size;
+        scheduleNodeSizeRestore(this, config?.size);
         return result;
     };
 
@@ -1811,6 +1817,8 @@ function setupVideoHideMode(node) {
         setHideModeValue(this, this.properties?.[PROPERTY_NAME]);
         scheduleRestoredVueOutputRefresh(this);
         syncHideOutputImages(this);
+        this[RESTORED_NODE_SIZE] = config?.size;
+        scheduleNodeSizeRestore(this, config?.size);
         return result;
     };
 
@@ -1981,7 +1989,7 @@ function refreshFormatWidgets(node, formatValue) {
         addFormatWidgetInput(node, widget);
     }
 
-    node.setSize?.(node.computeSize?.() ?? node.size);
+    expandNodeToComputedSize(node);
     setCanvasDirty(node);
 }
 
