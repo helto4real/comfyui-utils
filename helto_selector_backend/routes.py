@@ -7,6 +7,8 @@ from server import PromptServer
 
 from .services import (
     DeleteImagesPayload,
+    MigrateMasksPayload,
+    SaveMaskPayload,
     ScanFoldersPayload,
     clear_cache_payload,
     decrypt_payload,
@@ -14,7 +16,10 @@ from .services import (
     encrypt_payload,
     get_input_dir_payload,
     image_path_exists,
+    mask_image_payload,
+    migrate_masks_payload,
     scan_folders_payload,
+    save_mask_payload,
     thumbnail_payload,
 )
 
@@ -67,6 +72,20 @@ async def view_image(request):
         return web.Response(text=str(e), status=500)
 
 
+@routes.get("/helto_selector/mask")
+async def get_mask(request):
+    try:
+        image_path = request.query.get("path")
+
+        if not image_path_exists(image_path):
+            return web.Response(text="Image path not found", status=404)
+
+        png_bytes = mask_image_payload(image_path)
+        return web.Response(body=png_bytes, content_type="image/png")
+    except Exception as e:
+        return web.Response(text=str(e), status=500)
+
+
 @routes.post("/helto_selector/delete_images")
 async def api_delete_images(request):
     try:
@@ -91,6 +110,30 @@ async def api_decrypt(request):
     try:
         data = await request.json()
         return web.json_response(decrypt_payload(data))
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+@routes.post("/helto_selector/save_mask")
+async def api_save_mask(request):
+    try:
+        data = await request.json()
+        payload = SaveMaskPayload.from_request_data(data)
+        return web.json_response(save_mask_payload(payload))
+    except FileNotFoundError as e:
+        return web.json_response({"error": str(e)}, status=404)
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+@routes.post("/helto_selector/migrate_masks")
+async def api_migrate_masks(request):
+    try:
+        data = await request.json()
+        payload = MigrateMasksPayload.from_request_data(data)
+        return web.json_response(migrate_masks_payload(payload))
     except Exception as e:
         return web.json_response({"error": str(e)}, status=500)
 

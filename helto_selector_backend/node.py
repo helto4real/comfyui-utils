@@ -25,14 +25,27 @@ class HeltoImageSelector(io.ComfyNode):
                     socketless=True,
                     extra_dict={"hidden": True},
                 ),
+                io.String.Input(
+                    "edited_masks",
+                    default="{}",
+                    socketless=True,
+                    extra_dict={"hidden": True},
+                ),
             ],
             outputs=[
                 io.Image.Output("images", display_name="images", is_output_list=True),
                 io.Image.Output("image_batch", display_name="image_batch"),
+                io.Mask.Output("masks", display_name="masks", is_output_list=True),
+                io.Mask.Output("mask_batch", display_name="mask_batch"),
             ],
         )
 
     @classmethod
-    def execute(cls, selected_images: str = "[]", resize_mode: str = DEFAULT_RESIZE_MODE) -> io.NodeOutput:
-        tensor_list, image_batch = select_images(selected_images, resize_mode)
-        return io.NodeOutput(tensor_list, image_batch)
+    def execute(
+        cls,
+        selected_images: str = "[]",
+        resize_mode: str = DEFAULT_RESIZE_MODE,
+        edited_masks: str = "{}",
+    ) -> io.NodeOutput:
+        tensor_list, image_batch, mask_list, mask_batch = select_images(selected_images, resize_mode, edited_masks)
+        return io.NodeOutput(tensor_list, image_batch, mask_list, mask_batch)

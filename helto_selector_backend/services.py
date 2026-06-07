@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import os
+from io import BytesIO
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from PIL import Image, ImageOps
+
 from .crypto import decrypt_selection, encrypt_selection
+from .mask_storage import load_mask_bytes, migrate_mask_privacy, save_mask_data_url
 from .scanning import delete_image_files, discover_image_folders, scan_image_folders
 from .thumbnail_cache import clear_thumbnail_cache, delete_thumbnail_cache_for_paths, get_thumbnail_bytes
 
@@ -70,6 +74,34 @@ class DeleteImagesPayload:
         )
 
 
+@dataclass(frozen=True)
+class SaveMaskPayload:
+    path: str
+    mask_data: str
+    privacy: bool
+
+    @classmethod
+    def from_request_data(cls, data: Mapping[str, Any]) -> "SaveMaskPayload":
+        return cls(
+            path=str(data.get("path") or ""),
+            mask_data=str(data.get("mask_data") or ""),
+            privacy=_truthy(data.get("privacy", False)),
+        )
+
+
+@dataclass(frozen=True)
+class MigrateMasksPayload:
+    paths: list[str]
+    privacy: bool
+
+    @classmethod
+    def from_request_data(cls, data: Mapping[str, Any]) -> "MigrateMasksPayload":
+        return cls(
+            paths=_string_list(data.get("paths") or []),
+            privacy=_truthy(data.get("privacy", False)),
+        )
+
+
 def get_input_dir_payload(get_input_directory: Callable[[], str]) -> dict[str, str]:
     return {"input_dir": get_input_directory()}
 
@@ -104,6 +136,19 @@ def thumbnail_payload(image_path: str, privacy_mode: bool) -> bytes:
     return get_thumbnail_bytes(image_path, privacy_mode)
 
 
+def default_mask_png_payload(image_path: str) -> bytes:
+    with Image.open(image_path) as img:
+        img = ImageOps.exif_transpose(img)
+        mask = Image.new("L", img.size, 255)
+        output = BytesIO()
+        mask.save(output, format="PNG")
+        return output.getvalue()
+
+
+def mask_image_payload(image_path: str) -> bytes:
+    return load_mask_bytes(image_path) or default_mask_png_payload(image_path)
+
+
 def delete_images_payload(
     payload: DeleteImagesPayload,
     delete_func: Callable[[list[str], list[str], bool], dict[str, list[str]]] = delete_image_files,
@@ -128,6 +173,26 @@ def encrypt_payload(data: Mapping[str, Any]) -> dict[str, str]:
 
 def decrypt_payload(data: Mapping[str, Any]) -> dict[str, str]:
     return {"data": decrypt_selection(data.get("encrypted", ""))}
+
+
+def save_mask_payload(payload: SaveMaskPayload) -> dict[str, Any]:
+    if not image_path_exists(payload.path):
+        raise FileNotFoundError("Image path not found")
+    if not payload.mask_data:
+        raise ValueError("Mask data is required")
+    return {
+        "status": "success",
+        "path": payload.path,
+        "ref": save_mask_data_url(payload.path, payload.mask_data, payload.privacy),
+    }
+
+
+def migrate_masks_payload(payload: MigrateMasksPayload) -> dict[str, Any]:
+    existing_paths = [path for path in payload.paths if image_path_exists(path)]
+    return {
+        "status": "success",
+        "migrated_count": migrate_mask_privacy(existing_paths, payload.privacy),
+    }
 
 
 def clear_cache_payload(clear_cache_func: Callable[[], None] = clear_thumbnail_cache) -> dict[str, str]:

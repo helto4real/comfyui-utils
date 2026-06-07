@@ -58,6 +58,48 @@ export const selectorApi = {
         return `/helto_selector/view_image?path=${encodeURIComponent(path)}`;
     },
 
+    maskUrl(path) {
+        return `/helto_selector/mask?path=${encodeURIComponent(path)}`;
+    },
+
+    async saveMask(path, maskData, privacyMode) {
+        const response = await fetch("/helto_selector/save_mask", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path, mask_data: maskData, privacy: privacyMode })
+        });
+        if (!response.ok) {
+            let message = "Failed to save edited mask.";
+            try {
+                const data = await response.json();
+                if (data.error) message = data.error;
+            } catch (err) {
+                // Keep the generic message if the server did not return JSON.
+            }
+            throw new Error(message);
+        }
+        return response.json();
+    },
+
+    async migrateMasks(paths, privacyMode) {
+        const response = await fetch("/helto_selector/migrate_masks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ paths, privacy: privacyMode })
+        });
+        if (!response.ok) {
+            let message = "Failed to migrate edited masks.";
+            try {
+                const data = await response.json();
+                if (data.error) message = data.error;
+            } catch (err) {
+                // Keep the generic message if the server did not return JSON.
+            }
+            throw new Error(message);
+        }
+        return response.json();
+    },
+
     async clearCache() {
         const response = await fetch("/helto_selector/clear_cache", { method: "POST" });
         if (!response.ok) {

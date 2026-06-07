@@ -27,6 +27,7 @@ import {
     containPointerEvents,
     createModal,
 } from "./ui.js";
+import { openMaskEditor } from "./mask_editor.js";
 
 // Load Stylesheet dynamically using modern ES modules URL resolving
 if (!document.getElementById("helto-utils-styles")) {
@@ -60,6 +61,21 @@ async function serializeSelectedImagesForPrompt(node) {
     return plainString;
 }
 
+async function serializeEditedMasksForPrompt(node) {
+    const plainString = JSON.stringify(node.editedMasks && typeof node.editedMasks === "object" ? node.editedMasks : {});
+
+    if (node.properties?.privacyMode) {
+        try {
+            const res = await selectorApi.encrypt(plainString);
+            return res.encrypted || plainString;
+        } catch (e) {
+            console.error("Encryption API failed:", e);
+        }
+    }
+
+    return plainString;
+}
+
 function installGraphToPromptPatch() {
     if (app[GRAPH_TO_PROMPT_PATCHED] || typeof app.graphToPrompt !== "function") {
         return;
@@ -77,6 +93,7 @@ function installGraphToPromptPatch() {
             outputNode.inputs ??= {};
             outputNode.inputs.selected_images = await serializeSelectedImagesForPrompt(node);
             outputNode.inputs.resize_mode = node.properties?.resizeMode || "zoom to fit";
+            outputNode.inputs.edited_masks = await serializeEditedMasksForPrompt(node);
         }
 
         return result;
@@ -96,6 +113,7 @@ app.registerExtension({
         
         // --- 1. State Initialization ---
         node.selectedPaths = []; // Plain absolute paths
+        node.editedMasks = {};   // Plain absolute path -> saved mask ref
         node.allImages = [];     // Scanned images metadata
         node.allFolders = [];    // Scanned folder metadata
         let domWidget = null;
@@ -111,7 +129,11 @@ app.registerExtension({
         
         // Remove input socket ports so they are completely hidden
         if (node.inputs) {
-            node.inputs = node.inputs.filter(input => input.name !== "selected_images" && input.name !== "resize_mode");
+            node.inputs = node.inputs.filter(input => (
+                input.name !== "selected_images" &&
+                input.name !== "resize_mode" &&
+                input.name !== "edited_masks"
+            ));
         }
         
         function ensureHiddenWidget(name, defaultValue) {
@@ -135,8 +157,10 @@ app.registerExtension({
 
         const selectedImagesWidget = ensureHiddenWidget("selected_images", "[]");
         const resizeModeWidget = ensureHiddenWidget("resize_mode", "zoom to fit");
+        const editedMasksWidget = ensureHiddenWidget("edited_masks", "{}");
         collapseHiddenWidgetLayout(selectedImagesWidget);
         collapseHiddenWidgetLayout(resizeModeWidget);
+        collapseHiddenWidgetLayout(editedMasksWidget);
         
         node.normalizeHeltoSelectorSize = function() {
             normalizeHeltoSelectorSize(node);
@@ -355,30 +379,46 @@ app.registerExtension({
         
         // --- 4. Selection Sync Helpers ---
         let selectionSerializationPromise = null;
+        let maskSerializationPromise = null;
+
+        async function serializeHiddenJsonWidget(widget, plainValue, defaultValue) {
+            if (!widget) return defaultValue;
+            const plainString = JSON.stringify(plainValue);
+
+            if (node.properties.privacyMode) {
+                try {
+                    const res = await selectorApi.encrypt(plainString);
+                    widget.value = res.encrypted;
+                } catch (e) {
+                    console.error("Encryption API failed:", e);
+                    widget.value = plainString;
+                }
+            } else {
+                widget.value = plainString;
+            }
+            return widget.value || defaultValue;
+        }
 
         async function updateWidgetValue() {
-            const valWidget = node.widgets ? node.widgets.find(w => w.name === "selected_images") : null;
-            if (!valWidget) return;
             preserveSelectorSizeOnNextResize();
 
+            const valWidget = node.widgets ? node.widgets.find(w => w.name === "selected_images") : null;
             selectionSerializationPromise = (async () => {
-                const plainString = JSON.stringify(node.selectedPaths);
-
-                if (node.properties.privacyMode) {
-                    try {
-                        const res = await selectorApi.encrypt(plainString);
-                        valWidget.value = res.encrypted;
-                    } catch (e) {
-                        console.error("Encryption API failed:", e);
-                        valWidget.value = plainString; // Fallback
-                    }
-                } else {
-                    valWidget.value = plainString;
-                }
-                return valWidget.value || "[]";
+                return serializeHiddenJsonWidget(valWidget, node.selectedPaths, "[]");
             })();
 
             return selectionSerializationPromise;
+        }
+
+        async function updateMaskWidgetValue() {
+            preserveSelectorSizeOnNextResize();
+
+            const maskWidget = node.widgets ? node.widgets.find(w => w.name === "edited_masks") : null;
+            maskSerializationPromise = (async () => {
+                return serializeHiddenJsonWidget(maskWidget, node.editedMasks || {}, "{}");
+            })();
+
+            return maskSerializationPromise;
         }
 
         selectedImagesWidget.serializeValue = async () => {
@@ -392,30 +432,50 @@ app.registerExtension({
             resizeModeWidget.value = node.properties.resizeMode || "zoom to fit";
             return resizeModeWidget.value;
         };
-        
+
+        editedMasksWidget.serializeValue = async () => {
+            if (maskSerializationPromise) {
+                await maskSerializationPromise;
+            }
+            return updateMaskWidgetValue();
+        };
+
+        async function parseSerializedJson(value, fallback) {
+            if (!value) return fallback;
+            if (value.startsWith("__HELTO_ENC__:")) {
+                try {
+                    const res = await selectorApi.decrypt(value);
+                    return JSON.parse(res.data);
+                } catch (e) {
+                    console.error("Decryption API failed:", e);
+                    return fallback;
+                }
+            }
+            try {
+                return JSON.parse(value);
+            } catch (e) {
+                return fallback;
+            }
+        }
+
         node.restoreSelection = async function() {
             const valWidget = node.widgets ? node.widgets.find(w => w.name === "selected_images") : null;
             if (!valWidget || !valWidget.value) return;
-            const val = valWidget.value;
-            
-            if (val.startsWith("__HELTO_ENC__:")) {
-                try {
-                    const res = await selectorApi.decrypt(val);
-                    node.selectedPaths = JSON.parse(res.data);
-                } catch (e) {
-                    console.error("Decryption API failed:", e);
-                    node.selectedPaths = [];
-                }
-            } else {
-                try {
-                    node.selectedPaths = JSON.parse(val);
-                } catch (e) {
-                    node.selectedPaths = [];
-                }
-            }
-            
+            const parsed = await parseSerializedJson(valWidget.value, []);
+            node.selectedPaths = Array.isArray(parsed) ? parsed : [];
+
             updateFooter();
             renderGrid();
+        };
+
+        node.restoreEditedMasks = async function() {
+            const maskWidget = node.widgets ? node.widgets.find(w => w.name === "edited_masks") : null;
+            if (!maskWidget || !maskWidget.value) return;
+            const parsed = await parseSerializedJson(maskWidget.value, {});
+            node.editedMasks = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+
+            renderGrid();
+            refreshSelectedPreviewPopover();
         };
         
         // --- 5. Scanning and Rendering Logic ---
@@ -443,6 +503,13 @@ app.registerExtension({
                     const selectedBefore = node.selectedPaths.length;
                     node.selectedPaths = node.selectedPaths.filter((path) => currentImagePaths.has(path));
                     selectionChanged = node.selectedPaths.length !== selectedBefore;
+                    const editedBefore = Object.keys(node.editedMasks || {}).length;
+                    node.editedMasks = Object.fromEntries(
+                        Object.entries(node.editedMasks || {}).filter(([path]) => currentImagePaths.has(path))
+                    );
+                    if (Object.keys(node.editedMasks).length !== editedBefore) {
+                        await updateMaskWidgetValue();
+                    }
                 }
                 const rootPaths = new Set(getRootFolderOptionsForNode().map((folder) => getFolderPath(folder)));
                 if ((node.properties.folderFilter || "all") !== "all" && !rootPaths.has(node.properties.folderFilter)) {
@@ -531,6 +598,76 @@ app.registerExtension({
                     dismissPreview();
                 }
             };
+        }
+
+        function saveOriginalImage(img) {
+            const link = document.createElement("a");
+            link.href = selectorApi.viewImageUrl(img.path);
+            link.download = img.name || "image";
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+        }
+
+        async function openMaskEditorForImage(img) {
+            await openMaskEditor({
+                document,
+                window,
+                img,
+                imageUrl: selectorApi.viewImageUrl(img.path),
+                maskUrl: selectorApi.maskUrl(img.path),
+                privacyMode: node.properties.privacyMode,
+                hideMode: node.properties.hideMode,
+                containPointerEvents,
+                saveMask: (path, maskData, privacyMode) => selectorApi.saveMask(path, maskData, privacyMode),
+                onSaved: async (savedImg, ref) => {
+                    node.editedMasks ??= {};
+                    node.editedMasks[savedImg.path] = ref || { edited: true };
+                    await updateMaskWidgetValue();
+                    renderGrid();
+                    refreshSelectedPreviewPopover();
+                },
+            });
+        }
+
+        function showImageContextMenu(event, img) {
+            containEvent(event);
+            removeFloatingMenus();
+
+            const menu = document.createElement("div");
+            menu.className = "helto-dropdown";
+            containFloatingMenu(menu);
+
+            const options = [
+                ["Save image", () => saveOriginalImage(img)],
+                ["Preview image", () => showPreviewPopup(img)],
+                ["Edit mask", () => openMaskEditorForImage(img)],
+            ];
+
+            options.forEach(([label, action]) => {
+                const item = document.createElement("div");
+                item.className = "helto-dropdown-item";
+                item.innerText = label;
+                item.onclick = async (e) => {
+                    containEvent(e);
+                    menu.remove();
+                    try {
+                        await action();
+                    } catch (err) {
+                        console.error(`Selector image menu action failed: ${label}`, err);
+                        alert(err.message || `${label} failed.`);
+                    }
+                };
+                menu.appendChild(item);
+            });
+
+            document.body.appendChild(menu);
+            const viewportPadding = 12;
+            const maxLeft = window.scrollX + window.innerWidth - menu.offsetWidth - viewportPadding;
+            const maxTop = window.scrollY + window.innerHeight - menu.offsetHeight - viewportPadding;
+            menu.style.left = `${Math.max(window.scrollX + viewportPadding, Math.min(event.pageX, maxLeft))}px`;
+            menu.style.top = `${Math.max(window.scrollY + viewportPadding, Math.min(event.pageY, maxTop))}px`;
+            closeMenuOnOutsideClick(menu, null);
         }
 
         let selectedPreviewPopover = null;
@@ -632,6 +769,9 @@ app.registerExtension({
             selectedImages.forEach((img) => {
                 const item = document.createElement("div");
                 item.className = "helto-selected-preview-item";
+                if (node.editedMasks?.[img.path]) {
+                    item.classList.add("has-mask");
+                }
 
                 const thumbWrap = document.createElement("div");
                 thumbWrap.className = "helto-selected-preview-thumb-wrap";
@@ -759,6 +899,9 @@ app.registerExtension({
                 
                 const item = document.createElement("div");
                 item.className = `helto-grid-item ${isSelected ? "selected" : ""}`;
+                if (node.editedMasks?.[img.path]) {
+                    item.classList.add("has-mask");
+                }
                 item.dataset.path = img.path;
                 item.title = `${img.name}\nSize: ${(img.size_bytes / (1024 * 1024)).toFixed(2)} MB\nPath: ${img.path}`;
                 
@@ -799,6 +942,10 @@ app.registerExtension({
                     }
                     updateFooter();
                     updateWidgetValue();
+                };
+
+                item.oncontextmenu = (e) => {
+                    showImageContextMenu(e, img);
                 };
             });
 
@@ -1060,12 +1207,16 @@ app.registerExtension({
                     if (removedPaths.size > 0) {
                         node.selectedPaths = node.selectedPaths.filter((path) => !removedPaths.has(path));
                         node.allImages = node.allImages.filter((img) => !removedPaths.has(img.path));
+                        node.editedMasks = Object.fromEntries(
+                            Object.entries(node.editedMasks || {}).filter(([path]) => !removedPaths.has(path))
+                        );
                     }
                     removeSelectedPreviewPopover();
                     document.querySelectorAll(".helto-preview-overlay").forEach((overlay) => overlay.remove());
                     renderGrid();
                     updateFooter();
                     await updateWidgetValue();
+                    await updateMaskWidgetValue();
                     if ((result.skipped || []).length > 0) {
                         console.warn("Some selected images were not deleted:", result.skipped);
                     }
@@ -1248,6 +1399,9 @@ app.registerExtension({
                 if (privacyChanged && newPrivacyMode) {
                     await clearThumbnailCache();
                 }
+                if (privacyChanged) {
+                    await selectorApi.migrateMasks(Object.keys(node.editedMasks || {}), newPrivacyMode);
+                }
                 
                 node.properties.hideMode = newHideMode;
                 node.properties.privacyMode = newPrivacyMode;
@@ -1263,6 +1417,7 @@ app.registerExtension({
                 if (privacyChanged) {
                     // Update the saved value to match new encryption state
                     await updateWidgetValue();
+                    await updateMaskWidgetValue();
                     // Force refresh grid to get new encrypted/decrypted URLs
                     renderGrid();
                 }
@@ -1301,8 +1456,9 @@ app.registerExtension({
         
         // --- 10. Initial load trigger ---
         setTimeout(() => {
-            node.scanFolders().then(() => {
-                node.restoreSelection();
+            node.scanFolders().then(async () => {
+                await node.restoreSelection();
+                await node.restoreEditedMasks();
                 if (node.onResize) node.onResize();
             });
         }, 100);

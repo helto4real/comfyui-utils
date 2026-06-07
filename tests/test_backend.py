@@ -20,7 +20,13 @@ from helto_selector_backend import crypto as selector_crypto
 from helto_selector_backend.crypto import decrypt_selection, encrypt_selection
 from helto_selector_backend.image_processing import (
     parse_selected_paths,
+    parse_edited_masks,
     select_images,
+)
+from helto_selector_backend.mask_storage import (
+    load_mask_bytes,
+    mask_cache_paths,
+    save_mask_bytes,
 )
 from helto_selector_backend.scanning import delete_image_files, discover_image_folders, scan_image_folders
 from helto_selector_backend.services import (
@@ -46,12 +52,16 @@ def write_image(path: str, size: tuple[int, int], color: tuple[int, int, int]) -
 
 class ImageProcessingTests(unittest.TestCase):
     def test_empty_selection_returns_black_placeholder_and_batch(self):
-        images, image_batch = select_images("[]")
+        images, image_batch, masks, mask_batch = select_images("[]")
 
         self.assertEqual(len(images), 1)
         self.assertEqual(tuple(images[0].shape), (1, 512, 512, 3))
         self.assertEqual(tuple(image_batch.shape), (1, 512, 512, 3))
         self.assertEqual(float(image_batch.sum()), 0.0)
+        self.assertEqual(len(masks), 1)
+        self.assertEqual(tuple(masks[0].shape), (1, 512, 512))
+        self.assertEqual(tuple(mask_batch.shape), (1, 512, 512))
+        self.assertEqual(float(mask_batch.min()), 1.0)
 
     def test_missing_files_are_skipped(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -59,11 +69,13 @@ class ImageProcessingTests(unittest.TestCase):
             missing_path = os.path.join(tmpdir, "missing.png")
             write_image(image_path, (8, 6), (255, 0, 0))
 
-            images, image_batch = select_images(json.dumps([image_path, missing_path]))
+            images, image_batch, masks, mask_batch = select_images(json.dumps([image_path, missing_path]))
 
             self.assertEqual(len(images), 1)
             self.assertEqual(tuple(images[0].shape), (1, 6, 8, 3))
             self.assertEqual(tuple(image_batch.shape), (1, 6, 8, 3))
+            self.assertEqual(tuple(masks[0].shape), (1, 6, 8))
+            self.assertEqual(tuple(mask_batch.shape), (1, 6, 8))
 
     def test_resize_modes_preserve_current_shapes(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -73,17 +85,63 @@ class ImageProcessingTests(unittest.TestCase):
             write_image(second, (4, 6), (0, 255, 0))
             selected = json.dumps([first, second])
 
-            zoom_images, zoom_batch = select_images(selected, "zoom to fit")
+            zoom_images, zoom_batch, zoom_masks, zoom_mask_batch = select_images(selected, "zoom to fit")
             self.assertEqual([tuple(t.shape) for t in zoom_images], [(1, 8, 10, 3), (1, 8, 10, 3)])
             self.assertEqual(tuple(zoom_batch.shape), (2, 8, 10, 3))
+            self.assertEqual([tuple(t.shape) for t in zoom_masks], [(1, 8, 10), (1, 8, 10)])
+            self.assertEqual(tuple(zoom_mask_batch.shape), (2, 8, 10))
 
-            pad_images, pad_batch = select_images(selected, "pad")
+            pad_images, pad_batch, pad_masks, pad_mask_batch = select_images(selected, "pad")
             self.assertEqual([tuple(t.shape) for t in pad_images], [(1, 8, 10, 3), (1, 8, 10, 3)])
             self.assertEqual(tuple(pad_batch.shape), (2, 8, 10, 3))
+            self.assertEqual([tuple(t.shape) for t in pad_masks], [(1, 8, 10), (1, 8, 10)])
+            self.assertEqual(tuple(pad_mask_batch.shape), (2, 8, 10))
 
-            raw_images, raw_batch = select_images(selected, "No resize")
+            raw_images, raw_batch, raw_masks, raw_mask_batch = select_images(selected, "No resize")
             self.assertEqual([tuple(t.shape) for t in raw_images], [(1, 8, 10, 3), (1, 6, 4, 3)])
             self.assertEqual(tuple(raw_batch.shape), (2, 8, 10, 3))
+            self.assertEqual([tuple(t.shape) for t in raw_masks], [(1, 8, 10), (1, 6, 4)])
+            self.assertEqual(tuple(raw_mask_batch.shape), (2, 8, 10))
+
+    def test_default_mask_outputs_full_image_mask(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = os.path.join(tmpdir, "image.png")
+            write_image(image_path, (7, 5), (255, 0, 0))
+
+            images, image_batch, masks, mask_batch = select_images(json.dumps([image_path]))
+
+            self.assertEqual(tuple(images[0].shape), (1, 5, 7, 3))
+            self.assertEqual(tuple(image_batch.shape), (1, 5, 7, 3))
+            self.assertEqual(tuple(masks[0].shape), (1, 5, 7))
+            self.assertEqual(tuple(mask_batch.shape), (1, 5, 7))
+            self.assertEqual(float(mask_batch.min()), 1.0)
+
+    def test_edited_mask_state_parses_encrypted_map(self):
+        key = b"7" * 32
+        plain = json.dumps({"/tmp/a.png": {"key": "abc"}})
+        encrypted = encrypt_selection(plain, key=key)
+
+        parsed = parse_edited_masks(encrypted, decrypt_func=lambda text: decrypt_selection(text, key=key))
+
+        self.assertEqual(parsed, {"/tmp/a.png": {"key": "abc"}})
+
+    def test_encrypted_mask_file_roundtrips(self):
+        key = b"8" * 32
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = os.path.join(tmpdir, "image.png")
+            cache_dir = os.path.join(tmpdir, "masks")
+            write_image(image_path, (4, 4), (255, 0, 0))
+            mask = Image.new("L", (4, 4), 128)
+            buffer = BytesIO()
+            mask.save(buffer, format="PNG")
+
+            save_mask_bytes(image_path, buffer.getvalue(), True, mask_cache_dir=cache_dir, key=key)
+            plain_path, encrypted_path = mask_cache_paths(image_path, cache_dir)
+
+            self.assertFalse(os.path.exists(plain_path))
+            self.assertTrue(os.path.exists(encrypted_path))
+            self.assertNotIn(b"PNG", Path(encrypted_path).read_bytes()[:16])
+            self.assertTrue(load_mask_bytes(image_path, cache_dir, key).startswith(b"\x89PNG"))
 
     def test_encrypted_selection_parses_with_same_key(self):
         key = b"1" * 32
@@ -462,14 +520,19 @@ class NodeSchemaContractTests(unittest.TestCase):
 
         self.assertEqual(schema.node_id, "HeltoImageSelector")
         self.assertEqual(schema.display_name, "Helto Multi-Image Selector")
-        self.assertEqual([input_def.id for input_def in schema.inputs], ["selected_images", "resize_mode"])
-        self.assertEqual([output_def.id for output_def in schema.outputs], ["images", "image_batch"])
+        self.assertEqual([input_def.id for input_def in schema.inputs], ["selected_images", "resize_mode", "edited_masks"])
+        self.assertEqual([output_def.id for output_def in schema.outputs], ["images", "image_batch", "masks", "mask_batch"])
         self.assertTrue(schema.outputs[0].is_output_list)
         self.assertFalse(schema.outputs[1].is_output_list)
-        self.assertEqual(len(result), 2)
+        self.assertTrue(schema.outputs[2].is_output_list)
+        self.assertFalse(schema.outputs[3].is_output_list)
+        self.assertEqual(len(result), 4)
         self.assertEqual(len(result[0]), 1)
         self.assertEqual(tuple(result[0][0].shape), (1, 512, 512, 3))
         self.assertEqual(tuple(result[1].shape), (1, 512, 512, 3))
+        self.assertEqual(len(result[2]), 1)
+        self.assertEqual(tuple(result[2][0].shape), (1, 512, 512))
+        self.assertEqual(tuple(result[3].shape), (1, 512, 512))
 
     def test_registered_node_display_names_are_helto_prefixed(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()
@@ -1903,11 +1966,15 @@ Second beat moves toward the doorway. @image1:end
         class FakeImage:
             Output = FakeField
 
+        class FakeMask:
+            Output = FakeField
+
         class FakeIO:
             ComfyNode = object
             Schema = FakeSchema
             String = FakeString
             Image = FakeImage
+            Mask = FakeMask
             NodeOutput = FakeNodeOutput
 
         previous_comfy_api = sys.modules.get("comfy_api")
@@ -2004,6 +2071,7 @@ Second beat moves toward the doorway. @image1:end
             NumberDisplay = types.SimpleNamespace(number="number")
             String = fake_socket("String")
             Image = fake_socket("Image")
+            Mask = fake_socket("Mask")
             Int = fake_socket("Int")
             Float = fake_socket("Float")
             Combo = fake_socket("Combo")

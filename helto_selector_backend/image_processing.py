@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 import torch
 from PIL import Image, ImageOps
 
 from .crypto import decrypt_selection
+from .mask_storage import edited_mask_path_set, load_mask_image
 
 DEFAULT_PLACEHOLDER_SIZE = 512
 DEFAULT_RESIZE_MODE = "zoom to fit"
@@ -16,6 +18,10 @@ DEFAULT_RESIZE_MODE = "zoom to fit"
 
 def make_placeholder_image(size: int = DEFAULT_PLACEHOLDER_SIZE) -> torch.Tensor:
     return torch.zeros((1, size, size, 3), dtype=torch.float32)
+
+
+def make_placeholder_mask(size: int = DEFAULT_PLACEHOLDER_SIZE) -> torch.Tensor:
+    return torch.ones((1, size, size), dtype=torch.float32)
 
 
 def make_image_batch(tensor_list: list[torch.Tensor]) -> torch.Tensor:
@@ -54,6 +60,42 @@ def make_image_batch(tensor_list: list[torch.Tensor]) -> torch.Tensor:
     return torch.cat(padded_tensors, dim=0)
 
 
+def make_mask_batch(tensor_list: list[torch.Tensor]) -> torch.Tensor:
+    if not tensor_list:
+        return make_placeholder_mask()
+
+    first_shape = tensor_list[0].shape[1:]
+    if all(tensor.shape[1:] == first_shape for tensor in tensor_list):
+        return torch.cat(tensor_list, dim=0)
+
+    max_h = max(tensor.shape[1] for tensor in tensor_list)
+    max_w = max(tensor.shape[2] for tensor in tensor_list)
+    padded_tensors = []
+
+    for tensor in tensor_list:
+        _, h, w = tensor.shape
+        scale = min(max_w / w, max_h / h)
+        resized_h = min(max_h, max(1, int(round(h * scale))))
+        resized_w = min(max_w, max(1, int(round(w * scale))))
+
+        if resized_h != h or resized_w != w:
+            nchw_tensor = tensor.unsqueeze(1)
+            tensor = torch.nn.functional.interpolate(
+                nchw_tensor,
+                size=(resized_h, resized_w),
+                mode="bilinear",
+                align_corners=False,
+            ).squeeze(1)
+
+        padded = torch.ones((tensor.shape[0], max_h, max_w), dtype=tensor.dtype, device=tensor.device)
+        offset_y = (max_h - tensor.shape[1]) // 2
+        offset_x = (max_w - tensor.shape[2]) // 2
+        padded[:, offset_y:offset_y + tensor.shape[1], offset_x:offset_x + tensor.shape[2]] = tensor
+        padded_tensors.append(padded)
+
+    return torch.cat(padded_tensors, dim=0)
+
+
 def parse_selected_paths(
     selected_images: str | None,
     decrypt_func: Callable[[str], str] = decrypt_selection,
@@ -69,6 +111,23 @@ def parse_selected_paths(
         print("[HeltoSelector] Selection JSON was not a list.")
         return []
     return [path for path in image_paths if isinstance(path, str)]
+
+
+def parse_edited_masks(
+    edited_masks: str | None,
+    decrypt_func: Callable[[str], str] = decrypt_selection,
+) -> dict[str, Any]:
+    raw_masks = decrypt_func(edited_masks or "{}")
+    try:
+        mask_map = json.loads(raw_masks)
+    except Exception as e:
+        print(f"[HeltoSelector] Failed to parse edited mask JSON: {e}")
+        return {}
+
+    if not isinstance(mask_map, dict):
+        print("[HeltoSelector] Edited mask JSON was not an object.")
+        return {}
+    return {path: ref for path, ref in mask_map.items() if isinstance(path, str) and ref}
 
 
 def filter_existing_paths(image_paths: list[str]) -> list[str]:
@@ -91,6 +150,31 @@ def load_rgb_images(paths: list[str]) -> list[Image.Image]:
     return loaded_images
 
 
+def load_rgb_image_pairs(paths: list[str]) -> list[tuple[str, Image.Image]]:
+    loaded_images = []
+    for path in paths:
+        try:
+            with Image.open(path) as img:
+                img = ImageOps.exif_transpose(img)
+                loaded_images.append((path, img.convert("RGB")))
+        except Exception as e:
+            print(f"[HeltoSelector] Error loading image {path}: {e}")
+    return loaded_images
+
+
+def load_masks_for_images(image_pairs: list[tuple[str, Image.Image]], edited_masks: dict[str, Any]) -> list[Image.Image]:
+    edited_paths = edited_mask_path_set(edited_masks)
+    masks = []
+    for path, img in image_pairs:
+        mask_img = load_mask_image(path) if path in edited_paths else None
+        if mask_img is None:
+            mask_img = Image.new("L", img.size, 255)
+        elif mask_img.size != img.size:
+            mask_img = mask_img.resize(img.size, Image.Resampling.BILINEAR)
+        masks.append(mask_img)
+    return masks
+
+
 def _resize_zoom_to_fit(images: list[Image.Image]) -> list[Image.Image]:
     target_w, target_h = images[0].size
     return [
@@ -101,7 +185,7 @@ def _resize_zoom_to_fit(images: list[Image.Image]) -> list[Image.Image]:
     ]
 
 
-def _pad_to_largest_image(images: list[Image.Image]) -> list[Image.Image]:
+def _pad_to_largest_image(images: list[Image.Image], fill: int | tuple[int, int, int] = (0, 0, 0)) -> list[Image.Image]:
     max_w = max(img.size[0] for img in images)
     max_h = max(img.size[1] for img in images)
     processed_images = []
@@ -109,7 +193,7 @@ def _pad_to_largest_image(images: list[Image.Image]) -> list[Image.Image]:
         if img.size == (max_w, max_h):
             processed_images.append(img)
             continue
-        new_img = Image.new("RGB", (max_w, max_h), (0, 0, 0))
+        new_img = Image.new(img.mode, (max_w, max_h), fill)
         offset_x = (max_w - img.size[0]) // 2
         offset_y = (max_h - img.size[1]) // 2
         new_img.paste(img, (offset_x, offset_y))
@@ -127,25 +211,51 @@ def resize_images(images: list[Image.Image], resize_mode: str) -> list[Image.Ima
     return images
 
 
+def resize_masks(masks: list[Image.Image], resize_mode: str) -> list[Image.Image]:
+    if resize_mode == DEFAULT_RESIZE_MODE:
+        return _resize_zoom_to_fit(masks)
+
+    if resize_mode == "pad":
+        return _pad_to_largest_image(masks, fill=255)
+
+    return masks
+
+
 def image_to_tensor(img: Image.Image) -> torch.Tensor:
     img_np = np.array(img).astype(np.float32) / 255.0
     return torch.from_numpy(img_np).unsqueeze(0)
 
 
-def select_images(selected_images: str | None = "[]", resize_mode: str = DEFAULT_RESIZE_MODE) -> tuple[list[torch.Tensor], torch.Tensor]:
+def mask_to_tensor(img: Image.Image) -> torch.Tensor:
+    mask_np = np.array(img.convert("L")).astype(np.float32) / 255.0
+    return torch.from_numpy(mask_np).unsqueeze(0)
+
+
+def select_images(
+    selected_images: str | None = "[]",
+    resize_mode: str = DEFAULT_RESIZE_MODE,
+    edited_masks: str | None = "{}",
+) -> tuple[list[torch.Tensor], torch.Tensor, list[torch.Tensor], torch.Tensor]:
     image_paths = parse_selected_paths(selected_images)
+    edited_mask_map = parse_edited_masks(edited_masks)
     valid_paths = filter_existing_paths(image_paths)
 
     if not valid_paths:
         print("[HeltoSelector] No images selected. Outputting 512x512 black placeholder.")
         black_image = make_placeholder_image()
-        return [black_image], black_image
+        white_mask = make_placeholder_mask()
+        return [black_image], black_image, [white_mask], white_mask
 
-    loaded_images = load_rgb_images(valid_paths)
-    if not loaded_images:
+    image_pairs = load_rgb_image_pairs(valid_paths)
+    if not image_pairs:
         black_image = make_placeholder_image()
-        return [black_image], black_image
+        white_mask = make_placeholder_mask()
+        return [black_image], black_image, [white_mask], white_mask
 
+    loaded_images = [img for _, img in image_pairs]
+    loaded_masks = load_masks_for_images(image_pairs, edited_mask_map)
     processed_images = resize_images(loaded_images, resize_mode)
+    processed_masks = resize_masks(loaded_masks, resize_mode)
     tensor_list = [image_to_tensor(img) for img in processed_images]
-    return tensor_list, make_image_batch(tensor_list)
+    mask_list = [mask_to_tensor(mask) for mask in processed_masks]
+    return tensor_list, make_image_batch(tensor_list), mask_list, make_mask_batch(mask_list)
