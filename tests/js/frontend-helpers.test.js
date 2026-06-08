@@ -10,6 +10,15 @@ import {
     isLegacyCanvasRenderer,
 } from "../../web/layout.js";
 import {
+    AFFECTED_MASK_VALUE,
+    createOverlayScheduler,
+    maskOverlayPixel,
+    parsePreviewColor,
+    previewPointToMaskPoint,
+    previewScaleForSize,
+    UNAFFECTED_MASK_VALUE,
+} from "../../web/mask_editor.js";
+import {
     getFolderLabel,
     getFolderPath,
     getRootFolderFilterLabel,
@@ -147,6 +156,60 @@ function jsonResponse(payload, ok = true) {
         },
     };
 }
+
+test("mask editor overlay treats unaffected masks as transparent", () => {
+    assert.equal(UNAFFECTED_MASK_VALUE, 0);
+    assert.deepEqual(maskOverlayPixel(UNAFFECTED_MASK_VALUE, "#336699", 60), [51, 102, 153, 0]);
+});
+
+test("mask editor overlay renders affected and gray mask pixels with selected color and opacity", () => {
+    assert.equal(AFFECTED_MASK_VALUE, 255);
+    assert.deepEqual(maskOverlayPixel(AFFECTED_MASK_VALUE, "#336699", 60), [51, 102, 153, 153]);
+    assert.deepEqual(maskOverlayPixel(128, "#336699", 60), [51, 102, 153, 77]);
+});
+
+test("mask editor overlay opacity zero makes affected pixels transparent", () => {
+    assert.deepEqual(maskOverlayPixel(AFFECTED_MASK_VALUE, "#336699", 0), [51, 102, 153, 0]);
+});
+
+test("mask editor preview color parser supports hex colors and defaults safely", () => {
+    assert.deepEqual(parsePreviewColor("#abc"), [170, 187, 204]);
+    assert.deepEqual(parsePreviewColor("#123456"), [18, 52, 86]);
+    assert.deepEqual(parsePreviewColor("not-a-color"), [0, 0, 0]);
+    assert.deepEqual(parsePreviewColor(null), [0, 0, 0]);
+});
+
+test("mask editor preview scale preserves small images and bounds large images", () => {
+    assert.equal(previewScaleForSize(1024, 768), 1);
+    assert.equal(previewScaleForSize(4096, 2048), 0.5);
+    assert.equal(previewScaleForSize(1000, 500, 500), 0.5);
+});
+
+test("mask editor maps preview points back to full-resolution mask points", () => {
+    assert.deepEqual(previewPointToMaskPoint({ x: 512, y: 256 }, 0.5), { x: 1024, y: 512 });
+    assert.deepEqual(previewPointToMaskPoint({ x: 12, y: 18 }, 1), { x: 12, y: 18 });
+});
+
+test("mask editor overlay scheduler coalesces redraw requests into one frame", () => {
+    const callbacks = [];
+    let renderCount = 0;
+    const schedule = createOverlayScheduler((callback) => callbacks.push(callback), () => {
+        renderCount += 1;
+    });
+
+    schedule();
+    schedule();
+    schedule();
+
+    assert.equal(callbacks.length, 1);
+    assert.equal(renderCount, 0);
+
+    callbacks.shift()();
+    assert.equal(renderCount, 1);
+
+    schedule();
+    assert.equal(callbacks.length, 1);
+});
 
 test("renderer detection uses Vue enabled setting when renderer name is missing", () => {
     assert.equal(isLegacyCanvasRenderer({

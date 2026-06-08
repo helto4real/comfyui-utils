@@ -618,6 +618,7 @@ app.registerExtension({
                 maskUrl: selectorApi.maskUrl(img.path),
                 privacyMode: node.properties.privacyMode,
                 hideMode: node.properties.hideMode,
+                hasEditedMask: Boolean(node.editedMasks?.[img.path]),
                 containPointerEvents,
                 saveMask: (path, maskData, privacyMode) => selectorApi.saveMask(path, maskData, privacyMode),
                 onSaved: async (savedImg, ref) => {

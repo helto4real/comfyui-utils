@@ -16,6 +16,60 @@ function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
 }
 
+export const MAX_PREVIEW_EDGE = 2048;
+export const AFFECTED_MASK_VALUE = 255;
+export const UNAFFECTED_MASK_VALUE = 0;
+
+export function parsePreviewColor(value) {
+    if (typeof value !== "string") return [0, 0, 0];
+    const normalized = value.trim();
+    const shortMatch = normalized.match(/^#([0-9a-fA-F]{3})$/);
+    if (shortMatch) {
+        return shortMatch[1].split("").map((channel) => parseInt(`${channel}${channel}`, 16));
+    }
+    const longMatch = normalized.match(/^#([0-9a-fA-F]{6})$/);
+    if (!longMatch) return [0, 0, 0];
+    return [
+        parseInt(longMatch[1].slice(0, 2), 16),
+        parseInt(longMatch[1].slice(2, 4), 16),
+        parseInt(longMatch[1].slice(4, 6), 16),
+    ];
+}
+
+export function maskOverlayPixel(maskValue, previewColor = "#000000", opacityPercent = 60) {
+    const [r, g, b] = parsePreviewColor(previewColor);
+    const value = clamp(Number(maskValue) || 0, 0, 255);
+    const opacity = clamp(Number(opacityPercent) || 0, 0, 100) / 100;
+    const maskStrength = value / 255;
+    return [r, g, b, Math.round(255 * opacity * maskStrength)];
+}
+
+export function previewScaleForSize(width, height, maxEdge = MAX_PREVIEW_EDGE) {
+    const maxDimension = Math.max(Number(width) || 0, Number(height) || 0);
+    if (maxDimension <= 0 || maxEdge <= 0) return 1;
+    return Math.min(1, maxEdge / maxDimension);
+}
+
+export function previewPointToMaskPoint(point, previewScale) {
+    const scale = previewScale > 0 ? previewScale : 1;
+    return {
+        x: point.x / scale,
+        y: point.y / scale,
+    };
+}
+
+export function createOverlayScheduler(requestAnimationFrameImpl, render) {
+    let pending = false;
+    return function scheduleOverlayRender() {
+        if (pending) return;
+        pending = true;
+        requestAnimationFrameImpl(() => {
+            pending = false;
+            render();
+        });
+    };
+}
+
 function pointerPoint(event, canvas) {
     const rect = canvas.getBoundingClientRect();
     const scaleX = canvas.width / rect.width;
@@ -36,21 +90,87 @@ function drawBrush(ctx, point, size, value) {
     ctx.restore();
 }
 
-function renderMaskOverlay(maskCanvas, overlayCanvas) {
-    const maskCtx = maskCanvas.getContext("2d");
-    const overlayCtx = overlayCanvas.getContext("2d");
-    const maskData = maskCtx.getImageData(0, 0, maskCanvas.width, maskCanvas.height);
-    const overlayData = overlayCtx.createImageData(overlayCanvas.width, overlayCanvas.height);
+function drawAlphaBrush(ctx, point, size, value) {
+    ctx.save();
+    ctx.globalCompositeOperation = value === AFFECTED_MASK_VALUE ? "source-over" : "destination-out";
+    ctx.fillStyle = "rgba(255, 255, 255, 1)";
+    ctx.beginPath();
+    ctx.arc(point.x, point.y, size / 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+}
 
-    for (let i = 0; i < maskData.data.length; i += 4) {
-        const value = maskData.data[i];
-        overlayData.data[i] = 255;
-        overlayData.data[i + 1] = 64;
-        overlayData.data[i + 2] = 64;
-        overlayData.data[i + 3] = Math.round(value * 0.45);
+function drawBrushTrail(ctx, point, lastPoint, size, value, brushFn = drawBrush) {
+    brushFn(ctx, point, size, value);
+    if (!lastPoint) return;
+
+    const distance = Math.hypot(point.x - lastPoint.x, point.y - lastPoint.y);
+    const steps = Math.max(1, Math.ceil(distance / Math.max(1, size / 4)));
+    for (let i = 1; i < steps; i++) {
+        brushFn(ctx, {
+            x: lastPoint.x + ((point.x - lastPoint.x) * i) / steps,
+            y: lastPoint.y + ((point.y - lastPoint.y) * i) / steps,
+        }, size, value);
     }
+}
 
-    overlayCtx.putImageData(overlayData, 0, 0);
+function renderMaskOverlay(previewMaskCanvas, overlayCanvas, previewColor = "#000000", opacityPercent = 60) {
+    const overlayCtx = overlayCanvas.getContext("2d");
+    const [r, g, b] = parsePreviewColor(previewColor);
+    const opacity = clamp(Number(opacityPercent) || 0, 0, 100) / 100;
+
+    overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+    if (opacity <= 0) return;
+
+    overlayCtx.save();
+    overlayCtx.globalCompositeOperation = "source-over";
+    overlayCtx.fillStyle = `rgba(${r}, ${g}, ${b}, ${opacity})`;
+    overlayCtx.fillRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+    overlayCtx.globalCompositeOperation = "destination-in";
+    overlayCtx.drawImage(previewMaskCanvas, 0, 0, overlayCanvas.width, overlayCanvas.height);
+    overlayCtx.restore();
+}
+
+function syncPreviewMaskFromMask(maskCanvas, previewMaskCanvas) {
+    const previewCtx = previewMaskCanvas.getContext("2d");
+    previewCtx.clearRect(0, 0, previewMaskCanvas.width, previewMaskCanvas.height);
+    previewCtx.drawImage(maskCanvas, 0, 0, previewMaskCanvas.width, previewMaskCanvas.height);
+
+    const data = previewCtx.getImageData(0, 0, previewMaskCanvas.width, previewMaskCanvas.height);
+    for (let i = 0; i < data.data.length; i += 4) {
+        const value = data.data[i];
+        data.data[i] = 255;
+        data.data[i + 1] = 255;
+        data.data[i + 2] = 255;
+        data.data[i + 3] = value;
+    }
+    previewCtx.putImageData(data, 0, 0);
+}
+
+function setPreviewMaskValue(previewMaskCanvas, value) {
+    const ctx = previewMaskCanvas.getContext("2d");
+    if (value === AFFECTED_MASK_VALUE) {
+        ctx.fillStyle = "rgba(255, 255, 255, 1)";
+        ctx.fillRect(0, 0, previewMaskCanvas.width, previewMaskCanvas.height);
+    } else {
+        ctx.clearRect(0, 0, previewMaskCanvas.width, previewMaskCanvas.height);
+    }
+}
+
+function invertPreviewMask(previewMaskCanvas) {
+    const ctx = previewMaskCanvas.getContext("2d");
+    const tempCanvas = previewMaskCanvas.ownerDocument.createElement("canvas");
+    tempCanvas.width = previewMaskCanvas.width;
+    tempCanvas.height = previewMaskCanvas.height;
+    const tempCtx = tempCanvas.getContext("2d");
+
+    tempCtx.fillStyle = "rgba(255, 255, 255, 1)";
+    tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+    tempCtx.globalCompositeOperation = "destination-out";
+    tempCtx.drawImage(previewMaskCanvas, 0, 0);
+
+    ctx.clearRect(0, 0, previewMaskCanvas.width, previewMaskCanvas.height);
+    ctx.drawImage(tempCanvas, 0, 0);
 }
 
 function invertMask(maskCanvas) {
@@ -88,6 +208,7 @@ export async function openMaskEditor({
     maskUrl,
     privacyMode,
     hideMode,
+    hasEditedMask = false,
     containPointerEvents,
     saveMask,
     onSaved,
@@ -129,8 +250,25 @@ export async function openMaskEditor({
     sizeInput.value = "32";
     sizeInput.className = "helto-mask-editor-size";
     sizeInput.title = "Brush size";
+    sizeInput.setAttribute("aria-label", "Brush size");
 
-    controls.append(paintBtn, eraseBtn, sizeInput, invertBtn, clearBtn, fillBtn, saveBtn, cancelBtn);
+    const colorInput = document.createElement("input");
+    colorInput.type = "color";
+    colorInput.value = "#000000";
+    colorInput.className = "helto-mask-editor-color";
+    colorInput.title = "Overlay color";
+    colorInput.setAttribute("aria-label", "Overlay color");
+
+    const opacityInput = document.createElement("input");
+    opacityInput.type = "range";
+    opacityInput.min = "0";
+    opacityInput.max = "100";
+    opacityInput.value = "60";
+    opacityInput.className = "helto-mask-editor-opacity";
+    opacityInput.title = "Overlay opacity";
+    opacityInput.setAttribute("aria-label", "Overlay opacity");
+
+    controls.append(paintBtn, eraseBtn, sizeInput, colorInput, opacityInput, invertBtn, clearBtn, fillBtn, saveBtn, cancelBtn);
     header.append(title, controls);
 
     const stage = document.createElement("div");
@@ -142,26 +280,40 @@ export async function openMaskEditor({
     const imageCanvas = document.createElement("canvas");
     const overlayCanvas = document.createElement("canvas");
     const maskCanvas = document.createElement("canvas");
+    const previewMaskCanvas = document.createElement("canvas");
+    const brushCursor = document.createElement("div");
     imageCanvas.className = "helto-mask-editor-canvas";
     overlayCanvas.className = "helto-mask-editor-canvas mask";
     maskCanvas.className = "helto-mask-editor-hidden-canvas";
+    previewMaskCanvas.className = "helto-mask-editor-hidden-canvas";
+    brushCursor.className = "helto-mask-editor-brush-cursor";
 
     const width = image.naturalWidth || image.width;
     const height = image.naturalHeight || image.height;
-    for (const canvas of [imageCanvas, overlayCanvas, maskCanvas]) {
-        canvas.width = width;
-        canvas.height = height;
+    const previewScale = previewScaleForSize(width, height);
+    const previewWidth = Math.max(1, Math.round(width * previewScale));
+    const previewHeight = Math.max(1, Math.round(height * previewScale));
+    for (const canvas of [imageCanvas, overlayCanvas, previewMaskCanvas]) {
+        canvas.width = previewWidth;
+        canvas.height = previewHeight;
     }
+    maskCanvas.width = width;
+    maskCanvas.height = height;
 
     const imageCtx = imageCanvas.getContext("2d");
     const maskCtx = maskCanvas.getContext("2d");
-    imageCtx.drawImage(image, 0, 0, width, height);
-    maskCtx.fillStyle = "white";
+    const previewMaskCtx = previewMaskCanvas.getContext("2d");
+    imageCtx.drawImage(image, 0, 0, previewWidth, previewHeight);
+    maskCtx.fillStyle = `rgb(${UNAFFECTED_MASK_VALUE}, ${UNAFFECTED_MASK_VALUE}, ${UNAFFECTED_MASK_VALUE})`;
     maskCtx.fillRect(0, 0, width, height);
-    maskCtx.drawImage(maskImage, 0, 0, width, height);
-    renderMaskOverlay(maskCanvas, overlayCanvas);
+    if (hasEditedMask) {
+        maskCtx.drawImage(maskImage, 0, 0, width, height);
+        syncPreviewMaskFromMask(maskCanvas, previewMaskCanvas);
+    } else {
+        previewMaskCtx.clearRect(0, 0, previewWidth, previewHeight);
+    }
 
-    canvasWrap.append(imageCanvas, overlayCanvas, maskCanvas);
+    canvasWrap.append(imageCanvas, overlayCanvas, brushCursor, maskCanvas, previewMaskCanvas);
     stage.appendChild(canvasWrap);
     windowEl.append(header, stage);
     overlay.appendChild(windowEl);
@@ -169,78 +321,141 @@ export async function openMaskEditor({
 
     requestAnimationFrame(() => overlay.classList.add("active"));
 
-    let brushValue = 255;
+    function renderOverlayNow() {
+        renderMaskOverlay(previewMaskCanvas, overlayCanvas, colorInput.value, opacityInput.value);
+    }
+
+    const scheduleOverlayRender = createOverlayScheduler(
+        window.requestAnimationFrame?.bind(window) || ((callback) => window.setTimeout(callback, 16)),
+        renderOverlayNow,
+    );
+    renderOverlayNow();
+
+    let brushValue = AFFECTED_MASK_VALUE;
     let drawing = false;
-    let lastPoint = null;
+    let lastMaskPoint = null;
+    let lastPreviewPoint = null;
+    let lastCursorEvent = null;
 
     function setMode(value) {
         brushValue = value;
-        paintBtn.classList.toggle("active", value === 255);
-        eraseBtn.classList.toggle("active", value === 0);
+        paintBtn.classList.toggle("active", value === AFFECTED_MASK_VALUE);
+        eraseBtn.classList.toggle("active", value === UNAFFECTED_MASK_VALUE);
+    }
+
+    function refreshOverlay() {
+        scheduleOverlayRender();
+    }
+
+    function updateBrushCursor(event) {
+        lastCursorEvent = event;
+        const canvasRect = overlayCanvas.getBoundingClientRect();
+        const wrapRect = canvasWrap.getBoundingClientRect();
+        const brushSize = clamp(Number(sizeInput.value) || 32, 2, 160);
+        const previewBrushSize = brushSize * previewScale;
+        const displayScale = canvasRect.width / overlayCanvas.width;
+        const displaySize = Math.max(2, previewBrushSize * displayScale);
+        brushCursor.style.display = "block";
+        brushCursor.style.width = `${displaySize}px`;
+        brushCursor.style.height = `${displaySize}px`;
+        brushCursor.style.left = `${event.clientX - wrapRect.left}px`;
+        brushCursor.style.top = `${event.clientY - wrapRect.top}px`;
+        brushCursor.style.borderColor = colorInput.value;
+    }
+
+    function refreshBrushCursor() {
+        if (lastCursorEvent) {
+            updateBrushCursor(lastCursorEvent);
+        }
     }
 
     function drawAt(event) {
-        const point = pointerPoint(event, overlayCanvas);
+        updateBrushCursor(event);
+        const previewPoint = pointerPoint(event, overlayCanvas);
+        const maskPoint = previewPointToMaskPoint(previewPoint, previewScale);
         const size = clamp(Number(sizeInput.value) || 32, 2, 160);
-        drawBrush(maskCtx, point, size, brushValue);
-        if (lastPoint) {
-            const distance = Math.hypot(point.x - lastPoint.x, point.y - lastPoint.y);
-            const steps = Math.max(1, Math.ceil(distance / Math.max(1, size / 4)));
-            for (let i = 1; i < steps; i++) {
-                drawBrush(maskCtx, {
-                    x: lastPoint.x + ((point.x - lastPoint.x) * i) / steps,
-                    y: lastPoint.y + ((point.y - lastPoint.y) * i) / steps,
-                }, size, brushValue);
-            }
-        }
-        lastPoint = point;
-        renderMaskOverlay(maskCanvas, overlayCanvas);
+        drawBrushTrail(maskCtx, maskPoint, lastMaskPoint, size, brushValue);
+        drawBrushTrail(previewMaskCtx, previewPoint, lastPreviewPoint, size * previewScale, brushValue, drawAlphaBrush);
+        lastMaskPoint = maskPoint;
+        lastPreviewPoint = previewPoint;
+        refreshOverlay();
     }
 
+    overlayCanvas.addEventListener("pointerenter", (event) => {
+        updateBrushCursor(event);
+    });
     overlayCanvas.addEventListener("pointerdown", (event) => {
         event.preventDefault();
         drawing = true;
-        lastPoint = null;
+        lastMaskPoint = null;
+        lastPreviewPoint = null;
         overlayCanvas.setPointerCapture?.(event.pointerId);
         drawAt(event);
     });
     overlayCanvas.addEventListener("pointermove", (event) => {
+        updateBrushCursor(event);
         if (!drawing) return;
         event.preventDefault();
         drawAt(event);
     });
     overlayCanvas.addEventListener("pointerup", (event) => {
         drawing = false;
-        lastPoint = null;
+        lastMaskPoint = null;
+        lastPreviewPoint = null;
+        overlayCanvas.releasePointerCapture?.(event.pointerId);
+    });
+    overlayCanvas.addEventListener("pointercancel", (event) => {
+        drawing = false;
+        lastMaskPoint = null;
+        lastPreviewPoint = null;
         overlayCanvas.releasePointerCapture?.(event.pointerId);
     });
     overlayCanvas.addEventListener("pointerleave", () => {
         drawing = false;
-        lastPoint = null;
+        lastMaskPoint = null;
+        lastPreviewPoint = null;
+        lastCursorEvent = null;
+        brushCursor.style.display = "none";
     });
 
     paintBtn.onclick = (event) => {
         event.stopPropagation();
-        setMode(255);
+        setMode(AFFECTED_MASK_VALUE);
     };
     eraseBtn.onclick = (event) => {
         event.stopPropagation();
-        setMode(0);
+        setMode(UNAFFECTED_MASK_VALUE);
+    };
+    sizeInput.oninput = (event) => {
+        event.stopPropagation();
+        refreshBrushCursor();
+    };
+    colorInput.oninput = (event) => {
+        event.stopPropagation();
+        refreshOverlay();
+        refreshBrushCursor();
+    };
+    opacityInput.oninput = (event) => {
+        event.stopPropagation();
+        refreshOverlay();
     };
     invertBtn.onclick = (event) => {
         event.stopPropagation();
         invertMask(maskCanvas);
-        renderMaskOverlay(maskCanvas, overlayCanvas);
+        invertPreviewMask(previewMaskCanvas);
+        refreshOverlay();
     };
     clearBtn.onclick = (event) => {
         event.stopPropagation();
-        setMaskValue(maskCanvas, 0);
-        renderMaskOverlay(maskCanvas, overlayCanvas);
+        setMaskValue(maskCanvas, UNAFFECTED_MASK_VALUE);
+        setPreviewMaskValue(previewMaskCanvas, UNAFFECTED_MASK_VALUE);
+        refreshOverlay();
     };
     fillBtn.onclick = (event) => {
         event.stopPropagation();
-        setMaskValue(maskCanvas, 255);
-        renderMaskOverlay(maskCanvas, overlayCanvas);
+        setMaskValue(maskCanvas, AFFECTED_MASK_VALUE);
+        setPreviewMaskValue(previewMaskCanvas, AFFECTED_MASK_VALUE);
+        refreshOverlay();
     };
 
     function closeEditor() {

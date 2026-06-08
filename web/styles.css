@@ -1439,6 +1439,18 @@
 .helto-mask-editor-size {
     width: 110px;
 }
+.helto-mask-editor-opacity {
+    width: 110px;
+}
+.helto-mask-editor-color {
+    width: 34px;
+    height: 30px;
+    padding: 2px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    background: var(--bg-primary);
+    cursor: pointer;
+}
 .helto-mask-editor-stage {
     position: relative;
     flex: 1;
@@ -1465,7 +1477,17 @@
 .helto-mask-editor-canvas.mask {
     position: absolute;
     inset: 0;
-    cursor: crosshair;
+    cursor: none;
+}
+.helto-mask-editor-brush-cursor {
+    position: absolute;
+    z-index: 2;
+    display: none;
+    border: 1.5px solid #000;
+    border-radius: 50%;
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.95), 0 0 0 2px rgba(0, 0, 0, 0.6);
+    pointer-events: none;
+    transform: translate(-50%, -50%);
 }
 .helto-mask-editor-hidden-canvas {
     display: none;
@@ -1482,6 +1504,9 @@
         justify-content: flex-start;
     }
     .helto-mask-editor-size {
+        width: 84px;
+    }
+    .helto-mask-editor-opacity {
         width: 84px;
     }
 }
