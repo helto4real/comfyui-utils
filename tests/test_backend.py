@@ -24,6 +24,7 @@ from helto_selector_backend.image_processing import (
     select_images,
 )
 from helto_selector_backend.mask_storage import (
+    delete_mask,
     load_mask_bytes,
     mask_cache_paths,
     save_mask_bytes,
@@ -31,10 +32,12 @@ from helto_selector_backend.mask_storage import (
 from helto_selector_backend.scanning import delete_image_files, discover_image_folders, scan_image_folders
 from helto_selector_backend.services import (
     DeleteImagesPayload,
+    DeleteMaskPayload,
     ScanFoldersPayload,
     clear_cache_payload,
     decrypt_payload,
     delete_images_payload,
+    delete_mask_payload,
     encrypt_payload,
     get_input_dir_payload,
     scan_folders_payload,
@@ -142,6 +145,34 @@ class ImageProcessingTests(unittest.TestCase):
             self.assertTrue(os.path.exists(encrypted_path))
             self.assertNotIn(b"PNG", Path(encrypted_path).read_bytes()[:16])
             self.assertTrue(load_mask_bytes(image_path, cache_dir, key).startswith(b"\x89PNG"))
+
+    def test_delete_mask_removes_plain_and_encrypted_cache_files(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = os.path.join(tmpdir, "image.png")
+            cache_dir = os.path.join(tmpdir, "masks")
+            write_image(image_path, (4, 4), (255, 0, 0))
+            plain_path, encrypted_path = mask_cache_paths(image_path, cache_dir)
+            os.makedirs(cache_dir, exist_ok=True)
+            Path(plain_path).write_bytes(b"plain mask")
+            Path(encrypted_path).write_bytes(b"encrypted mask")
+
+            deleted_count = delete_mask(image_path, cache_dir)
+
+            self.assertEqual(deleted_count, 2)
+            self.assertFalse(os.path.exists(plain_path))
+            self.assertFalse(os.path.exists(encrypted_path))
+
+    def test_delete_mask_payload_succeeds_when_mask_file_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = os.path.join(tmpdir, "image.png")
+            write_image(image_path, (4, 4), (255, 0, 0))
+
+            result = delete_mask_payload(DeleteMaskPayload(path=image_path))
+
+            self.assertEqual(result["status"], "success")
+            self.assertEqual(result["path"], image_path)
+            self.assertTrue(result["cleared"])
+            self.assertEqual(result["deleted_count"], 0)
 
     def test_encrypted_selection_parses_with_same_key(self):
         key = b"1" * 32

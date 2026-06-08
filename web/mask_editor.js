@@ -44,6 +44,17 @@ export function maskOverlayPixel(maskValue, previewColor = "#000000", opacityPer
     return [r, g, b, Math.round(255 * opacity * maskStrength)];
 }
 
+export function maskImageDataIsUnaffected(imageData, unaffectedValue = UNAFFECTED_MASK_VALUE) {
+    if (!imageData?.data) return true;
+    const data = imageData.data;
+    for (let i = 0; i < data.length; i += 4) {
+        if (data[i] !== unaffectedValue || data[i + 1] !== unaffectedValue || data[i + 2] !== unaffectedValue) {
+            return false;
+        }
+    }
+    return true;
+}
+
 export function previewScaleForSize(width, height, maxEdge = MAX_PREVIEW_EDGE) {
     const maxDimension = Math.max(Number(width) || 0, Number(height) || 0);
     if (maxDimension <= 0 || maxEdge <= 0) return 1;
@@ -192,6 +203,12 @@ function setMaskValue(maskCanvas, value) {
     ctx.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
 }
 
+function maskCanvasIsUnaffected(maskCanvas) {
+    const ctx = maskCanvas.getContext("2d");
+    const imageData = ctx.getImageData(0, 0, maskCanvas.width, maskCanvas.height);
+    return maskImageDataIsUnaffected(imageData);
+}
+
 function createButton(document, label, className = "") {
     const button = document.createElement("button");
     button.type = "button";
@@ -211,6 +228,7 @@ export async function openMaskEditor({
     hasEditedMask = false,
     containPointerEvents,
     saveMask,
+    deleteMask,
     onSaved,
 }) {
     document.querySelectorAll(".helto-mask-editor-overlay").forEach((overlay) => overlay.remove());
@@ -473,8 +491,10 @@ export async function openMaskEditor({
         saveBtn.disabled = true;
         saveBtn.innerText = "Saving";
         try {
-            const result = await saveMask(img.path, canvasToDataUrl(maskCanvas), privacyMode);
-            await onSaved?.(img, result.ref);
+            const result = maskCanvasIsUnaffected(maskCanvas) && deleteMask
+                ? await deleteMask(img.path)
+                : await saveMask(img.path, canvasToDataUrl(maskCanvas), privacyMode);
+            await onSaved?.(img, result.ref ?? null, result);
             closeEditor();
         } catch (error) {
             console.error("Mask save failed:", error);

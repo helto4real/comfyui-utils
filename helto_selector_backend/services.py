@@ -10,7 +10,7 @@ from typing import Any
 from PIL import Image, ImageOps
 
 from .crypto import decrypt_selection, encrypt_selection
-from .mask_storage import load_mask_bytes, migrate_mask_privacy, save_mask_data_url
+from .mask_storage import delete_mask, load_mask_bytes, migrate_mask_privacy, save_mask_data_url
 from .scanning import delete_image_files, discover_image_folders, scan_image_folders
 from .thumbnail_cache import clear_thumbnail_cache, delete_thumbnail_cache_for_paths, get_thumbnail_bytes
 
@@ -87,6 +87,15 @@ class SaveMaskPayload:
             mask_data=str(data.get("mask_data") or ""),
             privacy=_truthy(data.get("privacy", False)),
         )
+
+
+@dataclass(frozen=True)
+class DeleteMaskPayload:
+    path: str
+
+    @classmethod
+    def from_request_data(cls, data: Mapping[str, Any]) -> "DeleteMaskPayload":
+        return cls(path=str(data.get("path") or ""))
 
 
 @dataclass(frozen=True)
@@ -184,6 +193,17 @@ def save_mask_payload(payload: SaveMaskPayload) -> dict[str, Any]:
         "status": "success",
         "path": payload.path,
         "ref": save_mask_data_url(payload.path, payload.mask_data, payload.privacy),
+    }
+
+
+def delete_mask_payload(payload: DeleteMaskPayload) -> dict[str, Any]:
+    if not image_path_exists(payload.path):
+        raise FileNotFoundError("Image path not found")
+    return {
+        "status": "success",
+        "path": payload.path,
+        "cleared": True,
+        "deleted_count": delete_mask(payload.path),
     }
 
 

@@ -15,6 +15,7 @@ import {
     getRootFolderOptions,
     getSubfolderFilterLabel,
     getSubfolderOptions,
+    applyEditedMaskSaveResult,
     initializeSelectorProperties,
     isSameOrChildPath,
     normalizeFilterPath,
@@ -621,9 +622,9 @@ app.registerExtension({
                 hasEditedMask: Boolean(node.editedMasks?.[img.path]),
                 containPointerEvents,
                 saveMask: (path, maskData, privacyMode) => selectorApi.saveMask(path, maskData, privacyMode),
-                onSaved: async (savedImg, ref) => {
-                    node.editedMasks ??= {};
-                    node.editedMasks[savedImg.path] = ref || { edited: true };
+                deleteMask: (path) => selectorApi.deleteMask(path),
+                onSaved: async (savedImg, ref, result) => {
+                    node.editedMasks = applyEditedMaskSaveResult(node.editedMasks, savedImg.path, ref, result);
                     await updateMaskWidgetValue();
                     renderGrid();
                     refreshSelectedPreviewPopover();

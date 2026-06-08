@@ -130,6 +130,16 @@ export function isSameOrChildPath(path, parentPath) {
     return normalizedPath === normalizedParent || normalizedPath.startsWith(`${normalizedParent}/`);
 }
 
+export function applyEditedMaskSaveResult(editedMasks, imagePath, ref, result) {
+    const nextMasks = { ...(editedMasks && typeof editedMasks === "object" ? editedMasks : {}) };
+    if (result?.cleared) {
+        delete nextMasks[imagePath];
+    } else {
+        nextMasks[imagePath] = ref || { edited: true };
+    }
+    return nextMasks;
+}
+
 export function sortImagesInPlace(images, mode) {
     images.sort((a, b) => {
         if (mode === "newest") return b.date_modified - a.date_modified;

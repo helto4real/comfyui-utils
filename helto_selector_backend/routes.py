@@ -7,12 +7,14 @@ from server import PromptServer
 
 from .services import (
     DeleteImagesPayload,
+    DeleteMaskPayload,
     MigrateMasksPayload,
     SaveMaskPayload,
     ScanFoldersPayload,
     clear_cache_payload,
     decrypt_payload,
     delete_images_payload,
+    delete_mask_payload,
     encrypt_payload,
     get_input_dir_payload,
     image_path_exists,
@@ -124,6 +126,18 @@ async def api_save_mask(request):
         return web.json_response({"error": str(e)}, status=404)
     except ValueError as e:
         return web.json_response({"error": str(e)}, status=400)
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+@routes.post("/helto_selector/delete_mask")
+async def api_delete_mask(request):
+    try:
+        data = await request.json()
+        payload = DeleteMaskPayload.from_request_data(data)
+        return web.json_response(delete_mask_payload(payload))
+    except FileNotFoundError as e:
+        return web.json_response({"error": str(e)}, status=404)
     except Exception as e:
         return web.json_response({"error": str(e)}, status=500)
 

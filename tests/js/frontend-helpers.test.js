@@ -12,6 +12,7 @@ import {
 import {
     AFFECTED_MASK_VALUE,
     createOverlayScheduler,
+    maskImageDataIsUnaffected,
     maskOverlayPixel,
     parsePreviewColor,
     previewPointToMaskPoint,
@@ -25,6 +26,7 @@ import {
     getRootFolderOptions,
     getSubfolderFilterLabel,
     getSubfolderOptions,
+    applyEditedMaskSaveResult,
     initializeSelectorProperties,
     isSameOrChildPath,
     normalizeFilterPath,
@@ -172,6 +174,22 @@ test("mask editor overlay opacity zero makes affected pixels transparent", () =>
     assert.deepEqual(maskOverlayPixel(AFFECTED_MASK_VALUE, "#336699", 0), [51, 102, 153, 0]);
 });
 
+test("mask editor empty-mask detection treats all unaffected pixels as clear", () => {
+    assert.equal(maskImageDataIsUnaffected({
+        data: new Uint8ClampedArray([
+            UNAFFECTED_MASK_VALUE, UNAFFECTED_MASK_VALUE, UNAFFECTED_MASK_VALUE, 255,
+            UNAFFECTED_MASK_VALUE, UNAFFECTED_MASK_VALUE, UNAFFECTED_MASK_VALUE, 255,
+        ]),
+    }), true);
+
+    assert.equal(maskImageDataIsUnaffected({
+        data: new Uint8ClampedArray([
+            UNAFFECTED_MASK_VALUE, UNAFFECTED_MASK_VALUE, UNAFFECTED_MASK_VALUE, 255,
+            AFFECTED_MASK_VALUE, AFFECTED_MASK_VALUE, AFFECTED_MASK_VALUE, 255,
+        ]),
+    }), false);
+});
+
 test("mask editor preview color parser supports hex colors and defaults safely", () => {
     assert.deepEqual(parsePreviewColor("#abc"), [170, 187, 204]);
     assert.deepEqual(parsePreviewColor("#123456"), [18, 52, 86]);
@@ -209,6 +227,25 @@ test("mask editor overlay scheduler coalesces redraw requests into one frame", (
 
     schedule();
     assert.equal(callbacks.length, 1);
+});
+
+test("selector mask save result removes edited mask entry when cleared", () => {
+    const existing = {
+        "/tmp/a.png": { key: "a" },
+        "/tmp/b.png": { key: "b" },
+    };
+
+    assert.deepEqual(
+        applyEditedMaskSaveResult(existing, "/tmp/a.png", null, { cleared: true }),
+        { "/tmp/b.png": { key: "b" } },
+    );
+    assert.deepEqual(
+        applyEditedMaskSaveResult(existing, "/tmp/a.png", { key: "next" }, { status: "success" }),
+        {
+            "/tmp/a.png": { key: "next" },
+            "/tmp/b.png": { key: "b" },
+        },
+    );
 });
 
 test("renderer detection uses Vue enabled setting when renderer name is missing", () => {

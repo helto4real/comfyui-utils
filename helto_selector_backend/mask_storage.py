@@ -91,6 +91,19 @@ def save_mask_bytes(
     return mask_ref_for_path(image_path)
 
 
+def delete_mask(
+    image_path: str,
+    mask_cache_dir: str = MASK_CACHE_DIR,
+) -> int:
+    plain_path, encrypted_path = mask_cache_paths(image_path, mask_cache_dir)
+    deleted_count = 0
+    for path in (plain_path, encrypted_path):
+        if os.path.exists(path):
+            os.remove(path)
+            deleted_count += 1
+    return deleted_count
+
+
 def load_mask_bytes(
     image_path: str,
     mask_cache_dir: str = MASK_CACHE_DIR,

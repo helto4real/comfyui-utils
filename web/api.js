@@ -81,6 +81,25 @@ export const selectorApi = {
         return response.json();
     },
 
+    async deleteMask(path) {
+        const response = await fetch("/helto_selector/delete_mask", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path })
+        });
+        if (!response.ok) {
+            let message = "Failed to clear edited mask.";
+            try {
+                const data = await response.json();
+                if (data.error) message = data.error;
+            } catch (err) {
+                // Keep the generic message if the server did not return JSON.
+            }
+            throw new Error(message);
+        }
+        return response.json();
+    },
+
     async migrateMasks(paths, privacyMode) {
         const response = await fetch("/helto_selector/migrate_masks", {
             method: "POST",
