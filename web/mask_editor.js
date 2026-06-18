@@ -19,6 +19,8 @@ function clamp(value, min, max) {
 export const MAX_PREVIEW_EDGE = 2048;
 export const AFFECTED_MASK_VALUE = 255;
 export const UNAFFECTED_MASK_VALUE = 0;
+export const ZOOM_MODE_FIT = "fit";
+export const ZOOM_MODE_ACTUAL = "actual";
 
 export function parsePreviewColor(value) {
     if (typeof value !== "string") return [0, 0, 0];
@@ -69,6 +71,59 @@ export function previewPointToMaskPoint(point, previewScale) {
     };
 }
 
+export function displayPointToPreviewPoint(point, canvasSize, displaySize) {
+    const displayWidth = Number(displaySize.width) || Number(canvasSize.width) || 1;
+    const displayHeight = Number(displaySize.height) || Number(canvasSize.height) || 1;
+    return {
+        x: point.x * ((Number(canvasSize.width) || 1) / displayWidth),
+        y: point.y * ((Number(canvasSize.height) || 1) / displayHeight),
+    };
+}
+
+export function displayBrushSizeToPreviewSize(brushSize, canvasSize, displaySize) {
+    const displayWidth = Number(displaySize.width) || Number(canvasSize.width) || 1;
+    const canvasWidth = Number(canvasSize.width) || 1;
+    return Math.max(1, Number(brushSize) || 1) * (canvasWidth / displayWidth);
+}
+
+export function displayBrushSizeToMaskSize(brushSize, canvasSize, displaySize, previewScale) {
+    const scale = previewScale > 0 ? previewScale : 1;
+    return displayBrushSizeToPreviewSize(brushSize, canvasSize, displaySize) / scale;
+}
+
+export function fitDisplaySize(contentWidth, contentHeight, stageWidth, stageHeight) {
+    const width = Math.max(1, Number(contentWidth) || 1);
+    const height = Math.max(1, Number(contentHeight) || 1);
+    const availableWidth = Math.max(1, Number(stageWidth) || width);
+    const availableHeight = Math.max(1, Number(stageHeight) || height);
+    const scale = Math.min(availableWidth / width, availableHeight / height);
+    return {
+        width: Math.max(1, Math.round(width * scale)),
+        height: Math.max(1, Math.round(height * scale)),
+        scale,
+    };
+}
+
+export function displaySizeForZoomMode(mode, dimensions) {
+    if (mode === ZOOM_MODE_ACTUAL) {
+        return {
+            width: Math.max(1, Math.round(Number(dimensions.imageWidth) || 1)),
+            height: Math.max(1, Math.round(Number(dimensions.imageHeight) || 1)),
+            scale: 1,
+        };
+    }
+    return fitDisplaySize(
+        dimensions.previewWidth,
+        dimensions.previewHeight,
+        dimensions.stageWidth,
+        dimensions.stageHeight,
+    );
+}
+
+export function nextZoomMode(mode) {
+    return mode === ZOOM_MODE_FIT ? ZOOM_MODE_ACTUAL : ZOOM_MODE_FIT;
+}
+
 export function createOverlayScheduler(requestAnimationFrameImpl, render) {
     let pending = false;
     return function scheduleOverlayRender() {
@@ -83,12 +138,20 @@ export function createOverlayScheduler(requestAnimationFrameImpl, render) {
 
 function pointerPoint(event, canvas) {
     const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
-    return {
-        x: (event.clientX - rect.left) * scaleX,
-        y: (event.clientY - rect.top) * scaleY,
-    };
+    return displayPointToPreviewPoint(
+        {
+            x: event.clientX - rect.left,
+            y: event.clientY - rect.top,
+        },
+        {
+            width: canvas.width,
+            height: canvas.height,
+        },
+        {
+            width: rect.width,
+            height: rect.height,
+        },
+    );
 }
 
 function drawBrush(ctx, point, size, value) {
@@ -255,6 +318,7 @@ export async function openMaskEditor({
 
     const paintBtn = createButton(document, "Paint", "active");
     const eraseBtn = createButton(document, "Erase");
+    const zoomBtn = createButton(document, "Actual size");
     const invertBtn = createButton(document, "Invert");
     const clearBtn = createButton(document, "Clear");
     const fillBtn = createButton(document, "Fill");
@@ -286,7 +350,7 @@ export async function openMaskEditor({
     opacityInput.title = "Overlay opacity";
     opacityInput.setAttribute("aria-label", "Overlay opacity");
 
-    controls.append(paintBtn, eraseBtn, sizeInput, colorInput, opacityInput, invertBtn, clearBtn, fillBtn, saveBtn, cancelBtn);
+    controls.append(paintBtn, eraseBtn, sizeInput, colorInput, opacityInput, zoomBtn, invertBtn, clearBtn, fillBtn, saveBtn, cancelBtn);
     header.append(title, controls);
 
     const stage = document.createElement("div");
@@ -349,6 +413,7 @@ export async function openMaskEditor({
     );
     renderOverlayNow();
 
+    let zoomMode = ZOOM_MODE_FIT;
     let brushValue = AFFECTED_MASK_VALUE;
     let drawing = false;
     let lastMaskPoint = null;
@@ -365,14 +430,51 @@ export async function openMaskEditor({
         scheduleOverlayRender();
     }
 
+    function applyZoomMode() {
+        const size = displaySizeForZoomMode(zoomMode, {
+            imageWidth: width,
+            imageHeight: height,
+            previewWidth,
+            previewHeight,
+            stageWidth: stage.clientWidth,
+            stageHeight: stage.clientHeight,
+        });
+
+        canvasWrap.style.width = `${size.width}px`;
+        canvasWrap.style.height = `${size.height}px`;
+        stage.classList.toggle("actual-size", zoomMode === ZOOM_MODE_ACTUAL);
+        zoomBtn.innerText = zoomMode === ZOOM_MODE_FIT ? "Actual size" : "Zoom to fit";
+        zoomBtn.title = zoomMode === ZOOM_MODE_FIT ? "Show actual size" : "Zoom to fit";
+        refreshBrushCursor();
+    }
+
+    function scheduleZoomLayout() {
+        (window.requestAnimationFrame?.bind(window) || ((callback) => window.setTimeout(callback, 16)))(applyZoomMode);
+    }
+
+    function brushDisplaySize() {
+        return clamp(Number(sizeInput.value) || 32, 2, 160);
+    }
+
+    function overlayCanvasSize() {
+        return {
+            width: overlayCanvas.width,
+            height: overlayCanvas.height,
+        };
+    }
+
+    function overlayDisplaySize() {
+        const rect = overlayCanvas.getBoundingClientRect();
+        return {
+            width: rect.width,
+            height: rect.height,
+        };
+    }
+
     function updateBrushCursor(event) {
         lastCursorEvent = event;
-        const canvasRect = overlayCanvas.getBoundingClientRect();
         const wrapRect = canvasWrap.getBoundingClientRect();
-        const brushSize = clamp(Number(sizeInput.value) || 32, 2, 160);
-        const previewBrushSize = brushSize * previewScale;
-        const displayScale = canvasRect.width / overlayCanvas.width;
-        const displaySize = Math.max(2, previewBrushSize * displayScale);
+        const displaySize = brushDisplaySize();
         brushCursor.style.display = "block";
         brushCursor.style.width = `${displaySize}px`;
         brushCursor.style.height = `${displaySize}px`;
@@ -391,9 +493,13 @@ export async function openMaskEditor({
         updateBrushCursor(event);
         const previewPoint = pointerPoint(event, overlayCanvas);
         const maskPoint = previewPointToMaskPoint(previewPoint, previewScale);
-        const size = clamp(Number(sizeInput.value) || 32, 2, 160);
-        drawBrushTrail(maskCtx, maskPoint, lastMaskPoint, size, brushValue);
-        drawBrushTrail(previewMaskCtx, previewPoint, lastPreviewPoint, size * previewScale, brushValue, drawAlphaBrush);
+        const displaySize = brushDisplaySize();
+        const canvasSize = overlayCanvasSize();
+        const visibleSize = overlayDisplaySize();
+        const previewBrushSize = displayBrushSizeToPreviewSize(displaySize, canvasSize, visibleSize);
+        const maskBrushSize = displayBrushSizeToMaskSize(displaySize, canvasSize, visibleSize, previewScale);
+        drawBrushTrail(maskCtx, maskPoint, lastMaskPoint, maskBrushSize, brushValue);
+        drawBrushTrail(previewMaskCtx, previewPoint, lastPreviewPoint, previewBrushSize, brushValue, drawAlphaBrush);
         lastMaskPoint = maskPoint;
         lastPreviewPoint = previewPoint;
         refreshOverlay();
@@ -457,6 +563,11 @@ export async function openMaskEditor({
         event.stopPropagation();
         refreshOverlay();
     };
+    zoomBtn.onclick = (event) => {
+        event.stopPropagation();
+        zoomMode = nextZoomMode(zoomMode);
+        applyZoomMode();
+    };
     invertBtn.onclick = (event) => {
         event.stopPropagation();
         invertMask(maskCanvas);
@@ -477,6 +588,8 @@ export async function openMaskEditor({
     };
 
     function closeEditor() {
+        resizeObserver?.disconnect();
+        window.removeEventListener?.("resize", handleWindowResize);
         overlay.classList.remove("active");
         window.setTimeout(() => overlay.remove(), 180);
     }
@@ -509,6 +622,22 @@ export async function openMaskEditor({
             closeEditor();
         }
     };
+
+    const resizeObserver = typeof window.ResizeObserver === "function"
+        ? new window.ResizeObserver(() => {
+            if (zoomMode === ZOOM_MODE_FIT) {
+                applyZoomMode();
+            }
+        })
+        : null;
+    const handleWindowResize = () => {
+        if (zoomMode === ZOOM_MODE_FIT) {
+            scheduleZoomLayout();
+        }
+    };
+    resizeObserver?.observe(stage);
+    window.addEventListener?.("resize", handleWindowResize);
+    scheduleZoomLayout();
 
     if (hideMode) {
         windowEl.classList.add("hide-mode");

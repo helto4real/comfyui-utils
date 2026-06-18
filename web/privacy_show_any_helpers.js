@@ -6,14 +6,6 @@ export const ENCRYPTED_PREFIX = "__HELTO_ENC__:";
 export const PRIVACY_SHOW_ANY_LAYOUT = Object.freeze({
     minWidth: 360,
     minNodeHeight: 300,
-    minWidgetHeight: 160,
-    minTextHeight: 80,
-    defaultWidgetHeight: 220,
-    bottomGutter: 12,
-    framePaddingY: 16,
-    toolbarGap: 8,
-    toolbarHeight: 30,
-    vueChromeHeight: 76,
 });
 
 export function getWidget(node, name) {
@@ -159,68 +151,10 @@ export async function flushPrivacyShowAnyEncryption(graph, pendingPromiseKey, on
     return nodes;
 }
 
-export function configurePrivacyShowAnyTextarea(textarea) {
-    if (!textarea) return textarea;
-    textarea.readOnly = true;
-    textarea.wrap = "soft";
-    textarea.spellcheck = false;
-    return textarea;
-}
-
-export function privacyShowAnyTextareaState(text, revealed, emptyPlaceholder = "Run the node to display text.") {
+export function privacyShowAnyDisplayState(text, revealed, emptyPlaceholder = "Run the node to display text.") {
     const plain = String(text ?? "");
     return {
         value: revealed ? plain : "",
         placeholder: plain ? "" : emptyPlaceholder,
     };
-}
-
-export function getPrivacyShowAnyWidgetStartY(node, domWidget, fallback = 92) {
-    if (Number.isFinite(domWidget?.last_y)) return domWidget.last_y;
-    if (Number.isFinite(domWidget?.y)) return domWidget.y;
-
-    if (domWidget && Array.isArray(node?.widgets)) {
-        const index = node.widgets.indexOf(domWidget);
-        for (let i = index - 1; i >= 0; i--) {
-            const widget = node.widgets[i];
-            if (!widget || widget.type === "hidden" || widget.hidden) continue;
-            if (Number.isFinite(widget.y)) {
-                return widget.y + (Number.isFinite(widget.height) ? widget.height : 24) + 6;
-            }
-        }
-    }
-
-    return fallback;
-}
-
-export function getPrivacyShowAnyWidgetHeight(node, startY, layout = PRIVACY_SHOW_ANY_LAYOUT) {
-    const nodeHeight = Array.isArray(node?.size) && Number.isFinite(node.size[1])
-        ? node.size[1]
-        : layout.minNodeHeight;
-    return Math.max(layout.minWidgetHeight, nodeHeight - startY - layout.bottomGutter);
-}
-
-export function getPrivacyShowAnyTextAreaHeight(totalHeight, toolbarHeight = PRIVACY_SHOW_ANY_LAYOUT.toolbarHeight, layout = PRIVACY_SHOW_ANY_LAYOUT) {
-    const widgetHeight = Number.isFinite(totalHeight) ? totalHeight : layout.defaultWidgetHeight;
-    const chromeHeight = (Number.isFinite(toolbarHeight) ? toolbarHeight : layout.toolbarHeight)
-        + layout.framePaddingY
-        + layout.toolbarGap;
-    return Math.max(layout.minTextHeight, widgetHeight - chromeHeight);
-}
-
-export function getVuePrivacyShowAnyVisualHeight(node, domWidget, layout = PRIVACY_SHOW_ANY_LAYOUT) {
-    const nodeEl = domWidget?.element?.closest?.(".lg-node");
-    if (nodeEl) {
-        const cssNodeHeight = parseFloat(nodeEl.style?.getPropertyValue?.("--node-height") || "");
-        if (Number.isFinite(cssNodeHeight)) {
-            return Math.max(layout.minWidgetHeight, cssNodeHeight - layout.vueChromeHeight);
-        }
-    }
-
-    const startY = getPrivacyShowAnyWidgetStartY(node, domWidget);
-    return getPrivacyShowAnyWidgetHeight(node, startY, layout);
-}
-
-export function getVuePrivacyShowAnyLayoutHeight(layout = PRIVACY_SHOW_ANY_LAYOUT) {
-    return layout.defaultWidgetHeight;
 }

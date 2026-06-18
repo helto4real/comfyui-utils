@@ -240,6 +240,32 @@
     box-shadow: 0 0 0 2px hsla(225, 80%, 65%, 0.12);
 }
 
+.helto-show-any-native-wrap {
+    position: relative;
+}
+
+.helto-show-any-native-text {
+    padding-top: 34px !important;
+    padding-right: 44px !important;
+}
+
+.helto-show-any-native-copy {
+    position: absolute;
+    top: 6px;
+    right: 8px;
+    z-index: 4;
+    width: 28px;
+    height: 28px;
+    padding: 5px;
+    background: color-mix(in srgb, var(--bg-secondary) 88%, transparent);
+    backdrop-filter: blur(4px);
+}
+
+.helto-show-any-native-copy.is-copied {
+    color: var(--accent-primary);
+    border-color: var(--border-active);
+}
+
 /* --- Controls Slider & Sort Row --- */
 .helto-controls {
     display: flex;
@@ -1461,17 +1487,19 @@
     overflow: auto;
     background: #111;
 }
+.helto-mask-editor-stage.actual-size {
+    align-items: flex-start;
+    justify-content: flex-start;
+}
 .helto-mask-editor-canvas-wrap {
     position: relative;
-    max-width: 100%;
-    max-height: 100%;
+    flex: 0 0 auto;
     line-height: 0;
 }
 .helto-mask-editor-canvas {
     display: block;
-    max-width: calc(92vw - 32px);
-    max-height: calc(90vh - 84px);
-    object-fit: contain;
+    width: 100%;
+    height: 100%;
     user-select: none;
 }
 .helto-mask-editor-canvas.mask {

@@ -12,12 +12,20 @@ import {
 import {
     AFFECTED_MASK_VALUE,
     createOverlayScheduler,
+    displayBrushSizeToMaskSize,
+    displayBrushSizeToPreviewSize,
+    displayPointToPreviewPoint,
+    displaySizeForZoomMode,
+    fitDisplaySize,
     maskImageDataIsUnaffected,
     maskOverlayPixel,
+    nextZoomMode,
     parsePreviewColor,
     previewPointToMaskPoint,
     previewScaleForSize,
     UNAFFECTED_MASK_VALUE,
+    ZOOM_MODE_ACTUAL,
+    ZOOM_MODE_FIT,
 } from "../../web/mask_editor.js";
 import {
     getFolderLabel,
@@ -113,20 +121,14 @@ import {
     PRIVACY_SHOW_ANY_STATE_WIDGET,
     PRIVACY_SHOW_ANY_STATE_PROPERTY,
     collectPrivacyShowAnyNodes,
-    configurePrivacyShowAnyTextarea,
     decryptTextState,
     encryptedPrivacyShowAnyState,
     encryptTextState,
     extractPrivacyShowAnyText,
     flushPrivacyShowAnyEncryption,
-    getPrivacyShowAnyTextAreaHeight,
-    getPrivacyShowAnyWidgetHeight,
-    getPrivacyShowAnyWidgetStartY,
-    getVuePrivacyShowAnyLayoutHeight,
-    getVuePrivacyShowAnyVisualHeight,
     hidePrivacyShowAnyStateWidget,
     isEncryptedText as isPrivacyEncryptedText,
-    privacyShowAnyTextareaState,
+    privacyShowAnyDisplayState,
     sanitizePrivacyShowAnySerializedProperties,
     serializedEncryptedPropertyValue,
     serializedEncryptedWidgetValue,
@@ -206,9 +208,72 @@ test("mask editor preview scale preserves small images and bounds large images",
     assert.equal(previewScaleForSize(1000, 500, 500), 0.5);
 });
 
+test("mask editor fit display size preserves aspect ratio for constrained stages", () => {
+    assert.deepEqual(fitDisplaySize(1600, 800, 800, 800), { width: 800, height: 400, scale: 0.5 });
+    assert.deepEqual(fitDisplaySize(800, 1600, 800, 800), { width: 400, height: 800, scale: 0.5 });
+    assert.deepEqual(fitDisplaySize(400, 200, 800, 800), { width: 800, height: 400, scale: 2 });
+});
+
+test("mask editor zoom display size defaults to fit and can use original image dimensions", () => {
+    const dimensions = {
+        imageWidth: 4096,
+        imageHeight: 2048,
+        previewWidth: 2048,
+        previewHeight: 1024,
+        stageWidth: 1024,
+        stageHeight: 1024,
+    };
+
+    assert.deepEqual(displaySizeForZoomMode(ZOOM_MODE_FIT, dimensions), { width: 1024, height: 512, scale: 0.5 });
+    assert.deepEqual(displaySizeForZoomMode(ZOOM_MODE_ACTUAL, dimensions), { width: 4096, height: 2048, scale: 1 });
+});
+
 test("mask editor maps preview points back to full-resolution mask points", () => {
     assert.deepEqual(previewPointToMaskPoint({ x: 512, y: 256 }, 0.5), { x: 1024, y: 512 });
     assert.deepEqual(previewPointToMaskPoint({ x: 12, y: 18 }, 1), { x: 12, y: 18 });
+});
+
+test("mask editor maps displayed points through CSS zoom to preview and mask points", () => {
+    const previewPoint = displayPointToPreviewPoint(
+        { x: 256, y: 128 },
+        { width: 2048, height: 1024 },
+        { width: 1024, height: 512 },
+    );
+
+    assert.deepEqual(previewPoint, { x: 512, y: 256 });
+    assert.deepEqual(previewPointToMaskPoint(previewPoint, 0.5), { x: 1024, y: 512 });
+});
+
+test("mask editor brush size uses screen pixels at actual size", () => {
+    const brushSize = 32;
+    const canvasSize = { width: 2048, height: 1024 };
+    const displaySize = { width: 4096, height: 2048 };
+
+    assert.equal(displayBrushSizeToPreviewSize(brushSize, canvasSize, displaySize), 16);
+    assert.equal(displayBrushSizeToMaskSize(brushSize, canvasSize, displaySize, 0.5), 32);
+});
+
+test("mask editor brush size expands mask footprint when zoomed to fit", () => {
+    const brushSize = 32;
+    const canvasSize = { width: 2048, height: 1024 };
+    const displaySize = { width: 1024, height: 512 };
+
+    assert.equal(displayBrushSizeToPreviewSize(brushSize, canvasSize, displaySize), 64);
+    assert.equal(displayBrushSizeToMaskSize(brushSize, canvasSize, displaySize, 0.5), 128);
+});
+
+test("mask editor brush cursor stays equal to selected screen size", () => {
+    const brushSize = 32;
+    const canvasSize = { width: 2048, height: 1024 };
+    const displaySize = { width: 1024, height: 512 };
+    const previewBrushSize = displayBrushSizeToPreviewSize(brushSize, canvasSize, displaySize);
+
+    assert.equal(previewBrushSize * (displaySize.width / canvasSize.width), brushSize);
+});
+
+test("mask editor zoom mode starts as fit and toggles to actual size", () => {
+    assert.equal(nextZoomMode(ZOOM_MODE_FIT), ZOOM_MODE_ACTUAL);
+    assert.equal(nextZoomMode(ZOOM_MODE_ACTUAL), ZOOM_MODE_FIT);
 });
 
 test("mask editor overlay scheduler coalesces redraw requests into one frame", () => {
@@ -1962,68 +2027,19 @@ test("privacy show any waits for pending encryption and fails closed on rejectio
     assert.equal(failedNode.stateWidget.value, "");
 });
 
-test("privacy show any textarea defaults to read-only multiline wrapping", () => {
-    const textarea = {};
-
-    configurePrivacyShowAnyTextarea(textarea);
-
-    assert.equal(textarea.readOnly, true);
-    assert.equal(textarea.wrap, "soft");
-    assert.equal(textarea.spellcheck, false);
-});
-
-test("privacy show any textarea reveals only when panel hover state is active", () => {
+test("privacy show any display reveals only when hover state is active", () => {
     assert.deepEqual(
-        privacyShowAnyTextareaState("secret text", false),
+        privacyShowAnyDisplayState("secret text", false),
         { value: "", placeholder: "" },
     );
     assert.deepEqual(
-        privacyShowAnyTextareaState("secret text", true),
+        privacyShowAnyDisplayState("secret text", true),
         { value: "secret text", placeholder: "" },
     );
     assert.deepEqual(
-        privacyShowAnyTextareaState("", true),
+        privacyShowAnyDisplayState("", true),
         { value: "", placeholder: "Run the node to display text." },
     );
-});
-
-test("privacy show any sizing fills remaining node body with a floor", () => {
-    const domWidget = { y: 84 };
-    const node = {
-        size: [740, 680],
-        widgets: [
-            { name: "seed", y: 42, height: 24 },
-            domWidget,
-        ],
-    };
-
-    assert.equal(getPrivacyShowAnyWidgetStartY(node, domWidget), 84);
-    assert.equal(getPrivacyShowAnyWidgetHeight(node, 84), 584);
-    assert.equal(getPrivacyShowAnyWidgetHeight({ size: [360, 140] }, 84), 160);
-});
-
-test("privacy show any textarea height fills widget body with a floor", () => {
-    assert.equal(getPrivacyShowAnyTextAreaHeight(584, 30), 530);
-    assert.equal(getPrivacyShowAnyTextAreaHeight(96, 30), 80);
-});
-
-test("privacy show any vue visual height follows explicit node height", () => {
-    let cssNodeHeight = 620;
-    const nodeEl = {
-        style: {
-            getPropertyValue(name) {
-                return name === "--node-height" ? `${cssNodeHeight}px` : "";
-            },
-        },
-    };
-    const domWidget = { element: { closest: () => nodeEl } };
-
-    assert.equal(getVuePrivacyShowAnyVisualHeight({ size: [360, 300] }, domWidget), 544);
-    assert.equal(getVuePrivacyShowAnyLayoutHeight(), 220);
-
-    cssNodeHeight = 360;
-    assert.equal(getVuePrivacyShowAnyVisualHeight({ size: [360, 300] }, domWidget), 284);
-    assert.equal(getVuePrivacyShowAnyLayoutHeight(), 220);
 });
 
 test("legacy sizing stays static instead of deriving from current node height", () => {

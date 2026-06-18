@@ -1,9 +1,9 @@
 import { app } from "../../scripts/app.js";
+import { ComfyWidgets } from "../../scripts/widgets.js";
 
 import { selectorApi } from "./api.js";
-import { STOP_EVENTS } from "./constants.js";
-import { getCanvasRendererLayoutMode, getGraphRendererMode } from "./layout.js";
-import { collapseHiddenWidgetLayout, containPointerEvents, setWidgetHeight } from "./ui.js";
+import { ICONS } from "./constants.js";
+import { collapseHiddenWidgetLayout } from "./ui.js";
 import {
     PRIVACY_SHOW_ANY_LAYOUT,
     PRIVACY_SHOW_ANY_NODE_CLASS,
@@ -12,32 +12,22 @@ import {
     encryptTextState,
     extractPrivacyShowAnyText,
     flushPrivacyShowAnyEncryption,
-    configurePrivacyShowAnyTextarea,
-    getPrivacyShowAnyTextAreaHeight,
-    getPrivacyShowAnyWidgetHeight,
-    getPrivacyShowAnyWidgetStartY,
-    getVuePrivacyShowAnyLayoutHeight,
-    getVuePrivacyShowAnyVisualHeight,
     getWidget,
     hidePrivacyShowAnyStateWidget,
     encryptedPrivacyShowAnyState,
-    privacyShowAnyTextareaState,
+    privacyShowAnyDisplayState,
     sanitizePrivacyShowAnySerializedProperties,
     setEncryptedPrivacyShowAnyState,
     serializedEncryptedWidgetValue,
 } from "./privacy_show_any_helpers.js";
 
 const DISPLAY_WIDGET_KEY = "__heltoPrivacyShowAnyWidget";
-const CANVAS_WIDGET_KEY = "__heltoPrivacyShowAnyCanvasWidget";
 const DISPLAY_TEXT_KEY = "__heltoPrivacyShowAnyText";
 const ENCRYPT_PROMISE_KEY = "__heltoPrivacyShowAnyEncryptPromise";
-const RESIZE_PATCHED_KEY = "__heltoPrivacyShowAnyResizePatched";
-const SIZE_SYNC_PATCHED_KEY = "__heltoPrivacyShowAnySizeSyncPatched";
-const CANVAS_INTERACTION_PATCHED_KEY = "__heltoPrivacyShowAnyCanvasInteractionPatched";
-const DOM_LAYOUT_STATE_KEY = "__heltoPrivacyShowAnyDomLayoutState";
 const STATE_WIDGET_KEY = "__heltoPrivacyShowAnyStateWidget";
 const SERIALIZATION_PATCHED_KEY = "__heltoPrivacyShowAnySerializationPatched";
 const LIFECYCLE_FLUSH_PATCHED_KEY = "__heltoPrivacyShowAnyLifecycleFlushPatched";
+const COPY_BUTTON_GUARD_EVENTS = ["pointerdown", "pointerup", "mousedown", "mouseup", "dblclick", "contextmenu"];
 
 ensureStylesheet();
 installPrivacyShowAnyLifecycleFlush();
@@ -76,537 +66,6 @@ function captureWorkflowState(node) {
     }
 }
 
-function classifyRendererName(mode) {
-    const value = String(mode ?? "").toLowerCase();
-    if (!value) return null;
-    if (value.includes("litegraph") || value.includes("canvas") || value.includes("classic") || value.includes("legacy")) return "legacy";
-    if (value.includes("vue") || value.includes("dom") || value.includes("modern") || /nodes?\s*2|2\.0/.test(value)) return "vue";
-    return null;
-}
-
-function explicitRendererMode() {
-    return classifyRendererName(getGraphRendererMode(app));
-}
-
-function shouldUseLegacyCanvasForNode(node) {
-    const explicit = explicitRendererMode();
-    if (explicit === "legacy") return true;
-    if (explicit === "vue") return false;
-
-    const display = node?.[DISPLAY_WIDGET_KEY];
-    if (display?.domWidget?.element?.closest?.(".lg-node")) return false;
-    if (document.querySelector?.(".lg-node")) return false;
-
-    const mode = rendererMode();
-    if (mode === "legacy" || mode === "ambiguous") return true;
-
-    // In some installs the Vue capability flag remains true while the active canvas is legacy.
-    return Boolean(window.LiteGraph);
-}
-
-function clamp(value, min, max) {
-    return Math.min(Math.max(value, min), max);
-}
-
-function isPointInBounds(pos, bounds) {
-    if (!pos || !bounds) return false;
-    const [x, y] = pos;
-    return x >= bounds.x && x <= bounds.x + bounds.width && y >= bounds.y && y <= bounds.y + bounds.height;
-}
-
-function drawRoundedRect(ctx, x, y, width, height, radius) {
-    const r = Math.min(radius, width / 2, height / 2);
-    if (typeof ctx.roundRect === "function") {
-        ctx.beginPath();
-        ctx.roundRect(x, y, width, height, r);
-        return;
-    }
-    ctx.beginPath();
-    ctx.moveTo(x + r, y);
-    ctx.lineTo(x + width - r, y);
-    ctx.quadraticCurveTo(x + width, y, x + width, y + r);
-    ctx.lineTo(x + width, y + height - r);
-    ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
-    ctx.lineTo(x + r, y + height);
-    ctx.quadraticCurveTo(x, y + height, x, y + height - r);
-    ctx.lineTo(x, y + r);
-    ctx.quadraticCurveTo(x, y, x + r, y);
-}
-
-function splitLongCanvasToken(ctx, token, maxWidth) {
-    const parts = [];
-    let current = "";
-
-    for (const char of token) {
-        const candidate = `${current}${char}`;
-        if (current && ctx.measureText(candidate).width > maxWidth) {
-            parts.push(current);
-            current = char;
-        } else {
-            current = candidate;
-        }
-    }
-
-    if (current) {
-        parts.push(current);
-    }
-    return parts;
-}
-
-function wrapCanvasText(ctx, text, maxWidth) {
-    const hardLines = String(text ?? "").split(/\r\n|\r|\n/);
-    const wrapped = [];
-
-    for (const hardLine of hardLines) {
-        if (!hardLine) {
-            wrapped.push("");
-            continue;
-        }
-
-        let line = "";
-        for (const token of hardLine.split(/(\s+)/).filter(Boolean)) {
-            const candidate = `${line}${token}`;
-            if (!line || ctx.measureText(candidate).width <= maxWidth) {
-                line = candidate;
-                continue;
-            }
-
-            if (line.trimEnd()) {
-                wrapped.push(line.trimEnd());
-            }
-            line = token.trimStart();
-
-            while (line && ctx.measureText(line).width > maxWidth) {
-                const parts = splitLongCanvasToken(ctx, line, maxWidth);
-                wrapped.push(parts.shift() || "");
-                line = parts.join("");
-            }
-        }
-
-        wrapped.push(line.trimEnd());
-    }
-
-    return wrapped.length ? wrapped : [""];
-}
-
-function getLocalMousePos(node, event, localPos) {
-    if (Array.isArray(localPos) && Number.isFinite(localPos[0]) && Number.isFinite(localPos[1])) {
-        return localPos;
-    }
-
-    const canvas = app.canvas;
-    const graphPos = canvas?.graph_mouse ?? canvas?.last_mouse;
-
-    if (
-        Array.isArray(graphPos) &&
-        Array.isArray(node.pos) &&
-        Number.isFinite(graphPos[0]) &&
-        Number.isFinite(graphPos[1])
-    ) {
-        return [graphPos[0] - node.pos[0], graphPos[1] - node.pos[1]];
-    }
-
-    if (event && Number.isFinite(event.canvasX) && Number.isFinite(event.canvasY) && Array.isArray(node.pos)) {
-        return [event.canvasX - node.pos[0], event.canvasY - node.pos[1]];
-    }
-
-    return null;
-}
-
-function normalizeWheelDelta(event) {
-    if (Number.isFinite(event?.deltaY)) {
-        return event.deltaY;
-    }
-    if (Number.isFinite(event?.wheelDelta)) {
-        return -event.wheelDelta;
-    }
-    return 0;
-}
-
-function consumeDomEvent(event, preventDefault = false) {
-    if (preventDefault) {
-        event.preventDefault();
-    }
-    event.stopPropagation();
-    event.stopImmediatePropagation?.();
-}
-
-function installDomEventGuard(element, {
-    preventDefault = () => false,
-    shouldHandle = () => true,
-    onClick = null,
-} = {}) {
-    if (!element) return;
-
-    for (const eventName of STOP_EVENTS) {
-        const consume = (event) => {
-            if (!shouldHandle(event)) return;
-            if (event.type === "click") {
-                onClick?.(event);
-            }
-            consumeDomEvent(event, preventDefault(event));
-        };
-        element.addEventListener(eventName, consume, true);
-        element.addEventListener(eventName, consume);
-    }
-}
-
-class PrivacyShowAnyCanvasWidget {
-    constructor(node) {
-        this.name = "helto_privacy_show_any_canvas";
-        this.type = "custom";
-        this.node = node;
-        this.bounds = null;
-        this.copyBounds = null;
-        this.textBounds = null;
-        this.scrollTop = 0;
-        this.contentHeight = 0;
-        this.viewportHeight = 0;
-        this.cachedText = null;
-        this.cachedWidth = null;
-        this.cachedLines = null;
-        this.statusMessage = "";
-        this.statusUntil = 0;
-        this.textHovered = false;
-    }
-
-    invalidate() {
-        this.cachedText = null;
-        this.cachedWidth = null;
-        this.cachedLines = null;
-        this.scrollTop = 0;
-    }
-
-    getText() {
-        return String(this.node?.[DISPLAY_TEXT_KEY] ?? "");
-    }
-
-    getStatusText(text) {
-        if (this.statusMessage && Date.now() < this.statusUntil) {
-            return this.statusMessage;
-        }
-        this.statusMessage = "";
-        const length = String(text || "").length;
-        return length ? `${length.toLocaleString()} chars` : "No text";
-    }
-
-    getWrappedLines(ctx, text, maxWidth) {
-        if (this.cachedText === text && this.cachedWidth === maxWidth && this.cachedLines) {
-            return this.cachedLines;
-        }
-
-        const lines = wrapCanvasText(ctx, text, maxWidth);
-        this.cachedText = text;
-        this.cachedWidth = maxWidth;
-        this.cachedLines = lines;
-        return lines;
-    }
-
-    drawCopyIcon(ctx, bounds) {
-        ctx.save();
-        ctx.strokeStyle = "rgba(235, 235, 245, 0.9)";
-        ctx.lineWidth = 1.8;
-        const backX = bounds.x + 9;
-        const backY = bounds.y + 7;
-        const frontX = bounds.x + 6;
-        const frontY = bounds.y + 10;
-        ctx.strokeRect(backX, backY, 10, 10);
-        ctx.strokeRect(frontX, frontY, 10, 10);
-        ctx.restore();
-    }
-
-    draw(ctx, node, width, y) {
-        if (!shouldUseLegacyCanvasForNode(node)) {
-            this.bounds = null;
-            return;
-        }
-
-        const nodeWidth = node.size?.[0] ?? width ?? PRIVACY_SHOW_ANY_LAYOUT.minWidth;
-        const nodeHeight = node.size?.[1] ?? PRIVACY_SHOW_ANY_LAYOUT.minNodeHeight;
-        const height = Math.max(0, nodeHeight - y - PRIVACY_SHOW_ANY_LAYOUT.bottomGutter);
-        const bodyPadX = 16;
-        const topPad = 8;
-        const toolbarHeight = 34;
-        const textPad = 8;
-        const lineHeight = 17;
-        const text = this.getText();
-
-        this.bounds = { x: 0, y, width: nodeWidth, height };
-        this.copyBounds = {
-            x: Math.max(bodyPadX, nodeWidth - bodyPadX - 30),
-            y: y + topPad,
-            width: 30,
-            height: 30,
-        };
-        this.textBounds = {
-            x: bodyPadX,
-            y: y + topPad + toolbarHeight + 8,
-            width: Math.max(40, nodeWidth - bodyPadX * 2),
-            height: Math.max(0, height - toolbarHeight - topPad - 12),
-        };
-
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect(0, y, nodeWidth, height);
-        ctx.clip();
-
-        ctx.font = "12px Arial, sans-serif";
-        ctx.fillStyle = "rgba(220, 220, 226, 0.78)";
-        ctx.textBaseline = "middle";
-        ctx.fillText(this.getStatusText(text), bodyPadX, y + topPad + 15);
-
-        ctx.fillStyle = "rgba(34, 34, 50, 0.96)";
-        drawRoundedRect(ctx, this.copyBounds.x, this.copyBounds.y, this.copyBounds.width, this.copyBounds.height, 6);
-        ctx.fill();
-        this.drawCopyIcon(ctx, this.copyBounds);
-
-        const textBounds = this.textBounds;
-        ctx.fillStyle = "rgb(9, 10, 15)";
-        drawRoundedRect(ctx, textBounds.x, textBounds.y, textBounds.width, textBounds.height, 6);
-        ctx.fill();
-
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect(textBounds.x, textBounds.y, textBounds.width, textBounds.height);
-        ctx.clip();
-
-        ctx.font = "12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
-        ctx.textBaseline = "top";
-        const reservedScrollbarWidth = 12;
-        const textWidth = Math.max(16, textBounds.width - textPad * 2 - reservedScrollbarWidth);
-        const lines = text
-            ? this.getWrappedLines(ctx, text, textWidth)
-            : ["Run the node to display text."];
-        const shouldDrawText = !text || this.textHovered;
-        this.contentHeight = lines.length * lineHeight;
-        this.viewportHeight = Math.max(0, textBounds.height - textPad * 2);
-        const maxScroll = Math.max(0, this.contentHeight - this.viewportHeight);
-        this.scrollTop = clamp(this.scrollTop, 0, maxScroll);
-
-        ctx.fillStyle = text ? "rgba(245, 245, 248, 0.94)" : "rgba(220, 220, 226, 0.48)";
-        const firstLine = Math.max(0, Math.floor(this.scrollTop / lineHeight) - 1);
-        const lastLine = Math.min(lines.length, firstLine + Math.ceil(this.viewportHeight / lineHeight) + 4);
-        if (shouldDrawText) {
-            for (let i = firstLine; i < lastLine; i++) {
-                const lineY = textBounds.y + textPad + (i * lineHeight) - this.scrollTop;
-                if (lineY > textBounds.y + textBounds.height) break;
-                if (lineY + lineHeight >= textBounds.y) {
-                    ctx.fillText(lines[i], textBounds.x + textPad, lineY);
-                }
-            }
-        }
-
-        ctx.restore();
-
-        if (maxScroll > 0) {
-            const trackX = textBounds.x + textBounds.width - 8;
-            const trackY = textBounds.y + 6;
-            const trackH = Math.max(20, textBounds.height - 12);
-            const thumbH = Math.max(24, trackH * (this.viewportHeight / this.contentHeight));
-            const thumbY = trackY + (trackH - thumbH) * (this.scrollTop / maxScroll);
-
-            ctx.fillStyle = "rgba(255, 255, 255, 0.16)";
-            drawRoundedRect(ctx, trackX, trackY, 4, trackH, 2);
-            ctx.fill();
-            ctx.fillStyle = "rgba(235, 235, 240, 0.68)";
-            drawRoundedRect(ctx, trackX, thumbY, 4, thumbH, 2);
-            ctx.fill();
-        }
-
-        ctx.restore();
-    }
-
-    computeSize(width) {
-        const nodeWidth = this.node.size?.[0] ?? width ?? PRIVACY_SHOW_ANY_LAYOUT.minWidth;
-        return [nodeWidth, shouldUseLegacyCanvasForNode(this.node) ? 1 : -4];
-    }
-
-    serializeValue() {
-        return undefined;
-    }
-
-    handleMouseDown(event, pos) {
-        if (!shouldUseLegacyCanvasForNode(this.node) || !isPointInBounds(pos, this.bounds)) {
-            return false;
-        }
-
-        if (!isPointInBounds(pos, this.copyBounds)) {
-            return false;
-        }
-
-        event?.preventDefault?.();
-        event?.stopPropagation?.();
-        copyText(this.getText(), this.node[DISPLAY_WIDGET_KEY]?.textarea).then((ok) => {
-            this.statusMessage = ok ? "Copied" : "Copy failed";
-            this.statusUntil = Date.now() + 900;
-            setCanvasDirty(this.node);
-        });
-        return true;
-    }
-
-    handleWheel(event, pos) {
-        if (!shouldUseLegacyCanvasForNode(this.node) || !isPointInBounds(pos, this.textBounds)) {
-            return false;
-        }
-
-        const maxScroll = Math.max(0, this.contentHeight - this.viewportHeight);
-        if (maxScroll <= 0) {
-            return false;
-        }
-
-        const delta = normalizeWheelDelta(event);
-        const nextScroll = clamp(this.scrollTop + delta, 0, maxScroll);
-        if (nextScroll === this.scrollTop) {
-            return false;
-        }
-
-        this.scrollTop = nextScroll;
-        event?.preventDefault?.();
-        event?.stopPropagation?.();
-        setCanvasDirty(this.node);
-        return true;
-    }
-
-    handleMouseMove(pos) {
-        if (!shouldUseLegacyCanvasForNode(this.node)) {
-            return false;
-        }
-
-        const nextHovered = isPointInBounds(pos, this.textBounds);
-        if (nextHovered === this.textHovered) {
-            return false;
-        }
-
-        this.textHovered = nextHovered;
-        setCanvasDirty(this.node);
-        return true;
-    }
-
-    handleMouseLeave() {
-        if (!this.textHovered) {
-            return false;
-        }
-
-        this.textHovered = false;
-        setCanvasDirty(this.node);
-        return true;
-    }
-}
-
-function createDisplayElement(node) {
-    const frame = document.createElement("div");
-    frame.className = "helto-show-any-widget";
-    containPointerEvents(frame);
-
-    const panel = document.createElement("div");
-    panel.className = "helto-show-any-panel";
-
-    const toolbar = document.createElement("div");
-    toolbar.className = "helto-show-any-toolbar";
-
-    const status = document.createElement("div");
-    status.className = "helto-show-any-status";
-    status.textContent = "No text";
-
-    const copyButton = document.createElement("button");
-    copyButton.className = "helto-btn-icon helto-show-any-copy";
-    copyButton.type = "button";
-    copyButton.title = "Copy text";
-    copyButton.innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
-
-    const textarea = document.createElement("textarea");
-    textarea.className = "helto-show-any-text";
-    configurePrivacyShowAnyTextarea(textarea);
-    textarea.placeholder = "Run the node to display text.";
-
-    toolbar.appendChild(status);
-    toolbar.appendChild(copyButton);
-    panel.appendChild(toolbar);
-    panel.appendChild(textarea);
-    frame.appendChild(panel);
-
-    installDomEventGuard(panel, {
-        preventDefault: (event) => event.type === "contextmenu",
-        shouldHandle: (event) => !copyButton.contains(event.target),
-    });
-    installDomEventGuard(textarea);
-
-    const copyCurrentText = () => {
-        copyText(node[DISPLAY_TEXT_KEY] || "", textarea).then((ok) => {
-            status.textContent = ok ? "Copied" : "Copy failed";
-            window.setTimeout(() => updateStatus(status, node[DISPLAY_TEXT_KEY] || ""), 900);
-        });
-    };
-
-    installDomEventGuard(copyButton, {
-        preventDefault: () => true,
-        onClick: copyCurrentText,
-    });
-
-    const display = {
-        node,
-        frame,
-        panel,
-        textarea,
-        status,
-        toolbar,
-        textRevealed: false,
-    };
-
-    const revealText = () => {
-        display.textRevealed = true;
-        syncDisplayTextVisibility(display);
-    };
-    const hideText = () => {
-        display.textRevealed = false;
-        syncDisplayTextVisibility(display);
-    };
-
-    frame.addEventListener("pointerenter", revealText);
-    frame.addEventListener("pointerleave", hideText);
-    panel.addEventListener("pointerenter", revealText);
-    panel.addEventListener("pointerleave", hideText);
-
-    syncDisplayTextVisibility(display);
-    return display;
-}
-
-async function copyText(text, textarea) {
-    try {
-        await navigator.clipboard.writeText(text);
-        return true;
-    } catch (_err) {
-        const doc = textarea?.ownerDocument ?? document;
-        let fallbackTextarea = textarea;
-        let shouldRemoveFallback = false;
-        try {
-            if (!fallbackTextarea || fallbackTextarea.value !== text) {
-                fallbackTextarea = doc.createElement("textarea");
-                fallbackTextarea.value = text;
-                fallbackTextarea.style.position = "fixed";
-                fallbackTextarea.style.left = "-9999px";
-                fallbackTextarea.style.top = "0";
-                doc.body.appendChild(fallbackTextarea);
-                shouldRemoveFallback = true;
-            }
-            fallbackTextarea.focus();
-            fallbackTextarea.select();
-            return document.execCommand("copy");
-        } catch (_fallbackErr) {
-            return false;
-        } finally {
-            if (shouldRemoveFallback) {
-                fallbackTextarea.remove();
-            }
-        }
-    }
-}
-
-function updateStatus(status, text) {
-    const length = String(text || "").length;
-    status.textContent = length ? `${length.toLocaleString()} chars` : "No text";
-}
-
 function getStateWidget(node) {
     const widget = getWidget(node, PRIVACY_SHOW_ANY_STATE_WIDGET) ?? node?.[STATE_WIDGET_KEY] ?? null;
     if (widget) {
@@ -625,21 +84,28 @@ function detachStateWidgetFromInteractiveList(node, stateWidget) {
 }
 
 function syncDisplayTextVisibility(display) {
-    if (!display?.textarea) return;
+    if (!display) return;
 
-    const state = privacyShowAnyTextareaState(display.node?.[DISPLAY_TEXT_KEY], display.textRevealed);
-    display.textarea.value = state.value;
-    display.textarea.placeholder = state.placeholder;
+    const state = privacyShowAnyDisplayState(display.node?.[DISPLAY_TEXT_KEY], display.textRevealed);
+    if (display.textWidget) {
+        display.textWidget.value = state.value;
+    }
+    if (display.inputEl) {
+        display.inputEl.value = state.value;
+        display.inputEl.placeholder = state.placeholder;
+    } else if (display.textarea) {
+        display.textarea.value = state.value;
+        display.textarea.placeholder = state.placeholder;
+    }
 }
 
 function setDisplayText(node, text, persist = true) {
     const plain = String(text ?? "");
     node[DISPLAY_TEXT_KEY] = plain;
-    node[CANVAS_WIDGET_KEY]?.invalidate?.();
-    const widget = node[DISPLAY_WIDGET_KEY];
-    if (widget?.textarea) {
-        syncDisplayTextVisibility(widget);
-        updateStatus(widget.status, plain);
+    const display = node[DISPLAY_WIDGET_KEY];
+    if (display) {
+        syncDisplayTextVisibility(display);
+        resizePrivacyShowAnyNativeWidget(node);
     }
     if (persist) {
         node[ENCRYPT_PROMISE_KEY] = persistEncryptedState(node, plain);
@@ -752,353 +218,153 @@ function installPrivacyShowAnySerialization(node) {
     node[SERIALIZATION_PATCHED_KEY] = true;
 }
 
-function rendererMode() {
-    return getCanvasRendererLayoutMode({ app, document, window });
+function markDisplayWidgetPrivate(widget) {
+    if (!widget) return widget;
+    widget.serialize = false;
+    widget.options ??= {};
+    widget.options.serialize = false;
+    widget.serializeValue = () => undefined;
+    return widget;
 }
 
-function shouldUseVuePath(display) {
-    if (display?.node && shouldUseLegacyCanvasForNode(display.node)) return false;
-    return rendererMode() === "vue" || !!display?.domWidget?.element?.closest?.(".lg-node");
-}
-
-function rememberDomWidgetLayout(domWidget) {
-    if (!domWidget || domWidget[DOM_LAYOUT_STATE_KEY]) return;
-    domWidget[DOM_LAYOUT_STATE_KEY] = {
-        computeSize: domWidget.computeSize,
-        computeLayoutSize: domWidget.computeLayoutSize,
-        getHeight: domWidget.getHeight,
-        getMinHeight: domWidget.getMinHeight,
-        getMaxHeight: domWidget.getMaxHeight,
-    };
-}
-
-function restoreDomWidgetLayout(domWidget) {
-    const state = domWidget?.[DOM_LAYOUT_STATE_KEY];
-    if (!state) return;
-
-    for (const [key, value] of Object.entries(state)) {
-        if (value === undefined) {
-            delete domWidget[key];
-        } else {
-            domWidget[key] = value;
+function resizePrivacyShowAnyNativeWidget(node) {
+    window.requestAnimationFrame?.(() => {
+        const size = node.computeSize?.();
+        if (Array.isArray(size) && Array.isArray(node.size)) {
+            size[0] = Math.max(size[0] || 0, node.size[0] || 0, PRIVACY_SHOW_ANY_LAYOUT.minWidth);
+            size[1] = Math.max(size[1] || 0, node.size[1] || 0, PRIVACY_SHOW_ANY_LAYOUT.minNodeHeight);
+            node.onResize?.(size);
         }
-    }
-}
-
-function collapseDomDisplayWidget(display) {
-    const domWidget = display?.domWidget;
-    if (!domWidget) return;
-
-    rememberDomWidgetLayout(domWidget);
-    domWidget.computeSize = () => [0, -4];
-    domWidget.computeLayoutSize = () => ({ minHeight: 0, maxHeight: 0, minWidth: 0 });
-    domWidget.getHeight = () => 0;
-    domWidget.getMinHeight = () => 0;
-    domWidget.getMaxHeight = () => 0;
-    domWidget.computedHeight = 0;
-    setWidgetHeight(domWidget, 0);
-
-    if (domWidget.element) {
-        domWidget.element.style.display = "none";
-        domWidget.element.style.height = "0px";
-        domWidget.element.style.minHeight = "0px";
-        domWidget.element.style.maxHeight = "0px";
-    }
-    if (display.frame) {
-        display.frame.style.display = "none";
-    }
-}
-
-function restoreDomDisplayWidget(display) {
-    const domWidget = display?.domWidget;
-    if (!domWidget) return;
-
-    restoreDomWidgetLayout(domWidget);
-    if (domWidget.element) {
-        domWidget.element.style.display = "";
-    }
-    if (display.frame) {
-        display.frame.style.display = "";
-    }
-}
-
-function syncRendererPresentation(node) {
-    const display = node?.[DISPLAY_WIDGET_KEY];
-    const useLegacyCanvas = shouldUseLegacyCanvasForNode(node);
-
-    if (useLegacyCanvas) {
-        collapseDomDisplayWidget(display);
-    } else {
-        restoreDomDisplayWidget(display);
-    }
-
-    return useLegacyCanvas;
-}
-
-function applyHeightToDisplay(display, visualHeight, layoutHeight = visualHeight, vuePath = shouldUseVuePath(display)) {
-    const normalizedVisualHeight = Math.max(PRIVACY_SHOW_ANY_LAYOUT.minWidgetHeight, visualHeight);
-    const normalizedLayoutHeight = Math.max(0, layoutHeight);
-    const visualPx = `${normalizedVisualHeight}px`;
-    const layoutPx = `${normalizedLayoutHeight}px`;
-    const { domWidget, frame, panel, textarea, toolbar } = display;
-    const toolbarHeight = toolbar?.offsetHeight || toolbar?.clientHeight || PRIVACY_SHOW_ANY_LAYOUT.toolbarHeight;
-    const textHeight = getPrivacyShowAnyTextAreaHeight(normalizedVisualHeight, toolbarHeight);
-    const textPx = `${textHeight}px`;
-
-    if (domWidget) {
-        domWidget.computedHeight = normalizedLayoutHeight;
-        setWidgetHeight(domWidget, normalizedLayoutHeight);
-        if (domWidget.element) {
-            domWidget.element.style.height = layoutPx;
-            domWidget.element.style.minHeight = layoutPx;
-            domWidget.element.style.maxHeight = vuePath ? layoutPx : "";
-        }
-    }
-
-    frame.style.height = visualPx;
-    frame.style.minHeight = visualPx;
-    frame.style.maxHeight = visualPx;
-    if (panel) {
-        panel.style.height = visualPx;
-        panel.style.minHeight = visualPx;
-        panel.style.maxHeight = visualPx;
-    }
-
-    if (textarea) {
-        textarea.style.height = textPx;
-        textarea.style.minHeight = textPx;
-        textarea.style.maxHeight = textPx;
-        textarea.style.flexBasis = textPx;
-    }
-}
-
-function applyVueOverflow(display) {
-    const { domWidget, frame } = display;
-    const element = domWidget?.element;
-    if (!element) return;
-
-    element.style.overflow = "visible";
-    element.style.position = "relative";
-    element.style.zIndex = "1";
-
-    if (frame) {
-        frame.style.position = "absolute";
-        frame.style.left = "0";
-        frame.style.top = "0";
-        frame.style.width = "100%";
-    }
-
-    const ancestors = [
-        element.parentElement,
-        element.closest?.(".lg-node-widget"),
-        element.closest?.(".lg-node-widgets"),
-    ];
-    for (const ancestor of ancestors) {
-        if (!ancestor) continue;
-        ancestor.style.overflow = "visible";
-        ancestor.style.position = "relative";
-        ancestor.style.zIndex = "1";
-    }
-}
-
-function clearVueOverflow(display) {
-    const { domWidget, frame } = display;
-    if (domWidget?.element) {
-        domWidget.element.style.position = "";
-        domWidget.element.style.zIndex = "";
-    }
-    if (frame) {
-        frame.style.position = "";
-        frame.style.left = "";
-        frame.style.top = "";
-        frame.style.width = "";
-    }
-}
-
-function syncPrivacyShowAnySize(node, markDirty = true) {
-    const display = node[DISPLAY_WIDGET_KEY];
-    if (!display?.domWidget) return;
-
-    if (syncRendererPresentation(node)) {
-        if (markDirty) {
-            setCanvasDirty(node);
-        }
-        return;
-    }
-
-    const { domWidget } = display;
-    const vuePath = shouldUseVuePath(display);
-    const visualHeight = vuePath
-        ? getVuePrivacyShowAnyVisualHeight(node, domWidget)
-        : getPrivacyShowAnyWidgetHeight(node, getPrivacyShowAnyWidgetStartY(node, domWidget));
-    const layoutHeight = vuePath ? getVuePrivacyShowAnyLayoutHeight() : visualHeight;
-
-    if (vuePath) {
-        applyVueOverflow(display);
-    } else {
-        clearVueOverflow(display);
-        applyLegacyOverflow(display);
-    }
-    applyHeightToDisplay(display, visualHeight, layoutHeight, vuePath);
-    if (markDirty) {
+        app.graph?.setDirtyCanvas?.(true, false);
         setCanvasDirty(node);
+    });
+}
+
+function setCopyButtonState(button, label, copied = false) {
+    if (!button) return;
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    button.classList.toggle("is-copied", copied);
+}
+
+function copyTextFallback(text) {
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.left = "-9999px";
+    textarea.style.top = "0";
+    document.body.appendChild(textarea);
+    textarea.select();
+    try {
+        return document.execCommand?.("copy") === true;
+    } finally {
+        textarea.remove();
     }
 }
 
-function applyLegacyOverflow(display) {
-    const { domWidget, frame, panel } = display;
-    if (frame) {
-        frame.style.overflow = "visible";
+async function writeClipboardText(text) {
+    if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        return true;
     }
-    if (panel) {
-        panel.style.overflow = "hidden";
-    }
-
-    let element = domWidget?.element?.parentElement;
-    for (let i = 0; element && i < 4; i++) {
-        element.style.overflow = "visible";
-        element = element.parentElement;
-    }
+    return copyTextFallback(text);
 }
 
-function installPrivacyShowAnySizeSync(node) {
-    if (node[SIZE_SYNC_PATCHED_KEY]) return;
-    const originalOnResize = node.onResize;
-    const originalOnDrawForeground = node.onDrawForeground;
+function createCopyButton(display) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "helto-btn-icon helto-show-any-native-copy";
+    button.innerHTML = ICONS.copy;
+    setCopyButtonState(button, "Copy text");
 
-    node.onResize = function (...args) {
-        const result = originalOnResize?.apply(this, args);
-        syncPrivacyShowAnySize(this, false);
-        return result;
-    };
+    for (const eventName of COPY_BUTTON_GUARD_EVENTS) {
+        button.addEventListener(eventName, (event) => {
+            if (event.type === "contextmenu" || event.type === "dblclick") {
+                event.preventDefault();
+            }
+            event.stopPropagation();
+            event.stopImmediatePropagation?.();
+        }, true);
+    }
 
-    node.onDrawForeground = function (...args) {
-        const result = originalOnDrawForeground?.apply(this, args);
-        syncPrivacyShowAnySize(this, false);
-        return result;
-    };
-
-    node[SIZE_SYNC_PATCHED_KEY] = true;
-}
-
-function installLegacyCanvasInteractions(node) {
-    if (node[CANVAS_INTERACTION_PATCHED_KEY]) return;
-    const originalOnMouseDown = node.onMouseDown;
-    const originalOnMouseWheel = node.onMouseWheel;
-    const originalOnMouseEnter = node.onMouseEnter;
-    const originalOnMouseMove = node.onMouseMove;
-    const originalOnMouseLeave = node.onMouseLeave;
-
-    node.onMouseDown = function (event, localPos, ...args) {
-        const pos = getLocalMousePos(this, event, localPos);
-        if (this[CANVAS_WIDGET_KEY]?.handleMouseDown(event, pos)) {
-            return true;
+    button.addEventListener("click", async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation?.();
+        const text = String(display.node?.[DISPLAY_TEXT_KEY] ?? "");
+        try {
+            await writeClipboardText(text);
+            setCopyButtonState(button, "Copied", true);
+            window.setTimeout?.(() => setCopyButtonState(button, "Copy text"), 1200);
+        } catch (err) {
+            console.error("Privacy Show Any copy failed:", err);
+            setCopyButtonState(button, "Copy failed");
+            window.setTimeout?.(() => setCopyButtonState(button, "Copy text"), 1600);
         }
-        return originalOnMouseDown?.call(this, event, localPos, ...args);
-    };
+    });
 
-    node.onMouseWheel = function (event, localPos, ...args) {
-        const pos = getLocalMousePos(this, event, localPos);
-        if (this[CANVAS_WIDGET_KEY]?.handleWheel(event, pos)) {
-            return true;
-        }
-        return originalOnMouseWheel?.call(this, event, localPos, ...args);
-    };
-
-    node.onMouseEnter = function (event, localPos, ...args) {
-        const pos = getLocalMousePos(this, event, localPos);
-        this[CANVAS_WIDGET_KEY]?.handleMouseMove(pos);
-        return originalOnMouseEnter?.call(this, event, localPos, ...args);
-    };
-
-    node.onMouseMove = function (event, localPos, ...args) {
-        const pos = getLocalMousePos(this, event, localPos);
-        this[CANVAS_WIDGET_KEY]?.handleMouseMove(pos);
-        return originalOnMouseMove?.call(this, event, localPos, ...args);
-    };
-
-    node.onMouseLeave = function (...args) {
-        this[CANVAS_WIDGET_KEY]?.handleMouseLeave();
-        return originalOnMouseLeave?.apply(this, args);
-    };
-
-    node[CANVAS_INTERACTION_PATCHED_KEY] = true;
+    return button;
 }
 
-function ensureLegacyCanvasWidget(node) {
-    if (node[CANVAS_WIDGET_KEY]) {
-        return;
-    }
-
-    const widget = new PrivacyShowAnyCanvasWidget(node);
-    if (typeof node.addCustomWidget === "function") {
-        node.addCustomWidget(widget);
-    } else {
-        node.widgets ??= [];
-        node.widgets.push(widget);
-    }
-
-    node[CANVAS_WIDGET_KEY] = widget;
-    installLegacyCanvasInteractions(node);
-}
-
-function installLegacySizing(node, display) {
-    if (node[RESIZE_PATCHED_KEY] || !display?.domWidget || shouldUseLegacyCanvasForNode(node) || shouldUseVuePath(display)) return;
-    const { domWidget } = display;
-    const originalOnResize = node.onResize;
-    const originalComputeSize = node.computeSize;
-
-    function computeNodeSize(width) {
-        const currentWidth = Array.isArray(node.size) && Number.isFinite(node.size[0]) ? node.size[0] : width;
-        const currentHeight = Array.isArray(node.size) && Number.isFinite(node.size[1]) ? node.size[1] : PRIVACY_SHOW_ANY_LAYOUT.minNodeHeight;
-        return [
-            Math.max(PRIVACY_SHOW_ANY_LAYOUT.minWidth, currentWidth || 0),
-            Math.max(PRIVACY_SHOW_ANY_LAYOUT.minNodeHeight, currentHeight || 0),
-        ];
-    }
-
-    node.onResize = function (...args) {
-        const result = originalOnResize?.apply(this, args);
-        syncPrivacyShowAnySize(this);
-        return result;
-    };
-
-    node.computeSize = function (width, ...args) {
-        const base = originalComputeSize?.apply(this, [width, ...args]);
-        const computed = computeNodeSize(width);
-        if (Array.isArray(base)) {
-            computed[0] = Math.max(computed[0], base[0] || 0);
-            computed[1] = Math.max(computed[1], base[1] || 0);
-        }
-        return computed;
-    };
-
-    domWidget.computeSize = function (width) {
-        const nodeWidth = Array.isArray(node.size) && Number.isFinite(node.size[0]) ? node.size[0] : width;
-        const height = getPrivacyShowAnyWidgetHeight(node, getPrivacyShowAnyWidgetStartY(node, domWidget));
-        return [Math.max(PRIVACY_SHOW_ANY_LAYOUT.minWidth, nodeWidth || 0), height];
-    };
-    domWidget.computeLayoutSize = function () {
-        const height = getPrivacyShowAnyWidgetHeight(node, getPrivacyShowAnyWidgetStartY(node, domWidget));
+function createNativeTextDisplay(node) {
+    const created = ComfyWidgets?.STRING?.(
+        node,
+        "helto_privacy_show_any_text",
+        ["STRING", { multiline: true }],
+        app,
+    )?.widget;
+    if (!created) {
+        console.warn("Privacy Show Any could not create a native STRING display widget.");
         return {
-            minHeight: height,
-            maxHeight: height,
-            minWidth: 0,
+            node,
+            textWidget: null,
+            inputEl: null,
+            textRevealed: false,
         };
+    }
+
+    markDisplayWidgetPrivate(created);
+    const inputEl = created.inputEl ?? null;
+    const container = inputEl?.parentElement ?? null;
+    if (inputEl) {
+        inputEl.readOnly = true;
+        inputEl.spellcheck = false;
+        inputEl.wrap = "soft";
+        inputEl.style.opacity = 0.6;
+        inputEl.classList?.add("helto-show-any-native-text");
+    }
+    container?.classList?.add("helto-show-any-native-wrap");
+
+    const display = {
+        node,
+        textWidget: created,
+        inputEl,
+        container,
+        textRevealed: false,
     };
-    domWidget.serializeValue = () => undefined;
 
-    node[RESIZE_PATCHED_KEY] = true;
-}
+    const revealText = () => {
+        display.textRevealed = true;
+        syncDisplayTextVisibility(display);
+    };
+    const hideText = () => {
+        display.textRevealed = false;
+        syncDisplayTextVisibility(display);
+    };
 
-function getCurrentPrivacyShowAnyHeight(node, domWidget, display) {
-    if (shouldUseVuePath(display)) {
-        return getVuePrivacyShowAnyLayoutHeight();
+    const hoverElement = container ?? inputEl;
+    hoverElement?.addEventListener("pointerenter", revealText);
+    hoverElement?.addEventListener("pointerleave", hideText);
+    hoverElement?.addEventListener("mouseenter", revealText);
+    hoverElement?.addEventListener("mouseleave", hideText);
+
+    if (container) {
+        display.copyButton = createCopyButton(display);
+        container.appendChild(display.copyButton);
     }
-    if (domWidget && !shouldUseVuePath(display)) {
-        return getPrivacyShowAnyWidgetHeight(node, getPrivacyShowAnyWidgetStartY(node, domWidget));
-    }
-    return domWidget?.computedHeight || PRIVACY_SHOW_ANY_LAYOUT.defaultWidgetHeight;
+    syncDisplayTextVisibility(display);
+    return display;
 }
 
 function ensurePrivacyShowAnyUi(node) {
@@ -1108,38 +374,8 @@ function ensurePrivacyShowAnyUi(node) {
         node.inputs = node.inputs.filter((input) => input.name !== PRIVACY_SHOW_ANY_STATE_WIDGET);
     }
     if (!node[DISPLAY_WIDGET_KEY]) {
-        const display = createDisplayElement(node);
-        let domWidget = null;
-        const getCurrentHeight = () => {
-            const activeDisplay = node[DISPLAY_WIDGET_KEY];
-            return getCurrentPrivacyShowAnyHeight(node, activeDisplay?.domWidget ?? domWidget, activeDisplay ?? display);
-        };
-        domWidget = node.addDOMWidget?.("helto_privacy_show_any_ui", "preview", display.frame, {
-            serialize: false,
-            hideOnZoom: false,
-            getMinHeight: getCurrentHeight,
-            getMaxHeight: getCurrentHeight,
-            getHeight: getCurrentHeight,
-            onDraw: () => {
-                if (!shouldUseVuePath(node[DISPLAY_WIDGET_KEY] ?? display)) {
-                    syncPrivacyShowAnySize(node, false);
-                }
-            },
-        });
-        if (domWidget) {
-            domWidget.serialize = false;
-            domWidget.options ??= {};
-            domWidget.options.serialize = false;
-            domWidget.options.getMinHeight = getCurrentHeight;
-            domWidget.options.getMaxHeight = getCurrentHeight;
-            domWidget.options.getHeight = getCurrentHeight;
-            domWidget.getMinHeight = getCurrentHeight;
-            domWidget.getMaxHeight = getCurrentHeight;
-            domWidget.getHeight = getCurrentHeight;
-        }
-        node[DISPLAY_WIDGET_KEY] = { ...display, domWidget };
+        node[DISPLAY_WIDGET_KEY] = createNativeTextDisplay(node);
     }
-    ensureLegacyCanvasWidget(node);
     if (Array.isArray(node.size)) {
         node.setSize?.([
             Math.max(node.size[0], PRIVACY_SHOW_ANY_LAYOUT.minWidth),
@@ -1147,10 +383,8 @@ function ensurePrivacyShowAnyUi(node) {
         ]);
     }
 
-    installPrivacyShowAnySizeSync(node);
-    installLegacySizing(node, node[DISPLAY_WIDGET_KEY]);
-    syncPrivacyShowAnySize(node);
-    window.requestAnimationFrame?.(() => syncPrivacyShowAnySize(node, false));
+    syncDisplayTextVisibility(node[DISPLAY_WIDGET_KEY]);
+    resizePrivacyShowAnyNativeWidget(node);
 }
 
 app.registerExtension({
