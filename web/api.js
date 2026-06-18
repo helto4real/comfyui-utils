@@ -50,6 +50,49 @@ export const selectorApi = {
         return response.json();
     },
 
+    async pasteImage(file, filename, destination, folders) {
+        const form = new FormData();
+        form.append("image", file, filename);
+        form.append("destination", destination);
+        form.append("folders", JSON.stringify(Array.isArray(folders) ? folders : []));
+        const response = await fetch("/helto_selector/paste_image", {
+            method: "POST",
+            body: form,
+        });
+        if (!response.ok) {
+            let message = "Failed to paste image.";
+            try {
+                const data = await response.json();
+                if (data.error) message = data.error;
+            } catch (err) {
+                // Keep the generic message if the server did not return JSON.
+            }
+            throw new Error(message);
+        }
+        return response.json();
+    },
+
+    async uploadComfyInputImage(file, filename) {
+        const form = new FormData();
+        form.append("image", file, filename);
+        form.append("type", "input");
+        const response = await fetch("/upload/image", {
+            method: "POST",
+            body: form,
+        });
+        if (!response.ok) {
+            let message = "Failed to paste image into ComfyUI input.";
+            try {
+                const data = await response.json();
+                if (data.error) message = data.error;
+            } catch (err) {
+                // Keep the generic message if the server did not return JSON.
+            }
+            throw new Error(message);
+        }
+        return response.json();
+    },
+
     thumbnailUrl(path, privacyMode) {
         return `/helto_selector/thumbnail?path=${encodeURIComponent(path)}&privacy=${privacyMode}`;
     },

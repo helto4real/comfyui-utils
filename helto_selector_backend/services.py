@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from io import BytesIO
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -9,10 +10,22 @@ from typing import Any
 
 from PIL import Image, ImageOps
 
+from .constants import SUPPORTED_EXTENSIONS
 from .crypto import decrypt_selection, encrypt_selection
 from .mask_storage import delete_mask, load_mask_bytes, migrate_mask_privacy, save_mask_data_url
 from .scanning import delete_image_files, discover_image_folders, scan_image_folders
 from .thumbnail_cache import clear_thumbnail_cache, delete_thumbnail_cache_for_paths, get_thumbnail_bytes
+
+
+_FALLBACK_IMAGE_EXTENSIONS = {
+    "image/bmp": ".bmp",
+    "image/gif": ".gif",
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+    "image/tiff": ".tiff",
+    "image/webp": ".webp",
+}
 
 
 def _string_list(value: Any) -> list[str]:
@@ -42,6 +55,90 @@ def _folder_list(value: Any) -> list[str]:
 
 def _truthy(value: Any) -> bool:
     return bool(value)
+
+
+def _absolute_path(path: str) -> str:
+    return os.path.abspath(os.path.normpath(path))
+
+
+def _is_same_or_child_path(path: str, parent_path: str) -> bool:
+    try:
+        return os.path.commonpath([path, parent_path]) == parent_path
+    except ValueError:
+        return False
+
+
+def _sanitize_pasted_filename(filename: str, content_type: str = "") -> str:
+    name = os.path.basename((filename or "").replace("\\", "/")).strip()
+    stem, extension = os.path.splitext(name)
+    extension = extension.lower()
+
+    if not extension:
+        extension = _FALLBACK_IMAGE_EXTENSIONS.get((content_type or "").lower(), ".png")
+
+    if extension not in SUPPORTED_EXTENSIONS:
+        raise ValueError("Unsupported image extension")
+
+    stem = stem.strip() or "pasted_image"
+    stem = re.sub(r"[\x00-\x1f/\\]+", "_", stem).strip(" .") or "pasted_image"
+    return f"{stem}{extension}"
+
+
+def _resolve_allowed_destination_root(destination: str, folders: list[str]) -> tuple[str, str]:
+    if not destination:
+        raise ValueError("Destination folder is required")
+    if not folders:
+        raise ValueError("No selector folders are configured")
+
+    destination_path = _absolute_path(destination)
+    allowed_roots = [_absolute_path(folder) for folder in folders if folder]
+    matching_roots = [
+        root
+        for root in allowed_roots
+        if root and _is_same_or_child_path(destination_path, root)
+    ]
+    if not matching_roots:
+        raise ValueError("Destination is outside the configured selector folders")
+
+    matching_roots.sort(key=len, reverse=True)
+    return destination_path, matching_roots[0]
+
+
+def _file_bytes_match(path: str, content: bytes) -> bool:
+    try:
+        with open(path, "rb") as f:
+            return f.read() == content
+    except OSError:
+        return False
+
+
+def _dedupe_pasted_image_path(destination: str, filename: str, content: bytes) -> tuple[str, str, bool]:
+    stem, extension = os.path.splitext(filename)
+    current_name = filename
+    current_path = os.path.join(destination, current_name)
+    counter = 1
+
+    while os.path.exists(current_path):
+        if _file_bytes_match(current_path, content):
+            return current_path, current_name, True
+        current_name = f"{stem} ({counter}){extension}"
+        current_path = os.path.join(destination, current_name)
+        counter += 1
+
+    return current_path, current_name, False
+
+
+def _image_metadata(folder_path: str, image_path: str) -> dict[str, Any]:
+    normalized_path = os.path.normpath(image_path)
+    stat = os.stat(normalized_path)
+    return {
+        "path": normalized_path,
+        "folder": os.path.normpath(folder_path),
+        "image_folder": os.path.normpath(os.path.dirname(normalized_path)),
+        "name": os.path.basename(normalized_path),
+        "date_modified": stat.st_mtime,
+        "size_bytes": stat.st_size,
+    }
 
 
 @dataclass(frozen=True)
@@ -111,6 +208,15 @@ class MigrateMasksPayload:
         )
 
 
+@dataclass(frozen=True)
+class PasteImagePayload:
+    destination: str
+    folders: list[str]
+    filename: str
+    content: bytes
+    content_type: str = ""
+
+
 def get_input_dir_payload(get_input_directory: Callable[[], str]) -> dict[str, str]:
     return {"input_dir": get_input_directory()}
 
@@ -173,6 +279,29 @@ def delete_images_payload(
         "missing_count": len(delete_result["missing"]),
         "skipped_count": len(delete_result["skipped"]),
         "removed_cache_count": removed_cache_count,
+    }
+
+
+def paste_image_payload(payload: PasteImagePayload) -> dict[str, Any]:
+    if not payload.content:
+        raise ValueError("Image data is required")
+
+    destination, root_folder = _resolve_allowed_destination_root(payload.destination, payload.folders)
+    filename = _sanitize_pasted_filename(payload.filename, payload.content_type)
+
+    os.makedirs(destination, exist_ok=True)
+    filepath, saved_name, duplicate = _dedupe_pasted_image_path(destination, filename, payload.content)
+    if not duplicate:
+        with open(filepath, "wb") as f:
+            f.write(payload.content)
+
+    normalized_path = os.path.normpath(filepath)
+    return {
+        "status": "success",
+        "path": normalized_path,
+        "name": saved_name,
+        "duplicate": duplicate,
+        "image": _image_metadata(root_folder, normalized_path),
     }
 
 

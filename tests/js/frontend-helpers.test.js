@@ -27,10 +27,13 @@ import {
     getSubfolderFilterLabel,
     getSubfolderOptions,
     applyEditedMaskSaveResult,
+    buildPastedImageFilename,
+    firstClipboardImageFile,
     initializeSelectorProperties,
     isSameOrChildPath,
     normalizeFilterPath,
     normalizeFolderPath,
+    resolveSelectorPasteDestination,
     sortImagesInPlace,
     uniqueFolderPaths,
 } from "../../web/state.js";
@@ -362,6 +365,46 @@ test("selector property defaults and folder labels match existing behavior", () 
     assert.equal(getRootFolderFilterLabel("/root/a", allFolders, []), "a");
     assert.equal(getSubfolderFilterLabel("/root/a/child", allFolders), "child");
     assert.deepEqual(getSubfolderOptions(allFolders, "/root/a"), allFolders);
+});
+
+test("selector paste destination uses the most specific concrete folder", () => {
+    assert.deepEqual(resolveSelectorPasteDestination({
+        folderFilter: "all",
+        subfolderFilter: "/root/a/child",
+    }), {
+        type: "selector",
+        destination: "/root/a/child",
+    });
+    assert.deepEqual(resolveSelectorPasteDestination({
+        folderFilter: "/root/a",
+        subfolderFilter: "all",
+    }), {
+        type: "selector",
+        destination: "/root/a",
+    });
+    assert.deepEqual(resolveSelectorPasteDestination({
+        folderFilter: "all",
+        subfolderFilter: "all",
+    }), {
+        type: "comfy-input",
+        destination: "",
+    });
+});
+
+test("selector paste helpers choose image clipboard data and stable fallback names", () => {
+    const imageFile = { name: "", type: "image/png" };
+    const items = [
+        { type: "text/plain", getAsFile: () => ({ name: "notes.txt", type: "text/plain" }) },
+        { type: "image/png", getAsFile: () => imageFile },
+    ];
+
+    assert.equal(firstClipboardImageFile(items), imageFile);
+    assert.equal(firstClipboardImageFile([{ type: "text/plain", getAsFile: () => null }]), null);
+    assert.equal(
+        buildPastedImageFilename(imageFile, new Date("2026-06-18T07:45:12.000Z")),
+        "pasted-image-20260618-074512.png",
+    );
+    assert.equal(buildPastedImageFilename({ name: "clip.webp", type: "image/webp" }), "clip.webp");
 });
 
 test("path filter helpers normalize slash style and child matching", () => {

@@ -130,6 +130,57 @@ export function isSameOrChildPath(path, parentPath) {
     return normalizedPath === normalizedParent || normalizedPath.startsWith(`${normalizedParent}/`);
 }
 
+export function resolveSelectorPasteDestination(properties = {}) {
+    const selectedSubfolder = properties.subfolderFilter || "all";
+    if (selectedSubfolder !== "all") {
+        const destination = normalizeFolderPath(selectedSubfolder);
+        if (destination) return { type: "selector", destination };
+    }
+
+    const selectedFolder = properties.folderFilter || "all";
+    if (selectedFolder !== "all") {
+        const destination = normalizeFolderPath(selectedFolder);
+        if (destination) return { type: "selector", destination };
+    }
+
+    return { type: "comfy-input", destination: "" };
+}
+
+export function pastedImageExtensionForType(type) {
+    const normalizedType = (type || "").toLowerCase();
+    if (normalizedType === "image/jpeg" || normalizedType === "image/jpg") return ".jpg";
+    if (normalizedType === "image/webp") return ".webp";
+    if (normalizedType === "image/gif") return ".gif";
+    if (normalizedType === "image/bmp") return ".bmp";
+    if (normalizedType === "image/tiff") return ".tiff";
+    return ".png";
+}
+
+export function buildPastedImageFilename(file, now = new Date()) {
+    const currentName = typeof file?.name === "string" ? file.name.trim() : "";
+    if (currentName && currentName !== "image" && currentName !== "blob") {
+        return currentName;
+    }
+
+    const timestamp = now.toISOString()
+        .replace(/\.\d{3}Z$/, "Z")
+        .replace(/[-:]/g, "")
+        .replace("T", "-")
+        .replace("Z", "");
+    return `pasted-image-${timestamp}${pastedImageExtensionForType(file?.type)}`;
+}
+
+export function firstClipboardImageFile(items) {
+    for (const item of Array.from(items || [])) {
+        if (!item?.type?.startsWith("image/") || typeof item.getAsFile !== "function") {
+            continue;
+        }
+        const file = item.getAsFile();
+        if (file) return file;
+    }
+    return null;
+}
+
 export function applyEditedMaskSaveResult(editedMasks, imagePath, ref, result) {
     const nextMasks = { ...(editedMasks && typeof editedMasks === "object" ? editedMasks : {}) };
     if (result?.cleared) {

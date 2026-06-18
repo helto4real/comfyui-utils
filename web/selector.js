@@ -16,10 +16,13 @@ import {
     getSubfolderFilterLabel,
     getSubfolderOptions,
     applyEditedMaskSaveResult,
+    buildPastedImageFilename,
+    firstClipboardImageFile,
     initializeSelectorProperties,
     isSameOrChildPath,
     normalizeFilterPath,
     normalizeFolderPath,
+    resolveSelectorPasteDestination,
     SORT_OPTIONS,
     sortImagesInPlace,
 } from "./state.js";
@@ -318,6 +321,17 @@ app.registerExtension({
         }
 
         gridEl.addEventListener("scroll", scheduleVisibleThumbnailLoad, { passive: true });
+
+        let selectorPasteHovered = false;
+        let pasteInFlight = false;
+        function markSelectorPasteHovered() {
+            selectorPasteHovered = true;
+        }
+        function clearSelectorPasteHovered() {
+            selectorPasteHovered = false;
+        }
+        container.addEventListener("mouseenter", markSelectorPasteHovered);
+        container.addEventListener("mouseleave", clearSelectorPasteHovered);
         
         // --- 3. Hide Mode Pointer Listeners ---
         function applyHideModeListeners() {
@@ -971,6 +985,100 @@ app.registerExtension({
                 refreshSelectedPreviewPopover();
             }
         }
+
+        function joinFolderPath(basePath, childPath = "") {
+            const base = normalizeFolderPath(basePath);
+            const child = normalizeFolderPath(childPath);
+            if (!child) return base;
+            if (!base) return child;
+            return normalizeFolderPath(`${base}/${child}`);
+        }
+
+        function mergeUploadedImage(image) {
+            if (!image?.path) return;
+
+            const normalizedPath = normalizeFolderPath(image.path);
+            const uploadedImage = {
+                ...image,
+                path: normalizedPath,
+                folder: normalizeFolderPath(image.folder || image.image_folder || ""),
+                image_folder: normalizeFolderPath(image.image_folder || image.folder || ""),
+                name: image.name || normalizedPath.split("/").pop() || "pasted image",
+                date_modified: image.date_modified || (Date.now() / 1000),
+                size_bytes: Number.isFinite(image.size_bytes) ? image.size_bytes : 0,
+            };
+
+            node.allImages = node.allImages.filter((img) => normalizeFolderPath(img.path) !== normalizedPath);
+            node.allImages.push(uploadedImage);
+            sortImages();
+
+            node.selectedPaths = [normalizedPath];
+
+            renderGrid();
+            updateFooter();
+            updateWidgetValue();
+        }
+
+        async function pasteImageToComfyInput(file, filename) {
+            const [uploadResult, inputDirResult] = await Promise.all([
+                selectorApi.uploadComfyInputImage(file, filename),
+                selectorApi.getInputDir(),
+            ]);
+            const inputDir = inputDirResult.input_dir || "";
+            if (!inputDir || !uploadResult.name) {
+                await node.scanFolders();
+                return;
+            }
+
+            const imageFolder = joinFolderPath(inputDir, uploadResult.subfolder || "");
+            mergeUploadedImage({
+                path: joinFolderPath(imageFolder, uploadResult.name),
+                folder: normalizeFolderPath(inputDir),
+                image_folder: imageFolder,
+                name: uploadResult.name,
+                date_modified: Date.now() / 1000,
+                size_bytes: file.size || 0,
+            });
+        }
+
+        async function handleSelectorPaste(event) {
+            if (pasteInFlight || !selectorPasteHovered || !container.matches(":hover")) return;
+
+            const file = firstClipboardImageFile(event.clipboardData?.items);
+            if (!file) return;
+
+            event.preventDefault();
+            event.stopPropagation();
+
+            const filename = buildPastedImageFilename(file);
+            const destination = resolveSelectorPasteDestination(node.properties);
+
+            pasteInFlight = true;
+            refreshBtn.disabled = true;
+            refreshBtn.classList.add("is-refreshing");
+            try {
+                if (destination.type === "selector") {
+                    const result = await selectorApi.pasteImage(
+                        file,
+                        filename,
+                        destination.destination,
+                        node.properties.folders || []
+                    );
+                    mergeUploadedImage(result.image);
+                } else {
+                    await pasteImageToComfyInput(file, filename);
+                }
+            } catch (err) {
+                console.error("Selector paste image failed:", err);
+                alert(err.message || "Failed to paste image.");
+            } finally {
+                pasteInFlight = false;
+                refreshBtn.classList.remove("is-refreshing");
+                refreshBtn.disabled = false;
+            }
+        }
+
+        window.addEventListener("paste", handleSelectorPaste, true);
         
         function updateButtonActiveState(btn, active) {
             if (active) {
@@ -1455,6 +1563,17 @@ app.registerExtension({
         
         // --- 9. Resizing & Sizing Implementation ---
         layoutController.installNodeResizeHooks();
+
+        const removeSelectorPasteListeners = () => {
+            window.removeEventListener("paste", handleSelectorPaste, true);
+            container.removeEventListener("mouseenter", markSelectorPasteHovered);
+            container.removeEventListener("mouseleave", clearSelectorPasteHovered);
+        };
+        const originalOnRemoved = node.onRemoved;
+        node.onRemoved = function(...args) {
+            removeSelectorPasteListeners();
+            return originalOnRemoved?.apply(this, args);
+        };
         
         // --- 10. Initial load trigger ---
         setTimeout(() => {

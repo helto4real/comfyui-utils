@@ -34,12 +34,14 @@ from helto_selector_backend.services import (
     DeleteImagesPayload,
     DeleteMaskPayload,
     ScanFoldersPayload,
+    PasteImagePayload,
     clear_cache_payload,
     decrypt_payload,
     delete_images_payload,
     delete_mask_payload,
     encrypt_payload,
     get_input_dir_payload,
+    paste_image_payload,
     scan_folders_payload,
 )
 from helto_selector_backend.thumbnail_cache import (
@@ -51,6 +53,12 @@ from helto_selector_backend.thumbnail_cache import (
 
 def write_image(path: str, size: tuple[int, int], color: tuple[int, int, int]) -> None:
     Image.new("RGB", size, color).save(path)
+
+
+def image_bytes(size: tuple[int, int] = (4, 4), color: tuple[int, int, int] = (255, 0, 0)) -> bytes:
+    buffer = BytesIO()
+    Image.new("RGB", size, color).save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 class ImageProcessingTests(unittest.TestCase):
@@ -540,6 +548,121 @@ class ServiceLayerTests(unittest.TestCase):
 
     def test_get_input_dir_payload_uses_injected_comfy_provider(self):
         self.assertEqual(get_input_dir_payload(lambda: "/tmp/input"), {"input_dir": "/tmp/input"})
+
+    def test_paste_image_payload_saves_into_configured_root(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            payload = PasteImagePayload(
+                destination=tmpdir,
+                folders=[tmpdir],
+                filename="paste.png",
+                content=image_bytes(),
+                content_type="image/png",
+            )
+
+            result = paste_image_payload(payload)
+
+            self.assertEqual(result["status"], "success")
+            self.assertEqual(result["name"], "paste.png")
+            self.assertEqual(result["image"]["folder"], tmpdir)
+            self.assertEqual(result["image"]["image_folder"], tmpdir)
+            self.assertTrue(os.path.exists(os.path.join(tmpdir, "paste.png")))
+
+    def test_paste_image_payload_saves_into_configured_child_folder(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            child_dir = os.path.join(tmpdir, "child")
+            payload = PasteImagePayload(
+                destination=child_dir,
+                folders=[tmpdir],
+                filename="paste.png",
+                content=image_bytes(),
+                content_type="image/png",
+            )
+
+            result = paste_image_payload(payload)
+
+            self.assertEqual(result["image"]["folder"], tmpdir)
+            self.assertEqual(result["image"]["image_folder"], child_dir)
+            self.assertTrue(os.path.exists(os.path.join(child_dir, "paste.png")))
+
+    def test_paste_image_payload_rejects_destination_outside_configured_folders(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            allowed_dir = os.path.join(tmpdir, "allowed")
+            outside_dir = os.path.join(tmpdir, "outside")
+            os.makedirs(allowed_dir)
+
+            with self.assertRaisesRegex(ValueError, "outside the configured selector folders"):
+                paste_image_payload(PasteImagePayload(
+                    destination=outside_dir,
+                    folders=[allowed_dir],
+                    filename="paste.png",
+                    content=image_bytes(),
+                    content_type="image/png",
+                ))
+
+            self.assertFalse(os.path.exists(outside_dir))
+
+    def test_paste_image_payload_rejects_normalized_path_escape(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            allowed_dir = os.path.join(tmpdir, "allowed")
+            os.makedirs(allowed_dir)
+            escaped_dir = os.path.join(allowed_dir, "..", "outside")
+
+            with self.assertRaisesRegex(ValueError, "outside the configured selector folders"):
+                paste_image_payload(PasteImagePayload(
+                    destination=escaped_dir,
+                    folders=[allowed_dir],
+                    filename="paste.png",
+                    content=image_bytes(),
+                    content_type="image/png",
+                ))
+
+            self.assertFalse(os.path.exists(os.path.join(tmpdir, "outside")))
+
+    def test_paste_image_payload_rejects_unsupported_extension(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaisesRegex(ValueError, "Unsupported image extension"):
+                paste_image_payload(PasteImagePayload(
+                    destination=tmpdir,
+                    folders=[tmpdir],
+                    filename="paste.txt",
+                    content=image_bytes(),
+                    content_type="image/png",
+                ))
+
+    def test_paste_image_payload_dedupes_conflicting_filenames(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            original_path = os.path.join(tmpdir, "paste.png")
+            write_image(original_path, (4, 4), (0, 0, 255))
+
+            result = paste_image_payload(PasteImagePayload(
+                destination=tmpdir,
+                folders=[tmpdir],
+                filename="paste.png",
+                content=image_bytes(color=(255, 0, 0)),
+                content_type="image/png",
+            ))
+
+            self.assertEqual(result["name"], "paste (1).png")
+            self.assertTrue(os.path.exists(os.path.join(tmpdir, "paste (1).png")))
+            self.assertFalse(result["duplicate"])
+
+    def test_paste_image_payload_reuses_matching_duplicate(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            content = image_bytes(color=(0, 255, 0))
+            original_path = os.path.join(tmpdir, "paste.png")
+            with open(original_path, "wb") as f:
+                f.write(content)
+
+            result = paste_image_payload(PasteImagePayload(
+                destination=tmpdir,
+                folders=[tmpdir],
+                filename="paste.png",
+                content=content,
+                content_type="image/png",
+            ))
+
+            self.assertEqual(result["name"], "paste.png")
+            self.assertTrue(result["duplicate"])
 
 
 class NodeSchemaContractTests(unittest.TestCase):
