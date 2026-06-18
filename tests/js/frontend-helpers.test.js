@@ -36,6 +36,7 @@ import {
     getSubfolderOptions,
     applyEditedMaskSaveResult,
     buildPastedImageFilename,
+    filterSelectorImages,
     firstClipboardImageFile,
     initializeSelectorProperties,
     isSameOrChildPath,
@@ -476,6 +477,84 @@ test("path filter helpers normalize slash style and child matching", () => {
     assert.equal(normalizeFilterPath("C:\\images\\nested\\"), "C:/images/nested");
     assert.equal(isSameOrChildPath("/root/a/child/file.png", "/root/a"), true);
     assert.equal(isSameOrChildPath("/root/ab/file.png", "/root/a"), false);
+});
+
+test("selector image filter searches filename and relative subfolder paths only", () => {
+    const images = [
+        {
+            path: "/scan-root/project/cats/portrait-alpha.png",
+            folder: "/scan-root/project",
+            image_folder: "/scan-root/project/cats",
+            name: "portrait-alpha.png",
+        },
+        {
+            path: "/scan-root/project/dogs/wide-beta.png",
+            folder: "/scan-root/project",
+            image_folder: "/scan-root/project/dogs",
+            name: "wide-beta.png",
+        },
+        {
+            path: "/scan-root/other/project-gamma.png",
+            folder: "/scan-root/other",
+            image_folder: "/scan-root/other",
+            name: "project-gamma.png",
+        },
+    ];
+
+    assert.deepEqual(
+        filterSelectorImages(images, { searchQuery: "alpha" }).map((image) => image.name),
+        ["portrait-alpha.png"],
+    );
+    assert.deepEqual(
+        filterSelectorImages(images, { searchQuery: "cats" }).map((image) => image.name),
+        ["portrait-alpha.png"],
+    );
+    assert.deepEqual(
+        filterSelectorImages(images, { folderFilter: "/scan-root/project", searchQuery: "project" }).map((image) => image.name),
+        [],
+    );
+});
+
+test("selector image filter combines folder subfolder and empty query filters", () => {
+    const images = [
+        {
+            path: "/root/a/one.png",
+            folder: "/root/a",
+            image_folder: "/root/a",
+            name: "one.png",
+        },
+        {
+            path: "/root/a/nested/two.png",
+            folder: "/root/a",
+            image_folder: "/root/a/nested",
+            name: "two.png",
+        },
+        {
+            path: "/root/b/nested/two.png",
+            folder: "/root/b",
+            image_folder: "/root/b/nested",
+            name: "two.png",
+        },
+    ];
+
+    assert.deepEqual(
+        filterSelectorImages(images, {
+            folderFilter: "/root/a",
+            subfolderFilter: "/root/a/nested",
+            recursive: true,
+            searchQuery: "two",
+        }).map((image) => image.path),
+        ["/root/a/nested/two.png"],
+    );
+    assert.deepEqual(
+        filterSelectorImages(images, {
+            folderFilter: "/root/a",
+            subfolderFilter: "/root/a/nested",
+            recursive: true,
+            searchQuery: "",
+        }).map((image) => image.path),
+        ["/root/a/nested/two.png"],
+    );
 });
 
 test("folder path helpers normalize and dedupe folder entries", () => {

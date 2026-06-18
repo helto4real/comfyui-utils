@@ -17,10 +17,9 @@ import {
     getSubfolderOptions,
     applyEditedMaskSaveResult,
     buildPastedImageFilename,
+    filterSelectorImages,
     firstClipboardImageFile,
     initializeSelectorProperties,
-    isSameOrChildPath,
-    normalizeFilterPath,
     normalizeFolderPath,
     resolveSelectorPasteDestination,
     SORT_OPTIONS,
@@ -873,30 +872,22 @@ app.registerExtension({
             
             const selectedFolder = node.properties.folderFilter || "all";
             const selectedSubfolder = node.properties.subfolderFilter || "all";
-            const filtered = node.allImages.filter(img => {
-                // 1. Filter by folder
-                if (selectedFolder !== "all" && img.folder !== selectedFolder) {
-                    return false;
-                }
-                if (selectedSubfolder !== "all") {
-                    const imageFolder = img.image_folder || img.folder;
-                    const matchesSubfolder = node.properties.recursive
-                        ? isSameOrChildPath(imageFolder, selectedSubfolder)
-                        : normalizeFilterPath(imageFolder) === normalizeFilterPath(selectedSubfolder);
-                    if (!matchesSubfolder) {
-                        return false;
-                    }
-                }
-                // 2. Filter by search query
-                if (query && !img.name.toLowerCase().includes(query) && !img.path.toLowerCase().includes(query)) {
-                    return false;
-                }
-                return true;
+            const filtered = filterSelectorImages(node.allImages, {
+                ...node.properties,
+                folderFilter: selectedFolder,
+                subfolderFilter: selectedSubfolder,
+                searchQuery: query,
             });
             
             if (filtered.length === 0) {
                 const empty = document.createElement("div");
                 empty.className = "helto-grid-empty";
+                if (query) {
+                    empty.textContent = `No images match "${searchInput.value.trim()}".`;
+                    gridEl.appendChild(empty);
+                    return;
+                }
+
                 let folderPathsStr = "None";
                 if (selectedSubfolder !== "all") {
                     folderPathsStr = selectedSubfolder;

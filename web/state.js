@@ -130,6 +130,55 @@ export function isSameOrChildPath(path, parentPath) {
     return normalizedPath === normalizedParent || normalizedPath.startsWith(`${normalizedParent}/`);
 }
 
+function relativeSelectorImagePath(image) {
+    const imagePath = normalizeFilterPath(image?.path);
+    const folderPath = normalizeFilterPath(image?.folder);
+    const fallbackName = image?.name || getBasename(imagePath);
+
+    if (!imagePath || !folderPath || !isSameOrChildPath(imagePath, folderPath)) {
+        return fallbackName;
+    }
+
+    if (imagePath === folderPath) {
+        return fallbackName;
+    }
+
+    return imagePath.slice(folderPath.length).replace(/^\/+/, "") || fallbackName;
+}
+
+function selectorImageMatchesQuery(image, query) {
+    if (!query) return true;
+    const searchText = [
+        image?.name || "",
+        relativeSelectorImagePath(image),
+    ].join("\n").toLowerCase();
+    return searchText.includes(query);
+}
+
+export function filterSelectorImages(images, options = {}) {
+    const selectedFolder = options.folderFilter || "all";
+    const selectedSubfolder = options.subfolderFilter || "all";
+    const query = String(options.searchQuery || "").toLowerCase().trim();
+
+    return (Array.isArray(images) ? images : []).filter((image) => {
+        if (selectedFolder !== "all" && normalizeFilterPath(image?.folder) !== normalizeFilterPath(selectedFolder)) {
+            return false;
+        }
+
+        if (selectedSubfolder !== "all") {
+            const imageFolder = image?.image_folder || image?.folder;
+            const matchesSubfolder = options.recursive
+                ? isSameOrChildPath(imageFolder, selectedSubfolder)
+                : normalizeFilterPath(imageFolder) === normalizeFilterPath(selectedSubfolder);
+            if (!matchesSubfolder) {
+                return false;
+            }
+        }
+
+        return selectorImageMatchesQuery(image, query);
+    });
+}
+
 export function resolveSelectorPasteDestination(properties = {}) {
     const selectedSubfolder = properties.subfolderFilter || "all";
     if (selectedSubfolder !== "all") {
