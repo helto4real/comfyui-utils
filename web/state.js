@@ -240,6 +240,33 @@ export function applyEditedMaskSaveResult(editedMasks, imagePath, ref, result) {
     return nextMasks;
 }
 
+export function applyEditedBboxSaveResult(editedBboxes, imagePath, boxes) {
+    const nextBboxes = { ...(editedBboxes && typeof editedBboxes === "object" ? editedBboxes : {}) };
+    const validBoxes = Array.isArray(boxes)
+        ? boxes.filter((box) => (
+            box &&
+            Number.isFinite(Number(box.x)) &&
+            Number.isFinite(Number(box.y)) &&
+            Number.isFinite(Number(box.width)) &&
+            Number.isFinite(Number(box.height)) &&
+            Number(box.width) > 0 &&
+            Number(box.height) > 0
+        )).map((box) => ({
+            x: Number(box.x),
+            y: Number(box.y),
+            width: Number(box.width),
+            height: Number(box.height),
+        }))
+        : [];
+
+    if (validBoxes.length === 0) {
+        delete nextBboxes[imagePath];
+    } else {
+        nextBboxes[imagePath] = validBoxes;
+    }
+    return nextBboxes;
+}
+
 export function sortImagesInPlace(images, mode) {
     images.sort((a, b) => {
         if (mode === "newest") return b.date_modified - a.date_modified;

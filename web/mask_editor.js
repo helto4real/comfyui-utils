@@ -280,6 +280,72 @@ function createButton(document, label, className = "") {
     return button;
 }
 
+export function normalizeBbox(box, width, height) {
+    if (!box || !Number.isFinite(Number(box.x)) || !Number.isFinite(Number(box.y))) return null;
+    if (!Number.isFinite(Number(box.width)) || !Number.isFinite(Number(box.height))) return null;
+
+    const x1 = clamp(Number(box.x), 0, width);
+    const y1 = clamp(Number(box.y), 0, height);
+    const x2 = clamp(Number(box.x) + Number(box.width), 0, width);
+    const y2 = clamp(Number(box.y) + Number(box.height), 0, height);
+    const left = Math.min(x1, x2);
+    const top = Math.min(y1, y2);
+    const right = Math.max(x1, x2);
+    const bottom = Math.max(y1, y2);
+    if (right <= left || bottom <= top) return null;
+    return {
+        x: left,
+        y: top,
+        width: right - left,
+        height: bottom - top,
+    };
+}
+
+export function bboxFromPoints(startPoint, endPoint, width, height) {
+    return normalizeBbox({
+        x: startPoint.x,
+        y: startPoint.y,
+        width: endPoint.x - startPoint.x,
+        height: endPoint.y - startPoint.y,
+    }, width, height);
+}
+
+function pointInBbox(point, box) {
+    return (
+        point.x >= box.x &&
+        point.y >= box.y &&
+        point.x <= box.x + box.width &&
+        point.y <= box.y + box.height
+    );
+}
+
+function drawBbox(ctx, box, previewScale, selected = false, index = null) {
+    const x = box.x * previewScale;
+    const y = box.y * previewScale;
+    const width = box.width * previewScale;
+    const height = box.height * previewScale;
+
+    ctx.save();
+    ctx.lineWidth = selected ? 3 : 2;
+    ctx.strokeStyle = selected ? "#ffffff" : "#54d6ff";
+    ctx.fillStyle = selected ? "rgba(84, 214, 255, 0.22)" : "rgba(84, 214, 255, 0.12)";
+    ctx.fillRect(x, y, width, height);
+    ctx.strokeRect(x, y, width, height);
+
+    if (index !== null) {
+        ctx.font = "12px sans-serif";
+        ctx.textBaseline = "top";
+        const label = String(index + 1);
+        const metrics = ctx.measureText(label);
+        const labelWidth = metrics.width + 8;
+        ctx.fillStyle = selected ? "rgba(255, 255, 255, 0.92)" : "rgba(84, 214, 255, 0.92)";
+        ctx.fillRect(x, y, labelWidth, 18);
+        ctx.fillStyle = "#071018";
+        ctx.fillText(label, x + 4, y + 3);
+    }
+    ctx.restore();
+}
+
 export async function openMaskEditor({
     document,
     window,
@@ -612,6 +678,270 @@ export async function openMaskEditor({
         } catch (error) {
             console.error("Mask save failed:", error);
             window.alert?.(error.message || "Failed to save edited mask.");
+            saveBtn.disabled = false;
+            saveBtn.innerText = "Save";
+        }
+    };
+
+    overlay.onclick = (event) => {
+        if (event.target === overlay) {
+            closeEditor();
+        }
+    };
+
+    const resizeObserver = typeof window.ResizeObserver === "function"
+        ? new window.ResizeObserver(() => {
+            if (zoomMode === ZOOM_MODE_FIT) {
+                applyZoomMode();
+            }
+        })
+        : null;
+    const handleWindowResize = () => {
+        if (zoomMode === ZOOM_MODE_FIT) {
+            scheduleZoomLayout();
+        }
+    };
+    resizeObserver?.observe(stage);
+    window.addEventListener?.("resize", handleWindowResize);
+    scheduleZoomLayout();
+
+    if (hideMode) {
+        windowEl.classList.add("hide-mode");
+        windowEl.classList.add("hide-content");
+        windowEl.addEventListener("mouseenter", () => windowEl.classList.remove("hide-content"));
+        windowEl.addEventListener("mouseleave", () => windowEl.classList.add("hide-content"));
+    }
+}
+
+export async function openBboxEditor({
+    document,
+    window,
+    img,
+    imageUrl,
+    bboxes = [],
+    hideMode,
+    containPointerEvents,
+    onSaved,
+}) {
+    document.querySelectorAll(".helto-mask-editor-overlay").forEach((overlay) => overlay.remove());
+
+    const image = await loadImage(imageUrl);
+
+    const overlay = document.createElement("div");
+    overlay.className = "helto-mask-editor-overlay";
+    containPointerEvents?.(overlay);
+
+    const windowEl = document.createElement("div");
+    windowEl.className = "helto-mask-editor-window";
+
+    const header = document.createElement("div");
+    header.className = "helto-mask-editor-header";
+
+    const title = document.createElement("div");
+    title.className = "helto-mask-editor-title";
+    title.innerText = `Edit bboxes - ${img.name}`;
+    title.title = img.path;
+
+    const controls = document.createElement("div");
+    controls.className = "helto-mask-editor-controls";
+
+    const zoomBtn = createButton(document, "Actual size");
+    const deleteBtn = createButton(document, "Delete box");
+    const clearBtn = createButton(document, "Clear");
+    const saveBtn = createButton(document, "Save", "primary");
+    const cancelBtn = createButton(document, "Cancel");
+    controls.append(zoomBtn, deleteBtn, clearBtn, saveBtn, cancelBtn);
+    header.append(title, controls);
+
+    const stage = document.createElement("div");
+    stage.className = "helto-mask-editor-stage";
+
+    const canvasWrap = document.createElement("div");
+    canvasWrap.className = "helto-mask-editor-canvas-wrap";
+
+    const imageCanvas = document.createElement("canvas");
+    const overlayCanvas = document.createElement("canvas");
+    imageCanvas.className = "helto-mask-editor-canvas";
+    overlayCanvas.className = "helto-mask-editor-canvas bbox";
+
+    const width = image.naturalWidth || image.width;
+    const height = image.naturalHeight || image.height;
+    const previewScale = previewScaleForSize(width, height);
+    const previewWidth = Math.max(1, Math.round(width * previewScale));
+    const previewHeight = Math.max(1, Math.round(height * previewScale));
+    for (const canvas of [imageCanvas, overlayCanvas]) {
+        canvas.width = previewWidth;
+        canvas.height = previewHeight;
+    }
+
+    const imageCtx = imageCanvas.getContext("2d");
+    const overlayCtx = overlayCanvas.getContext("2d");
+    imageCtx.drawImage(image, 0, 0, previewWidth, previewHeight);
+
+    canvasWrap.append(imageCanvas, overlayCanvas);
+    stage.appendChild(canvasWrap);
+    windowEl.append(header, stage);
+    overlay.appendChild(windowEl);
+    document.body.appendChild(overlay);
+
+    requestAnimationFrame(() => overlay.classList.add("active"));
+
+    let zoomMode = ZOOM_MODE_FIT;
+    let boxes = (Array.isArray(bboxes) ? bboxes : [])
+        .map((box) => normalizeBbox(box, width, height))
+        .filter(Boolean);
+    let selectedIndex = boxes.length > 0 ? boxes.length - 1 : -1;
+    let drawing = false;
+    let startPoint = null;
+    let currentBox = null;
+
+    function renderOverlayNow() {
+        overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+        boxes.forEach((box, index) => drawBbox(overlayCtx, box, previewScale, index === selectedIndex, index));
+        if (currentBox) {
+            drawBbox(overlayCtx, currentBox, previewScale, true, null);
+        }
+        deleteBtn.disabled = selectedIndex < 0 || selectedIndex >= boxes.length;
+    }
+
+    const scheduleOverlayRender = createOverlayScheduler(
+        window.requestAnimationFrame?.bind(window) || ((callback) => window.setTimeout(callback, 16)),
+        renderOverlayNow,
+    );
+    renderOverlayNow();
+
+    function overlayDisplaySize() {
+        const rect = overlayCanvas.getBoundingClientRect();
+        return {
+            width: rect.width,
+            height: rect.height,
+        };
+    }
+
+    function eventToOriginalPoint(event) {
+        const previewPoint = pointerPoint(event, overlayCanvas);
+        const maskPoint = previewPointToMaskPoint(previewPoint, previewScale);
+        return {
+            x: clamp(maskPoint.x, 0, width),
+            y: clamp(maskPoint.y, 0, height),
+        };
+    }
+
+    function selectedBoxIndexAt(point) {
+        for (let index = boxes.length - 1; index >= 0; index--) {
+            if (pointInBbox(point, boxes[index])) return index;
+        }
+        return -1;
+    }
+
+    function applyZoomMode() {
+        const size = displaySizeForZoomMode(zoomMode, {
+            imageWidth: width,
+            imageHeight: height,
+            previewWidth,
+            previewHeight,
+            stageWidth: stage.clientWidth,
+            stageHeight: stage.clientHeight,
+        });
+
+        canvasWrap.style.width = `${size.width}px`;
+        canvasWrap.style.height = `${size.height}px`;
+        stage.classList.toggle("actual-size", zoomMode === ZOOM_MODE_ACTUAL);
+        zoomBtn.innerText = zoomMode === ZOOM_MODE_FIT ? "Actual size" : "Zoom to fit";
+        zoomBtn.title = zoomMode === ZOOM_MODE_FIT ? "Show actual size" : "Zoom to fit";
+        overlayDisplaySize();
+    }
+
+    function scheduleZoomLayout() {
+        (window.requestAnimationFrame?.bind(window) || ((callback) => window.setTimeout(callback, 16)))(applyZoomMode);
+    }
+
+    overlayCanvas.addEventListener("pointerdown", (event) => {
+        event.preventDefault();
+        drawing = true;
+        startPoint = eventToOriginalPoint(event);
+        currentBox = null;
+        overlayCanvas.setPointerCapture?.(event.pointerId);
+    });
+
+    overlayCanvas.addEventListener("pointermove", (event) => {
+        if (!drawing || !startPoint) return;
+        event.preventDefault();
+        const nextPoint = eventToOriginalPoint(event);
+        currentBox = bboxFromPoints(startPoint, nextPoint, width, height);
+        scheduleOverlayRender();
+    });
+
+    overlayCanvas.addEventListener("pointerup", (event) => {
+        if (!drawing) return;
+        drawing = false;
+        overlayCanvas.releasePointerCapture?.(event.pointerId);
+        const endPoint = eventToOriginalPoint(event);
+        const distance = startPoint ? Math.hypot(endPoint.x - startPoint.x, endPoint.y - startPoint.y) : 0;
+
+        if (currentBox && distance >= 3) {
+            boxes = [...boxes, currentBox];
+            selectedIndex = boxes.length - 1;
+        } else {
+            selectedIndex = selectedBoxIndexAt(endPoint);
+        }
+
+        startPoint = null;
+        currentBox = null;
+        renderOverlayNow();
+    });
+
+    overlayCanvas.addEventListener("pointercancel", (event) => {
+        drawing = false;
+        startPoint = null;
+        currentBox = null;
+        overlayCanvas.releasePointerCapture?.(event.pointerId);
+        renderOverlayNow();
+    });
+
+    zoomBtn.onclick = (event) => {
+        event.stopPropagation();
+        zoomMode = nextZoomMode(zoomMode);
+        applyZoomMode();
+    };
+
+    deleteBtn.onclick = (event) => {
+        event.stopPropagation();
+        if (selectedIndex < 0 || selectedIndex >= boxes.length) return;
+        boxes = boxes.filter((_, index) => index !== selectedIndex);
+        selectedIndex = Math.min(selectedIndex, boxes.length - 1);
+        renderOverlayNow();
+    };
+
+    clearBtn.onclick = (event) => {
+        event.stopPropagation();
+        boxes = [];
+        selectedIndex = -1;
+        renderOverlayNow();
+    };
+
+    function closeEditor() {
+        resizeObserver?.disconnect();
+        window.removeEventListener?.("resize", handleWindowResize);
+        overlay.classList.remove("active");
+        window.setTimeout(() => overlay.remove(), 180);
+    }
+
+    cancelBtn.onclick = (event) => {
+        event.stopPropagation();
+        closeEditor();
+    };
+
+    saveBtn.onclick = async (event) => {
+        event.stopPropagation();
+        saveBtn.disabled = true;
+        saveBtn.innerText = "Saving";
+        try {
+            await onSaved?.(img, boxes);
+            closeEditor();
+        } catch (error) {
+            console.error("BBox save failed:", error);
+            window.alert?.(error.message || "Failed to save bboxes.");
             saveBtn.disabled = false;
             saveBtn.innerText = "Save";
         }

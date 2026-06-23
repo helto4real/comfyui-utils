@@ -11,6 +11,7 @@ import {
 } from "../../web/layout.js";
 import {
     AFFECTED_MASK_VALUE,
+    bboxFromPoints,
     createOverlayScheduler,
     displayBrushSizeToMaskSize,
     displayBrushSizeToPreviewSize,
@@ -19,6 +20,7 @@ import {
     fitDisplaySize,
     maskImageDataIsUnaffected,
     maskOverlayPixel,
+    normalizeBbox,
     nextZoomMode,
     parsePreviewColor,
     previewPointToMaskPoint,
@@ -34,6 +36,7 @@ import {
     getRootFolderOptions,
     getSubfolderFilterLabel,
     getSubfolderOptions,
+    applyEditedBboxSaveResult,
     applyEditedMaskSaveResult,
     buildPastedImageFilename,
     filterSelectorImages,
@@ -315,6 +318,40 @@ test("selector mask save result removes edited mask entry when cleared", () => {
             "/tmp/b.png": { key: "b" },
         },
     );
+});
+
+test("selector bbox save result stores valid boxes and removes empty entries", () => {
+    const existing = {
+        "/tmp/a.png": [{ x: 1, y: 2, width: 3, height: 4 }],
+        "/tmp/b.png": [{ x: 5, y: 6, width: 7, height: 8 }],
+    };
+
+    assert.deepEqual(
+        applyEditedBboxSaveResult(existing, "/tmp/a.png", []),
+        { "/tmp/b.png": [{ x: 5, y: 6, width: 7, height: 8 }] },
+    );
+    assert.deepEqual(
+        applyEditedBboxSaveResult(existing, "/tmp/a.png", [
+            { x: "10", y: 20, width: 30, height: 40 },
+            { x: 0, y: 0, width: -1, height: 4 },
+        ]),
+        {
+            "/tmp/a.png": [{ x: 10, y: 20, width: 30, height: 40 }],
+            "/tmp/b.png": [{ x: 5, y: 6, width: 7, height: 8 }],
+        },
+    );
+});
+
+test("bbox editor normalizes reversed drags and clamps to image bounds", () => {
+    assert.deepEqual(
+        bboxFromPoints({ x: 90, y: 80 }, { x: 10, y: 20 }, 100, 100),
+        { x: 10, y: 20, width: 80, height: 60 },
+    );
+    assert.deepEqual(
+        normalizeBbox({ x: -10, y: 5, width: 40, height: 110 }, 100, 100),
+        { x: 0, y: 5, width: 30, height: 95 },
+    );
+    assert.equal(normalizeBbox({ x: 5, y: 5, width: 0, height: 10 }, 100, 100), null);
 });
 
 test("renderer detection uses Vue enabled setting when renderer name is missing", () => {

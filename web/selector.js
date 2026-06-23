@@ -15,6 +15,7 @@ import {
     getRootFolderOptions,
     getSubfolderFilterLabel,
     getSubfolderOptions,
+    applyEditedBboxSaveResult,
     applyEditedMaskSaveResult,
     buildPastedImageFilename,
     filterSelectorImages,
@@ -30,7 +31,7 @@ import {
     containPointerEvents,
     createModal,
 } from "./ui.js";
-import { openMaskEditor } from "./mask_editor.js";
+import { openBboxEditor, openMaskEditor } from "./mask_editor.js";
 
 // Load Stylesheet dynamically using modern ES modules URL resolving
 if (!document.getElementById("helto-utils-styles")) {
@@ -79,6 +80,21 @@ async function serializeEditedMasksForPrompt(node) {
     return plainString;
 }
 
+async function serializeEditedBboxesForPrompt(node) {
+    const plainString = JSON.stringify(node.editedBboxes && typeof node.editedBboxes === "object" ? node.editedBboxes : {});
+
+    if (node.properties?.privacyMode) {
+        try {
+            const res = await selectorApi.encrypt(plainString);
+            return res.encrypted || plainString;
+        } catch (e) {
+            console.error("Encryption API failed:", e);
+        }
+    }
+
+    return plainString;
+}
+
 function installGraphToPromptPatch() {
     if (app[GRAPH_TO_PROMPT_PATCHED] || typeof app.graphToPrompt !== "function") {
         return;
@@ -97,6 +113,7 @@ function installGraphToPromptPatch() {
             outputNode.inputs.selected_images = await serializeSelectedImagesForPrompt(node);
             outputNode.inputs.resize_mode = node.properties?.resizeMode || "zoom to fit";
             outputNode.inputs.edited_masks = await serializeEditedMasksForPrompt(node);
+            outputNode.inputs.edited_bboxes = await serializeEditedBboxesForPrompt(node);
         }
 
         return result;
@@ -117,6 +134,7 @@ app.registerExtension({
         // --- 1. State Initialization ---
         node.selectedPaths = []; // Plain absolute paths
         node.editedMasks = {};   // Plain absolute path -> saved mask ref
+        node.editedBboxes = {};  // Plain absolute path -> bbox list
         node.allImages = [];     // Scanned images metadata
         node.allFolders = [];    // Scanned folder metadata
         let domWidget = null;
@@ -135,7 +153,8 @@ app.registerExtension({
             node.inputs = node.inputs.filter(input => (
                 input.name !== "selected_images" &&
                 input.name !== "resize_mode" &&
-                input.name !== "edited_masks"
+                input.name !== "edited_masks" &&
+                input.name !== "edited_bboxes"
             ));
         }
         
@@ -161,9 +180,11 @@ app.registerExtension({
         const selectedImagesWidget = ensureHiddenWidget("selected_images", "[]");
         const resizeModeWidget = ensureHiddenWidget("resize_mode", "zoom to fit");
         const editedMasksWidget = ensureHiddenWidget("edited_masks", "{}");
+        const editedBboxesWidget = ensureHiddenWidget("edited_bboxes", "{}");
         collapseHiddenWidgetLayout(selectedImagesWidget);
         collapseHiddenWidgetLayout(resizeModeWidget);
         collapseHiddenWidgetLayout(editedMasksWidget);
+        collapseHiddenWidgetLayout(editedBboxesWidget);
         
         node.normalizeHeltoSelectorSize = function() {
             normalizeHeltoSelectorSize(node);
@@ -394,6 +415,7 @@ app.registerExtension({
         // --- 4. Selection Sync Helpers ---
         let selectionSerializationPromise = null;
         let maskSerializationPromise = null;
+        let bboxSerializationPromise = null;
 
         async function serializeHiddenJsonWidget(widget, plainValue, defaultValue) {
             if (!widget) return defaultValue;
@@ -435,6 +457,17 @@ app.registerExtension({
             return maskSerializationPromise;
         }
 
+        async function updateBboxWidgetValue() {
+            preserveSelectorSizeOnNextResize();
+
+            const bboxWidget = node.widgets ? node.widgets.find(w => w.name === "edited_bboxes") : null;
+            bboxSerializationPromise = (async () => {
+                return serializeHiddenJsonWidget(bboxWidget, node.editedBboxes || {}, "{}");
+            })();
+
+            return bboxSerializationPromise;
+        }
+
         selectedImagesWidget.serializeValue = async () => {
             if (selectionSerializationPromise) {
                 await selectionSerializationPromise;
@@ -452,6 +485,13 @@ app.registerExtension({
                 await maskSerializationPromise;
             }
             return updateMaskWidgetValue();
+        };
+
+        editedBboxesWidget.serializeValue = async () => {
+            if (bboxSerializationPromise) {
+                await bboxSerializationPromise;
+            }
+            return updateBboxWidgetValue();
         };
 
         async function parseSerializedJson(value, fallback) {
@@ -491,6 +531,16 @@ app.registerExtension({
             renderGrid();
             refreshSelectedPreviewPopover();
         };
+
+        node.restoreEditedBboxes = async function() {
+            const bboxWidget = node.widgets ? node.widgets.find(w => w.name === "edited_bboxes") : null;
+            if (!bboxWidget || !bboxWidget.value) return;
+            const parsed = await parseSerializedJson(bboxWidget.value, {});
+            node.editedBboxes = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+
+            renderGrid();
+            refreshSelectedPreviewPopover();
+        };
         
         // --- 5. Scanning and Rendering Logic ---
         node.scanFolders = async function(options = {}) {
@@ -523,6 +573,13 @@ app.registerExtension({
                     );
                     if (Object.keys(node.editedMasks).length !== editedBefore) {
                         await updateMaskWidgetValue();
+                    }
+                    const bboxesBefore = Object.keys(node.editedBboxes || {}).length;
+                    node.editedBboxes = Object.fromEntries(
+                        Object.entries(node.editedBboxes || {}).filter(([path]) => currentImagePaths.has(path))
+                    );
+                    if (Object.keys(node.editedBboxes).length !== bboxesBefore) {
+                        await updateBboxWidgetValue();
                     }
                 }
                 const rootPaths = new Set(getRootFolderOptionsForNode().map((folder) => getFolderPath(folder)));
@@ -645,6 +702,24 @@ app.registerExtension({
             });
         }
 
+        async function openBboxEditorForImage(img) {
+            await openBboxEditor({
+                document,
+                window,
+                img,
+                imageUrl: selectorApi.viewImageUrl(img.path),
+                bboxes: node.editedBboxes?.[img.path] || [],
+                hideMode: node.properties.hideMode,
+                containPointerEvents,
+                onSaved: async (savedImg, boxes) => {
+                    node.editedBboxes = applyEditedBboxSaveResult(node.editedBboxes, savedImg.path, boxes);
+                    await updateBboxWidgetValue();
+                    renderGrid();
+                    refreshSelectedPreviewPopover();
+                },
+            });
+        }
+
         function showImageContextMenu(event, img) {
             containEvent(event);
             removeFloatingMenus();
@@ -657,6 +732,7 @@ app.registerExtension({
                 ["Save image", () => saveOriginalImage(img)],
                 ["Preview image", () => showPreviewPopup(img)],
                 ["Edit mask", () => openMaskEditorForImage(img)],
+                ["Edit bboxes", () => openBboxEditorForImage(img)],
             ];
 
             options.forEach(([label, action]) => {
@@ -787,6 +863,9 @@ app.registerExtension({
                 if (node.editedMasks?.[img.path]) {
                     item.classList.add("has-mask");
                 }
+                if (node.editedBboxes?.[img.path]?.length) {
+                    item.classList.add("has-bbox");
+                }
 
                 const thumbWrap = document.createElement("div");
                 thumbWrap.className = "helto-selected-preview-thumb-wrap";
@@ -908,6 +987,9 @@ app.registerExtension({
                 item.className = `helto-grid-item ${isSelected ? "selected" : ""}`;
                 if (node.editedMasks?.[img.path]) {
                     item.classList.add("has-mask");
+                }
+                if (node.editedBboxes?.[img.path]?.length) {
+                    item.classList.add("has-bbox");
                 }
                 item.dataset.path = img.path;
                 item.title = `${img.name}\nSize: ${(img.size_bytes / (1024 * 1024)).toFixed(2)} MB\nPath: ${img.path}`;
@@ -1311,6 +1393,9 @@ app.registerExtension({
                         node.editedMasks = Object.fromEntries(
                             Object.entries(node.editedMasks || {}).filter(([path]) => !removedPaths.has(path))
                         );
+                        node.editedBboxes = Object.fromEntries(
+                            Object.entries(node.editedBboxes || {}).filter(([path]) => !removedPaths.has(path))
+                        );
                     }
                     removeSelectedPreviewPopover();
                     document.querySelectorAll(".helto-preview-overlay").forEach((overlay) => overlay.remove());
@@ -1318,6 +1403,7 @@ app.registerExtension({
                     updateFooter();
                     await updateWidgetValue();
                     await updateMaskWidgetValue();
+                    await updateBboxWidgetValue();
                     if ((result.skipped || []).length > 0) {
                         console.warn("Some selected images were not deleted:", result.skipped);
                     }
@@ -1519,6 +1605,7 @@ app.registerExtension({
                     // Update the saved value to match new encryption state
                     await updateWidgetValue();
                     await updateMaskWidgetValue();
+                    await updateBboxWidgetValue();
                     // Force refresh grid to get new encrypted/decrypted URLs
                     renderGrid();
                 }
@@ -1571,6 +1658,7 @@ app.registerExtension({
             node.scanFolders().then(async () => {
                 await node.restoreSelection();
                 await node.restoreEditedMasks();
+                await node.restoreEditedBboxes();
                 if (node.onResize) node.onResize();
             });
         }, 100);
@@ -1592,6 +1680,8 @@ app.registerExtension({
                 if (node.normalizeHeltoSelectorSize) node.normalizeHeltoSelectorSize();
                 if (node.syncUIWithProperties) node.syncUIWithProperties();
                 if (node.restoreSelection) node.restoreSelection();
+                if (node.restoreEditedMasks) node.restoreEditedMasks();
+                if (node.restoreEditedBboxes) node.restoreEditedBboxes();
                 if (node.onResize) node.onResize();
             }, 200);
         }

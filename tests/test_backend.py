@@ -20,6 +20,7 @@ from helto_selector_backend import crypto as selector_crypto
 from helto_selector_backend.crypto import decrypt_selection, encrypt_selection
 from helto_selector_backend.image_processing import (
     parse_selected_paths,
+    parse_edited_bboxes,
     parse_edited_masks,
     select_images,
 )
@@ -63,7 +64,7 @@ def image_bytes(size: tuple[int, int] = (4, 4), color: tuple[int, int, int] = (2
 
 class ImageProcessingTests(unittest.TestCase):
     def test_empty_selection_returns_black_placeholder_and_batch(self):
-        images, image_batch, masks, mask_batch = select_images("[]")
+        images, image_batch, masks, mask_batch, bboxes = select_images("[]")
 
         self.assertEqual(len(images), 1)
         self.assertEqual(tuple(images[0].shape), (1, 512, 512, 3))
@@ -73,6 +74,7 @@ class ImageProcessingTests(unittest.TestCase):
         self.assertEqual(tuple(masks[0].shape), (1, 512, 512))
         self.assertEqual(tuple(mask_batch.shape), (1, 512, 512))
         self.assertEqual(float(mask_batch.min()), 1.0)
+        self.assertEqual(bboxes, [[]])
 
     def test_missing_files_are_skipped(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -80,13 +82,14 @@ class ImageProcessingTests(unittest.TestCase):
             missing_path = os.path.join(tmpdir, "missing.png")
             write_image(image_path, (8, 6), (255, 0, 0))
 
-            images, image_batch, masks, mask_batch = select_images(json.dumps([image_path, missing_path]))
+            images, image_batch, masks, mask_batch, bboxes = select_images(json.dumps([image_path, missing_path]))
 
             self.assertEqual(len(images), 1)
             self.assertEqual(tuple(images[0].shape), (1, 6, 8, 3))
             self.assertEqual(tuple(image_batch.shape), (1, 6, 8, 3))
             self.assertEqual(tuple(masks[0].shape), (1, 6, 8))
             self.assertEqual(tuple(mask_batch.shape), (1, 6, 8))
+            self.assertEqual(bboxes, [[]])
 
     def test_resize_modes_preserve_current_shapes(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -96,36 +99,80 @@ class ImageProcessingTests(unittest.TestCase):
             write_image(second, (4, 6), (0, 255, 0))
             selected = json.dumps([first, second])
 
-            zoom_images, zoom_batch, zoom_masks, zoom_mask_batch = select_images(selected, "zoom to fit")
+            zoom_images, zoom_batch, zoom_masks, zoom_mask_batch, zoom_bboxes = select_images(selected, "zoom to fit")
             self.assertEqual([tuple(t.shape) for t in zoom_images], [(1, 8, 10, 3), (1, 8, 10, 3)])
             self.assertEqual(tuple(zoom_batch.shape), (2, 8, 10, 3))
             self.assertEqual([tuple(t.shape) for t in zoom_masks], [(1, 8, 10), (1, 8, 10)])
             self.assertEqual(tuple(zoom_mask_batch.shape), (2, 8, 10))
+            self.assertEqual(zoom_bboxes, [[], []])
 
-            pad_images, pad_batch, pad_masks, pad_mask_batch = select_images(selected, "pad")
+            pad_images, pad_batch, pad_masks, pad_mask_batch, pad_bboxes = select_images(selected, "pad")
             self.assertEqual([tuple(t.shape) for t in pad_images], [(1, 8, 10, 3), (1, 8, 10, 3)])
             self.assertEqual(tuple(pad_batch.shape), (2, 8, 10, 3))
             self.assertEqual([tuple(t.shape) for t in pad_masks], [(1, 8, 10), (1, 8, 10)])
             self.assertEqual(tuple(pad_mask_batch.shape), (2, 8, 10))
+            self.assertEqual(pad_bboxes, [[], []])
 
-            raw_images, raw_batch, raw_masks, raw_mask_batch = select_images(selected, "No resize")
+            raw_images, raw_batch, raw_masks, raw_mask_batch, raw_bboxes = select_images(selected, "No resize")
             self.assertEqual([tuple(t.shape) for t in raw_images], [(1, 8, 10, 3), (1, 6, 4, 3)])
             self.assertEqual(tuple(raw_batch.shape), (2, 8, 10, 3))
             self.assertEqual([tuple(t.shape) for t in raw_masks], [(1, 8, 10), (1, 6, 4)])
             self.assertEqual(tuple(raw_mask_batch.shape), (2, 8, 10))
+            self.assertEqual(raw_bboxes, [[], []])
 
     def test_default_mask_outputs_full_image_mask(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             image_path = os.path.join(tmpdir, "image.png")
             write_image(image_path, (7, 5), (255, 0, 0))
 
-            images, image_batch, masks, mask_batch = select_images(json.dumps([image_path]))
+            images, image_batch, masks, mask_batch, bboxes = select_images(json.dumps([image_path]))
 
             self.assertEqual(tuple(images[0].shape), (1, 5, 7, 3))
             self.assertEqual(tuple(image_batch.shape), (1, 5, 7, 3))
             self.assertEqual(tuple(masks[0].shape), (1, 5, 7))
             self.assertEqual(tuple(mask_batch.shape), (1, 5, 7))
             self.assertEqual(float(mask_batch.min()), 1.0)
+            self.assertEqual(bboxes, [[]])
+
+    def test_bbox_outputs_match_selector_resize_modes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            first = os.path.join(tmpdir, "first.png")
+            second = os.path.join(tmpdir, "second.png")
+            write_image(first, (10, 8), (255, 0, 0))
+            write_image(second, (4, 6), (0, 255, 0))
+            selected = json.dumps([first, second])
+            edited_bboxes = json.dumps({
+                first: [{"x": 2, "y": 1, "width": 4, "height": 3}],
+                second: [{"x": 1, "y": 2, "width": 2, "height": 2}],
+            })
+
+            _, _, _, _, zoom_bboxes = select_images(selected, "zoom to fit", "{}", edited_bboxes)
+            self.assertEqual(zoom_bboxes, [
+                [{"x": 2, "y": 1, "width": 4, "height": 3}],
+                [{"x": 2, "y": 3, "width": 6, "height": 2}],
+            ])
+
+            _, _, _, _, pad_bboxes = select_images(selected, "pad", "{}", edited_bboxes)
+            self.assertEqual(pad_bboxes, [
+                [{"x": 2, "y": 1, "width": 4, "height": 3}],
+                [{"x": 4, "y": 3, "width": 2, "height": 2}],
+            ])
+
+            _, raw_batch, _, _, raw_bboxes = select_images(selected, "No resize", "{}", edited_bboxes)
+            self.assertEqual(tuple(raw_batch.shape), (2, 8, 10, 3))
+            self.assertEqual(raw_bboxes, [
+                [{"x": 2, "y": 1, "width": 4, "height": 3}],
+                [{"x": 3, "y": 3, "width": 3, "height": 2}],
+            ])
+
+    def test_edited_bbox_state_parses_encrypted_map(self):
+        key = b"9" * 32
+        plain = json.dumps({"/tmp/a.png": [{"x": 1, "y": 2, "width": 3, "height": 4}]})
+        encrypted = encrypt_selection(plain, key=key)
+
+        parsed = parse_edited_bboxes(encrypted, decrypt_func=lambda text: decrypt_selection(text, key=key))
+
+        self.assertEqual(parsed, {"/tmp/a.png": [{"x": 1.0, "y": 2.0, "width": 3.0, "height": 4.0}]})
 
     def test_edited_mask_state_parses_encrypted_map(self):
         key = b"7" * 32
@@ -674,19 +721,21 @@ class NodeSchemaContractTests(unittest.TestCase):
 
         self.assertEqual(schema.node_id, "HeltoImageSelector")
         self.assertEqual(schema.display_name, "Helto Multi-Image Selector")
-        self.assertEqual([input_def.id for input_def in schema.inputs], ["selected_images", "resize_mode", "edited_masks"])
-        self.assertEqual([output_def.id for output_def in schema.outputs], ["images", "image_batch", "masks", "mask_batch"])
+        self.assertEqual([input_def.id for input_def in schema.inputs], ["selected_images", "resize_mode", "edited_masks", "edited_bboxes"])
+        self.assertEqual([output_def.id for output_def in schema.outputs], ["images", "image_batch", "masks", "mask_batch", "bboxes"])
         self.assertTrue(schema.outputs[0].is_output_list)
         self.assertFalse(schema.outputs[1].is_output_list)
         self.assertTrue(schema.outputs[2].is_output_list)
         self.assertFalse(schema.outputs[3].is_output_list)
-        self.assertEqual(len(result), 4)
+        self.assertFalse(schema.outputs[4].is_output_list)
+        self.assertEqual(len(result), 5)
         self.assertEqual(len(result[0]), 1)
         self.assertEqual(tuple(result[0][0].shape), (1, 512, 512, 3))
         self.assertEqual(tuple(result[1].shape), (1, 512, 512, 3))
         self.assertEqual(len(result[2]), 1)
         self.assertEqual(tuple(result[2][0].shape), (1, 512, 512))
         self.assertEqual(tuple(result[3].shape), (1, 512, 512))
+        self.assertEqual(result[4], [[]])
 
     def test_registered_node_display_names_are_helto_prefixed(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()
@@ -2123,12 +2172,16 @@ Second beat moves toward the doorway. @image1:end
         class FakeMask:
             Output = FakeField
 
+        class FakeBoundingBox:
+            Output = FakeField
+
         class FakeIO:
             ComfyNode = object
             Schema = FakeSchema
             String = FakeString
             Image = FakeImage
             Mask = FakeMask
+            BoundingBox = FakeBoundingBox
             NodeOutput = FakeNodeOutput
 
         previous_comfy_api = sys.modules.get("comfy_api")
@@ -2226,6 +2279,7 @@ Second beat moves toward the doorway. @image1:end
             String = fake_socket("String")
             Image = fake_socket("Image")
             Mask = fake_socket("Mask")
+            BoundingBox = fake_socket("BoundingBox")
             Int = fake_socket("Int")
             Float = fake_socket("Float")
             Combo = fake_socket("Combo")

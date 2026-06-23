@@ -30,7 +30,7 @@ The pack registers through ComfyUI's V3 `comfy_entrypoint()` extension API and e
 | Image Comparer | `HeltoImageComparer` | `HELTO/Image` | Output node that previews an original image against a new image. |
 | Video Comparer | `HeltoVideoComparer` | `HELTO/Video` | Output node that previews two videos or frame batches side by side. |
 | Load Video | `HeltoLoadVideo` | `HELTO/Video` | Loads videos from a searchable picker as frames, audio, and metadata. |
-| Helto Multi-Image Selector | `HeltoImageSelector` | `image` | Selects multiple local images from a searchable browser and outputs both a list and batch. |
+| Helto Multi-Image Selector | `HeltoImageSelector` | `image` | Selects multiple local images from a searchable browser and outputs image, mask, and bbox data. |
 | Save Image Advanced | `HeltoSaveImageAdvanced` | `HELTO/Image` | Saves PNG images to an absolute folder with alternate/date/subfolder routing. |
 | Save Video Advanced | `HeltoSaveVideoAdvanced` | `HELTO/Video` | Saves frame batches or latents as GIF, WebP, or video with folder routing and format controls. |
 
@@ -279,7 +279,7 @@ Supported picker extensions are `mp4`, `mov`, `mkv`, `webm`, `avi`, and `m4v`. T
 
 `Helto Multi-Image Selector` is a searchable image browser for selecting multiple local images directly in a ComfyUI node.
 
-The frontend widget can scan one or more folders, enable recursive browsing, filter by root folder or subfolder, sort by date or name, search by filename/path, preview selected images, clear the selection, and delete selected images from disk when they are inside the configured scan scope. The selected-image list is stored in hidden widgets so the workflow can run without visible input sockets.
+The frontend widget can scan one or more folders, enable recursive browsing, filter by root folder or subfolder, sort by date or name, search by filename/path, preview selected images, edit masks and bounding boxes, clear the selection, and delete selected images from disk when they are inside the configured scan scope. The selected-image list and annotations are stored in hidden widgets so the workflow can run without visible input sockets.
 
 Inputs:
 
@@ -287,8 +287,10 @@ Inputs:
 | --- | --- | --- | --- |
 | `selected_images` | String | `[]` | Hidden serialized selection. In privacy mode this is encrypted before prompt serialization. |
 | `resize_mode` | String | `zoom to fit` | Hidden output sizing mode: `zoom to fit`, `pad`, or `No resize`. |
+| `edited_masks` | String | `{}` | Hidden serialized edited-mask references. In privacy mode this is encrypted before prompt serialization. |
+| `edited_bboxes` | String | `{}` | Hidden serialized original-pixel bounding boxes. In privacy mode this is encrypted before prompt serialization. |
 
-Outputs: `images` as an image list, and `image_batch` as a batched image tensor.
+Outputs: `images` as an image list, `image_batch` as a batched image tensor, `masks` as a mask list, `mask_batch` as a batched mask tensor, and `bboxes` as SAM3-compatible `BOUNDING_BOX` data. The `bboxes` output is a nested list aligned to the selected image order, with one box list per emitted image.
 
 When no valid image is selected, the node returns a 512x512 black placeholder. `zoom to fit` resizes selected images to the first image's dimensions, `pad` pads images to the largest selected dimensions, and `No resize` preserves each loaded image before the batch output normalizes mixed sizes. Privacy mode also encrypts thumbnail cache entries and serialized selections.
 

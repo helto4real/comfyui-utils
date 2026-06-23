@@ -130,6 +130,44 @@ def parse_edited_masks(
     return {path: ref for path, ref in mask_map.items() if isinstance(path, str) and ref}
 
 
+def parse_edited_bboxes(
+    edited_bboxes: str | None,
+    decrypt_func: Callable[[str], str] = decrypt_selection,
+) -> dict[str, list[dict[str, float]]]:
+    raw_bboxes = decrypt_func(edited_bboxes or "{}")
+    try:
+        bbox_map = json.loads(raw_bboxes)
+    except Exception as e:
+        print(f"[HeltoSelector] Failed to parse edited bbox JSON: {e}")
+        return {}
+
+    if not isinstance(bbox_map, dict):
+        print("[HeltoSelector] Edited bbox JSON was not an object.")
+        return {}
+
+    parsed: dict[str, list[dict[str, float]]] = {}
+    for path, boxes in bbox_map.items():
+        if not isinstance(path, str) or not isinstance(boxes, list):
+            continue
+        valid_boxes = []
+        for box in boxes:
+            if not isinstance(box, dict):
+                continue
+            try:
+                x = float(box["x"])
+                y = float(box["y"])
+                width = float(box["width"])
+                height = float(box["height"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if width <= 0 or height <= 0:
+                continue
+            valid_boxes.append({"x": x, "y": y, "width": width, "height": height})
+        if valid_boxes:
+            parsed[path] = valid_boxes
+    return parsed
+
+
 def filter_existing_paths(image_paths: list[str]) -> list[str]:
     valid_paths = [path for path in image_paths if os.path.exists(path)]
     if len(valid_paths) != len(image_paths):
@@ -221,6 +259,85 @@ def resize_masks(masks: list[Image.Image], resize_mode: str) -> list[Image.Image
     return masks
 
 
+def _round_bbox(x1: float, y1: float, x2: float, y2: float) -> dict[str, int] | None:
+    rounded_x1 = int(round(x1))
+    rounded_y1 = int(round(y1))
+    rounded_x2 = int(round(x2))
+    rounded_y2 = int(round(y2))
+    if rounded_x2 <= rounded_x1 or rounded_y2 <= rounded_y1:
+        return None
+    return {
+        "x": rounded_x1,
+        "y": rounded_y1,
+        "width": rounded_x2 - rounded_x1,
+        "height": rounded_y2 - rounded_y1,
+    }
+
+
+def _transformed_image_batch_layouts(images: list[Image.Image]) -> list[tuple[float, float, float]]:
+    if not images:
+        return []
+
+    max_w = max(img.size[0] for img in images)
+    max_h = max(img.size[1] for img in images)
+    layouts = []
+    for img in images:
+        w, h = img.size
+        scale = min(max_w / w, max_h / h)
+        resized_w = min(max_w, max(1, int(round(w * scale))))
+        resized_h = min(max_h, max(1, int(round(h * scale))))
+        offset_x = (max_w - resized_w) // 2
+        offset_y = (max_h - resized_h) // 2
+        layouts.append((scale, float(offset_x), float(offset_y)))
+    return layouts
+
+
+def transform_bboxes_for_output(
+    image_pairs: list[tuple[str, Image.Image]],
+    processed_images: list[Image.Image],
+    edited_bboxes: dict[str, list[dict[str, float]]],
+    resize_mode: str,
+) -> list[list[dict[str, int]]]:
+    layouts = _transformed_image_batch_layouts(processed_images)
+    output_bboxes: list[list[dict[str, int]]] = []
+    pad_w = max((img.size[0] for img in processed_images), default=0)
+    pad_h = max((img.size[1] for img in processed_images), default=0)
+
+    for index, (path, original_image) in enumerate(image_pairs):
+        boxes = edited_bboxes.get(path, [])
+        if not boxes:
+            output_bboxes.append([])
+            continue
+
+        original_w, original_h = original_image.size
+        processed_w, processed_h = processed_images[index].size
+        batch_scale, batch_offset_x, batch_offset_y = layouts[index]
+        pre_scale_x = processed_w / original_w if resize_mode == DEFAULT_RESIZE_MODE else 1.0
+        pre_scale_y = processed_h / original_h if resize_mode == DEFAULT_RESIZE_MODE else 1.0
+        pre_offset_x = ((pad_w - original_w) // 2) if resize_mode == "pad" else 0.0
+        pre_offset_y = ((pad_h - original_h) // 2) if resize_mode == "pad" else 0.0
+        frame_boxes = []
+
+        for box in boxes:
+            x1 = max(0.0, min(float(box["x"]), float(original_w)))
+            y1 = max(0.0, min(float(box["y"]), float(original_h)))
+            x2 = max(0.0, min(float(box["x"] + box["width"]), float(original_w)))
+            y2 = max(0.0, min(float(box["y"] + box["height"]), float(original_h)))
+            if x2 <= x1 or y2 <= y1:
+                continue
+            transformed = _round_bbox(
+                ((x1 * pre_scale_x) + pre_offset_x) * batch_scale + batch_offset_x,
+                ((y1 * pre_scale_y) + pre_offset_y) * batch_scale + batch_offset_y,
+                ((x2 * pre_scale_x) + pre_offset_x) * batch_scale + batch_offset_x,
+                ((y2 * pre_scale_y) + pre_offset_y) * batch_scale + batch_offset_y,
+            )
+            if transformed is not None:
+                frame_boxes.append(transformed)
+
+        output_bboxes.append(frame_boxes)
+    return output_bboxes
+
+
 def image_to_tensor(img: Image.Image) -> torch.Tensor:
     img_np = np.array(img).astype(np.float32) / 255.0
     return torch.from_numpy(img_np).unsqueeze(0)
@@ -235,27 +352,30 @@ def select_images(
     selected_images: str | None = "[]",
     resize_mode: str = DEFAULT_RESIZE_MODE,
     edited_masks: str | None = "{}",
-) -> tuple[list[torch.Tensor], torch.Tensor, list[torch.Tensor], torch.Tensor]:
+    edited_bboxes: str | None = "{}",
+) -> tuple[list[torch.Tensor], torch.Tensor, list[torch.Tensor], torch.Tensor, list[list[dict[str, int]]]]:
     image_paths = parse_selected_paths(selected_images)
     edited_mask_map = parse_edited_masks(edited_masks)
+    edited_bbox_map = parse_edited_bboxes(edited_bboxes)
     valid_paths = filter_existing_paths(image_paths)
 
     if not valid_paths:
         print("[HeltoSelector] No images selected. Outputting 512x512 black placeholder.")
         black_image = make_placeholder_image()
         white_mask = make_placeholder_mask()
-        return [black_image], black_image, [white_mask], white_mask
+        return [black_image], black_image, [white_mask], white_mask, [[]]
 
     image_pairs = load_rgb_image_pairs(valid_paths)
     if not image_pairs:
         black_image = make_placeholder_image()
         white_mask = make_placeholder_mask()
-        return [black_image], black_image, [white_mask], white_mask
+        return [black_image], black_image, [white_mask], white_mask, [[]]
 
     loaded_images = [img for _, img in image_pairs]
     loaded_masks = load_masks_for_images(image_pairs, edited_mask_map)
     processed_images = resize_images(loaded_images, resize_mode)
     processed_masks = resize_masks(loaded_masks, resize_mode)
+    output_bboxes = transform_bboxes_for_output(image_pairs, processed_images, edited_bbox_map, resize_mode)
     tensor_list = [image_to_tensor(img) for img in processed_images]
     mask_list = [mask_to_tensor(mask) for mask in processed_masks]
-    return tensor_list, make_image_batch(tensor_list), mask_list, make_mask_batch(mask_list)
+    return tensor_list, make_image_batch(tensor_list), mask_list, make_mask_batch(mask_list), output_bboxes

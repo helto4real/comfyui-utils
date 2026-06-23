@@ -1378,6 +1378,20 @@
     box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
     pointer-events: none;
 }
+.helto-grid-item.has-bbox::before,
+.helto-selected-preview-item.has-bbox .helto-selected-preview-thumb-wrap::before {
+    content: "";
+    position: absolute;
+    left: 6px;
+    bottom: 6px;
+    width: 9px;
+    height: 9px;
+    border: 1.5px solid #54d6ff;
+    border-radius: 2px;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+    pointer-events: none;
+    z-index: 2;
+}
 .helto-selected-preview-thumb-wrap {
     position: relative;
 }
@@ -1506,6 +1520,11 @@
     position: absolute;
     inset: 0;
     cursor: none;
+}
+.helto-mask-editor-canvas.bbox {
+    position: absolute;
+    inset: 0;
+    cursor: crosshair;
 }
 .helto-mask-editor-brush-cursor {
     position: absolute;
