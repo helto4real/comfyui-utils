@@ -19,7 +19,8 @@ function injectStyles() {
     style.textContent = `
         .helto-load-video-dialog {
             align-items: center;
-            background: rgba(0, 0, 0, 0.55);
+            background: rgba(6, 9, 15, 0.62);
+            backdrop-filter: blur(3px);
             display: flex;
             inset: 0;
             justify-content: center;
@@ -27,13 +28,15 @@ function injectStyles() {
             z-index: 10001;
         }
         .helto-load-video-panel {
-            background: #222;
-            border: 1px solid #555;
-            border-radius: 6px;
-            color: #ddd;
+            background: #151c2a;
+            border: 1px solid #3a465c;
+            border-radius: 10px;
+            color: #e7ebf3;
             display: flex;
             flex-direction: column;
-            font: 12px Arial, sans-serif;
+            font: 12px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+            -webkit-font-smoothing: antialiased;
+            box-shadow: 0 14px 36px rgba(0, 0, 0, 0.55);
             max-height: 86vh;
             max-width: 92vw;
             padding: 14px;
@@ -41,7 +44,8 @@ function injectStyles() {
         }
         .helto-load-video-panel h3 {
             font-size: 15px;
-            font-weight: 600;
+            font-weight: 700;
+            letter-spacing: 0.02em;
             margin: 0 0 10px;
         }
         .helto-load-video-controls {
@@ -54,26 +58,40 @@ function injectStyles() {
             grid-template-columns: 32px 32px 1fr 180px;
         }
         .helto-load-video-controls input,
-        .helto-load-video-controls select,
-        .helto-load-video-controls button,
-        .helto-load-video-actions button {
-            background: #2a2a2a;
-            border: 1px solid #444;
-            border-radius: 4px;
-            color: #ddd;
-            font: 12px Arial, sans-serif;
+        .helto-load-video-controls select {
+            background: #0d1320;
+            border: 1px solid #3a465c;
+            border-radius: 5px;
+            color: #e7ebf3;
+            font: inherit;
             height: 28px;
             min-width: 0;
+            padding: 0 8px;
+            box-sizing: border-box;
+        }
+        .helto-load-video-controls input:focus,
+        .helto-load-video-controls select:focus {
+            outline: none;
+            border-color: #5e9bff;
+            box-shadow: 0 0 0 2px rgba(94, 155, 255, 0.5);
         }
         .helto-load-video-controls button,
         .helto-load-video-actions button {
+            background: linear-gradient(180deg, #232d3f, #1b2333);
+            border: 1px solid #3a465c;
+            border-radius: 5px;
+            color: #e7ebf3;
+            font: inherit;
+            height: 28px;
+            min-width: 0;
             cursor: pointer;
             padding: 0 8px;
+            transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
         }
         .helto-load-video-controls button:hover,
         .helto-load-video-actions button:hover {
-            background: #333;
-            border-color: #666;
+            background: linear-gradient(180deg, #2c3850, #232d3f);
+            border-color: #4c5970;
             color: #fff;
         }
         .helto-load-video-icon-btn {
@@ -106,7 +124,7 @@ function injectStyles() {
         }
         .helto-load-video-meta {
             align-items: center;
-            color: #aaa;
+            color: #9aa6bd;
             display: flex;
             min-width: 0;
             overflow: hidden;
@@ -122,10 +140,10 @@ function injectStyles() {
             padding: 2px;
         }
         .helto-load-video-tile {
-            background: #151515;
-            border: 1px solid #3a3a3a;
-            border-radius: 5px;
-            color: #ddd;
+            background: #0a0e16;
+            border: 1px solid #2a3346;
+            border-radius: 6px;
+            color: #e7ebf3;
             cursor: pointer;
             display: grid;
             gap: 5px;
@@ -134,20 +152,24 @@ function injectStyles() {
             overflow: hidden;
             padding: 4px;
             text-align: left;
+            transition: border-color 0.12s ease, box-shadow 0.12s ease;
+        }
+        .helto-load-video-tile:hover {
+            border-color: #3a465c;
         }
         .helto-load-video-tile.selected {
-            border-color: #7aa7ff;
-            box-shadow: 0 0 0 1px #7aa7ff inset;
+            border-color: #f1c75c;
+            box-shadow: 0 0 0 1px #f1c75c inset, 0 0 10px rgba(241, 199, 92, 0.35);
         }
         .helto-load-video-media {
-            background: #050505;
+            background: #070a11;
             min-height: 0;
             overflow: hidden;
             position: relative;
         }
         .helto-load-video-tile img,
         .helto-load-video-tile video {
-            background: #050505;
+            background: #070a11;
             height: 100%;
             object-fit: contain;
             pointer-events: none;

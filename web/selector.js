@@ -603,7 +603,7 @@ app.registerExtension({
             } catch (e) {
                 console.error("Scanning folders failed:", e);
                 if (gridEl) {
-                    gridEl.innerHTML = `<div class="helto-grid-empty" style="color: #ff6b6b; padding: 20px; font-style: normal; text-align: center; width: 100%;">
+                    gridEl.innerHTML = `<div class="helto-grid-empty" style="color: var(--danger, #ec5a6b); padding: 20px; font-style: normal; text-align: center; width: 100%;">
                         <strong>Scan Error:</strong><br>
                         ${e.message || e}<br>
                         <span style="font-size: 11px; opacity: 0.7;">Check browser console.</span>

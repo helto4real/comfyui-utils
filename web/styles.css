@@ -1,24 +1,43 @@
-/* --- CSS Design System for Multi-Image Selector --- */
-@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600&family=Roboto+Mono:wght@400;500&display=swap');
-
+/* --- CSS Design System (Helto Director look & feel) --- */
+/* Shared across every Helto node and window: dark navy surfaces, a gold
+   accent for selection/active state, and a blue focus ring. Mirrors the
+   token vocabulary of the Video Timeline Director (`--htd-*`). */
 :root {
-    --bg-primary: hsl(240, 16%, 10%);
-    --bg-secondary: hsl(240, 14%, 13%);
-    --bg-tertiary: hsl(240, 14%, 7%);
-    --accent-primary: hsl(225, 100%, 75%);
-    --accent-hover: hsl(225, 100%, 82%);
-    --accent-dim: hsla(225, 100%, 75%, 0.15);
-    --border-subtle: hsl(240, 12%, 18%);
-    --border-active: hsl(225, 80%, 65%);
-    --text-primary: hsl(220, 20%, 95%);
-    --text-secondary: hsl(220, 12%, 65%);
-    --text-dim: hsl(220, 8%, 45%);
-    
-    --font-sans: 'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    --font-mono: 'Roboto Mono', monospace;
-    
-    --shadow-main: 0 8px 32px rgba(0, 0, 0, 0.5);
-    --shadow-glow: 0 0 12px hsla(225, 80%, 65%, 0.3);
+    /* Surfaces, deepest inset -> raised */
+    --bg-tertiary: #0d1320;   /* deepest: inputs, grids, viewports */
+    --bg-primary: #151c2a;    /* base panel / container */
+    --bg-secondary: #1b2333;  /* raised: buttons, list items, popovers */
+    --bg-raised: #232d3f;     /* button gradient highlight */
+    --bg-hover: #2c3850;      /* interactive hover surface */
+
+    /* Accent (gold) for selection / active emphasis */
+    --accent-primary: #f1c75c;
+    --accent-hover: #ffd873;
+    --accent-dim: rgba(241, 199, 92, 0.16);
+    --accent-border: rgba(241, 199, 92, 0.55);
+
+    /* Focus (blue) */
+    --focus: #5e9bff;
+    --focus-ring: 0 0 0 2px rgba(94, 155, 255, 0.5);
+
+    /* Borders */
+    --border-subtle: #2a3346;
+    --border-strong: #3a465c;
+    --border-active: #f1c75c;
+
+    /* Text */
+    --text-primary: #e7ebf3;
+    --text-secondary: #9aa6bd;
+    --text-dim: #6f7c95;
+
+    /* Status */
+    --danger: #ec5a6b;
+
+    --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Roboto Mono", monospace;
+
+    --shadow-main: 0 14px 36px rgba(0, 0, 0, 0.55);
+    --shadow-glow: 0 0 10px rgba(241, 199, 92, 0.35);
 }
 
 /* --- Container Core Layout --- */
@@ -87,8 +106,8 @@
 }
 
 .helto-btn-icon {
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-subtle);
+    background: linear-gradient(180deg, var(--bg-raised), var(--bg-secondary));
+    border: 1px solid var(--border-strong);
     color: var(--text-secondary);
     padding: 6px;
     border-radius: 6px;
@@ -99,8 +118,8 @@
     transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .helto-btn-icon:hover {
-    background: hsl(240, 12%, 20%);
-    border-color: hsl(240, 12%, 28%);
+    background: linear-gradient(180deg, var(--bg-hover), var(--bg-raised));
+    border-color: #4c5970;
     color: var(--text-primary);
     transform: translateY(-1px);
 }
@@ -113,8 +132,8 @@
     transform: none;
 }
 .helto-btn-icon:disabled:hover {
-    background: var(--bg-secondary);
-    border-color: var(--border-subtle);
+    background: linear-gradient(180deg, var(--bg-raised), var(--bg-secondary));
+    border-color: var(--border-strong);
     color: var(--text-secondary);
     transform: none;
 }
@@ -160,8 +179,8 @@
     transition: all 0.2s ease;
 }
 .helto-search-input:focus {
-    border-color: var(--border-active);
-    box-shadow: 0 0 0 2px hsla(225, 80%, 65%, 0.15);
+    border-color: var(--focus);
+    box-shadow: var(--focus-ring);
 }
 
 /* --- Privacy Show Any --- */
@@ -236,8 +255,8 @@
 }
 
 .helto-show-any-text:focus {
-    border-color: var(--border-active);
-    box-shadow: 0 0 0 2px hsla(225, 80%, 65%, 0.12);
+    border-color: var(--focus);
+    box-shadow: var(--focus-ring);
 }
 
 .helto-show-any-native-wrap {
@@ -447,13 +466,13 @@
     border-radius: 6px;
     overflow: hidden;
     border: 2px solid transparent;
-    background: hsl(240, 14%, 6%);
+    background: #0a0e16;
     cursor: pointer;
     transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .helto-grid-item:hover {
     transform: scale(1.03);
-    border-color: hsl(240, 12%, 35%);
+    border-color: var(--border-strong);
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
 }
 .helto-grid-item.selected {
@@ -477,7 +496,7 @@
 }
 .helto-thumb.aspect-original {
     object-fit: contain;
-    background: hsl(240, 14%, 4%);
+    background: #070a11;
 }
 
 .helto-item-checkmark {
@@ -567,14 +586,14 @@
     transition: all 0.2s;
 }
 .helto-clear-btn:hover {
-    background: hsl(0, 50%, 20%);
-    border-color: hsl(0, 50%, 35%);
-    color: hsl(0, 100%, 75%);
+    background: linear-gradient(180deg, #5a2330, #471b25);
+    border-color: #8f3a44;
+    color: #ffd6dc;
 }
 .helto-delete-selected-btn:hover {
-    background: hsl(0, 60%, 20%);
-    border-color: hsl(0, 60%, 38%);
-    color: hsl(0, 100%, 78%);
+    background: linear-gradient(180deg, #6e2937, #57212c);
+    border-color: #d0505f;
+    color: #fff3f5;
 }
 .helto-delete-selected-btn.is-deleting svg {
     opacity: 0.7;
@@ -631,7 +650,7 @@
 }
 .helto-selected-preview-close:hover {
     color: var(--text-primary);
-    border-color: hsl(240, 12%, 28%);
+    border-color: var(--border-strong);
 }
 .helto-selected-preview-grid {
     display: grid;
@@ -649,7 +668,7 @@
     aspect-ratio: 1 / 1;
     overflow: hidden;
     border-radius: 6px;
-    background: hsl(240, 14%, 6%);
+    background: #0a0e16;
     border: 1px solid var(--border-subtle);
 }
 .helto-selected-preview-thumb {
@@ -664,7 +683,7 @@
 }
 .helto-selected-preview-thumb.aspect-original {
     object-fit: contain;
-    background: hsl(240, 14%, 4%);
+    background: #070a11;
 }
 .helto-selected-preview-remove {
     position: absolute;
@@ -675,8 +694,8 @@
     height: 24px;
     border: 1px solid rgba(255, 255, 255, 0.35);
     border-radius: 50%;
-    background: hsla(0, 50%, 18%, 0.92);
-    color: hsl(0, 100%, 85%);
+    background: rgba(58, 23, 32, 0.92);
+    color: #ffd6dc;
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -686,7 +705,7 @@
     transition: all 0.15s;
 }
 .helto-selected-preview-remove:hover {
-    background: hsl(0, 65%, 34%);
+    background: var(--danger);
     color: white;
     transform: scale(1.06);
 }
@@ -721,7 +740,7 @@
 }
 
 .helto-modal-card {
-    background: linear-gradient(135deg, hsla(240, 15%, 15%, 0.8), hsla(240, 15%, 11%, 0.95));
+    background: linear-gradient(135deg, rgba(27, 35, 51, 0.92), rgba(13, 19, 32, 0.96));
     border: 1px solid var(--border-subtle);
     border-radius: 12px;
     width: 440px;
@@ -805,12 +824,13 @@
     transition: border-color 0.2s;
 }
 .folder-add-input:focus {
-    border-color: var(--border-active);
+    border-color: var(--focus);
+    box-shadow: var(--focus-ring);
 }
 .folder-add-btn {
-    background: var(--border-active);
-    color: white;
-    border: none;
+    background: linear-gradient(180deg, #4f4322, #3c3318);
+    color: var(--accent-hover);
+    border: 1px solid var(--accent-border);
     border-radius: 6px;
     width: 32px;
     cursor: pointer;
@@ -819,10 +839,11 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: background 0.15s;
+    transition: background 0.15s, color 0.15s;
 }
 .folder-add-btn:hover {
-    background: var(--accent-hover);
+    background: linear-gradient(180deg, #5b4d27, #46391b);
+    color: #fff3cf;
 }
 
 .folder-modal-list-header {
@@ -893,7 +914,7 @@
     transition: color 0.15s;
 }
 .folder-item-del-btn:hover {
-    color: hsl(0, 100%, 75%);
+    color: var(--danger);
 }
 
 /* --- Properties Modal Settings --- */
@@ -990,28 +1011,32 @@
     transform: scale(0.97);
 }
 .btn-primary {
-    background: var(--border-active);
-    color: white;
+    background: linear-gradient(180deg, #4f4322, #3c3318);
+    color: var(--accent-hover);
+    border: 1px solid var(--accent-border);
 }
 .btn-primary:hover {
-    background: var(--accent-hover);
+    background: linear-gradient(180deg, #5b4d27, #46391b);
+    color: #fff3cf;
 }
 .btn-secondary {
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-subtle);
+    background: linear-gradient(180deg, var(--bg-raised), var(--bg-secondary));
+    border: 1px solid var(--border-strong);
     color: var(--text-secondary);
 }
 .btn-secondary:hover {
-    background: hsl(240, 12%, 18%);
+    background: linear-gradient(180deg, var(--bg-hover), var(--bg-raised));
     color: var(--text-primary);
 }
 .btn-danger {
-    background: hsl(0, 60%, 25%);
-    color: hsl(0, 100%, 85%);
-    border: 1px solid hsl(0, 60%, 35%);
+    background: linear-gradient(180deg, #5a2330, #471b25);
+    color: #ffd6dc;
+    border: 1px solid #8f3a44;
 }
 .btn-danger:hover {
-    background: hsl(0, 60%, 35%);
+    background: linear-gradient(180deg, #6e2937, #57212c);
+    border-color: #d0505f;
+    color: #fff3f5;
 }
 .btn-full {
     width: 100%;
@@ -1034,7 +1059,8 @@
     transition: border-color 0.15s;
 }
 .helto-select:focus {
-    border-color: var(--border-active);
+    border-color: var(--focus);
+    box-shadow: var(--focus-ring);
 }
 
 .helto-prompt-enhancer-section {
@@ -1069,7 +1095,8 @@
 }
 .helto-prompt-enhancer-input:focus,
 .helto-prompt-enhancer-number:focus {
-    border-color: var(--border-active);
+    border-color: var(--focus);
+    box-shadow: var(--focus-ring);
 }
 .helto-prompt-enhancer-prompt-actions {
     justify-content: flex-start;
@@ -1105,8 +1132,8 @@
     width: 100%;
 }
 .helto-prompt-enhancer-user-prompt:focus {
-    border-color: var(--border-active);
-    box-shadow: 0 0 0 2px hsla(225, 80%, 65%, 0.12);
+    border-color: var(--focus);
+    box-shadow: var(--focus-ring);
 }
 .helto-prompt-enhancer-suggestions {
     background: var(--bg-secondary);
@@ -1205,11 +1232,12 @@
     width: 100%;
 }
 .helto-prompt-enhancer-textarea:focus {
-    border-color: var(--border-active);
+    border-color: var(--focus);
+    box-shadow: var(--focus-ring);
 }
 .helto-prompt-enhancer-prompt-hidden {
-    background: #0c0d12 !important;
-    border-color: #0c0d12 !important;
+    background: var(--bg-tertiary) !important;
+    border-color: var(--bg-tertiary) !important;
     color: transparent !important;
     -webkit-text-fill-color: transparent !important;
     caret-color: transparent !important;
@@ -1357,9 +1385,9 @@
     z-index: 100001;
 }
 .helto-preview-close:hover {
-    background: #ff4d4d;
+    background: var(--danger);
     color: white;
-    border-color: #ff4d4d;
+    border-color: var(--danger);
     transform: scale(1.1);
 }
 
@@ -1452,23 +1480,28 @@
     min-width: 52px;
     height: 30px;
     border-radius: 6px;
-    border: 1px solid var(--border-subtle);
-    background: var(--bg-primary);
+    border: 1px solid var(--border-strong);
+    background: linear-gradient(180deg, var(--bg-raised), var(--bg-secondary));
     color: var(--text-primary);
     cursor: pointer;
     font-family: var(--font-sans);
     font-size: 12px;
     line-height: 1;
     padding: 0 10px;
+    transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
 }
-.helto-mask-editor-btn:hover,
+.helto-mask-editor-btn:hover {
+    background: linear-gradient(180deg, var(--bg-hover), var(--bg-raised));
+    border-color: #4c5970;
+    color: #fff;
+}
 .helto-mask-editor-btn.active {
-    background: var(--accent-color, #4f8cff);
-    border-color: var(--accent-color, #4f8cff);
-    color: white;
+    background: linear-gradient(180deg, #4f4322, #3c3318);
+    border-color: var(--accent-border);
+    color: var(--accent-hover);
 }
 .helto-mask-editor-btn.primary {
-    background: #2f9e65;
+    background: linear-gradient(180deg, #2f9e65, #268554);
     border-color: #2f9e65;
     color: white;
 }
@@ -1499,7 +1532,7 @@
     align-items: center;
     justify-content: center;
     overflow: auto;
-    background: #111;
+    background: #0a0e16;
 }
 .helto-mask-editor-stage.actual-size {
     align-items: flex-start;
