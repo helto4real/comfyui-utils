@@ -826,6 +826,73 @@ class NodeSchemaContractTests(unittest.TestCase):
             ],
         )
 
+    def test_image_comparer_accepts_optional_images_and_masks(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+
+        schema = extension_module.ImageComparer.define_schema()
+
+        self.assertEqual(
+            [input_def.id for input_def in schema.inputs],
+            ["original", "new", "original_mask", "new_mask", "privacy_mode"],
+        )
+        optional_inputs = {input_def.id: input_def.kwargs.get("optional") for input_def in schema.inputs}
+        self.assertTrue(optional_inputs["original"])
+        self.assertTrue(optional_inputs["new"])
+        self.assertTrue(optional_inputs["original_mask"])
+        self.assertTrue(optional_inputs["new_mask"])
+        self.assertFalse(optional_inputs["privacy_mode"])
+
+    def test_image_comparer_masks_image_preview_before_saving(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        module_globals = extension_module.ImageComparer.execute.__func__.__globals__
+        saved = []
+
+        def fake_save_images(images, filename_prefix, **_kwargs):
+            saved.append((filename_prefix, images.clone()))
+            return [{"filename": filename_prefix, "type": "temp", "subfolder": ""}]
+
+        module_globals["ui"].ImageSaveHelper.save_images = fake_save_images
+        image = torch.ones((1, 2, 2, 3), dtype=torch.float32)
+        mask = torch.tensor([[[0.0, 1.0], [0.0, 0.0]]], dtype=torch.float32)
+
+        result = extension_module.ImageComparer.execute(
+            original=image,
+            original_mask=mask,
+            privacy_mode=False,
+        )
+
+        self.assertEqual(result.kwargs["ui"]["b_images"], [])
+        self.assertEqual(saved[0][0], "helto.compare.original")
+        preview = saved[0][1]
+        self.assertEqual(tuple(preview.shape), (1, 2, 2, 3))
+        self.assertEqual(float(preview[0, 0, 0, 0]), 1.0)
+        self.assertEqual(float(preview[0, 0, 1, 0]), 0.0)
+
+    def test_image_comparer_outputs_mask_preview_when_image_missing(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        module_globals = extension_module.ImageComparer.execute.__func__.__globals__
+        saved = []
+
+        def fake_save_images(images, filename_prefix, **_kwargs):
+            saved.append((filename_prefix, images.clone()))
+            return [{"filename": filename_prefix, "type": "temp", "subfolder": ""}]
+
+        module_globals["ui"].ImageSaveHelper.save_images = fake_save_images
+        mask = torch.tensor([[0.0, 1.0], [0.25, 0.5]], dtype=torch.float32)
+
+        result = extension_module.ImageComparer.execute(
+            new_mask=mask,
+            privacy_mode=False,
+        )
+
+        self.assertEqual(result.kwargs["ui"]["a_images"], [])
+        self.assertEqual(saved[0][0], "helto.compare.new")
+        preview = saved[0][1]
+        self.assertEqual(tuple(preview.shape), (1, 2, 2, 3))
+        self.assertTrue(torch.equal(preview[0, :, :, 0], mask))
+        self.assertTrue(torch.equal(preview[0, :, :, 1], mask))
+        self.assertTrue(torch.equal(preview[0, :, :, 2], mask))
+
     def test_custom_node_style_import_does_not_require_top_level_selector_package(self):
         extension_module = self._import_extension_with_fake_comfy_runtime(isolate_custom_node_root=True)
 

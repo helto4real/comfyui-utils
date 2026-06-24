@@ -214,8 +214,10 @@ Inputs:
 
 | Input | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `original` | Image | required | Baseline image batch. |
-| `new` | Image | required | Candidate image batch. |
+| `original` | Image | optional | Baseline image batch. Works as before when no mask is connected. |
+| `new` | Image | optional | Candidate image batch. Works as before when no mask is connected. |
+| `original_mask` | Mask | optional | When connected with `original`, masked areas are previewed as black. When connected without `original`, the mask is previewed directly. |
+| `new_mask` | Mask | optional | When connected with `new`, masked areas are previewed as black. When connected without `new`, the mask is previewed directly. |
 | `privacy_mode` | Boolean | `True` | When true, preview images are written through the encrypted private-media path. |
 
 Outputs: none. The node saves preview images and returns UI data for the frontend widget.

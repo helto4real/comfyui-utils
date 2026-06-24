@@ -336,6 +336,8 @@ class ImageComparerPreviewWidget {
             }
         } else if (this.originalImage) {
             drawContainedImage(ctx, this.originalImage, 0, y, nodeWidth, height);
+        } else if (this.newImage) {
+            drawContainedImage(ctx, this.newImage, 0, y, nodeWidth, height);
         }
 
         ctx.restore();
