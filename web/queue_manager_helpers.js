@@ -315,6 +315,10 @@ export function runCanBeLoaded(run) {
     return !!run?.prompt?.workflow;
 }
 
+export function runCanBeRerun(run) {
+    return !!run?.prompt?.workflow && !!(run.prompt.output || run.prompt.prompt);
+}
+
 function extensionFromFilename(filename) {
     const clean = String(filename || "").split(/[?#]/, 1)[0];
     const index = clean.lastIndexOf(".");

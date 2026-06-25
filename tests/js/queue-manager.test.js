@@ -15,6 +15,7 @@ import {
     promptWorkflowTitle,
     queueSummary,
     resolveQueueRunTitle,
+    runCanBeRerun,
 } from "../../web/queue_manager_helpers.js";
 
 test("promptWorkflowTitle reads workflow metadata with fallback", () => {
@@ -90,6 +91,13 @@ test("moveRunToHistory removes current run and prepends completed history", () =
     assert.equal(next.history[0].status, QUEUE_STATUS_COMPLETED);
     assert.equal(next.history[0].completed_at, 2000);
     assert.deepEqual(queueSummary(next), { pending: 0, running: 0, history: 1 });
+});
+
+test("runCanBeRerun requires stored workflow and executable prompt data", () => {
+    assert.equal(runCanBeRerun({ prompt: { workflow: {}, output: { 1: {} } } }), true);
+    assert.equal(runCanBeRerun({ prompt: { workflow: {}, prompt: { 1: {} } } }), true);
+    assert.equal(runCanBeRerun({ prompt: { workflow: {} } }), false);
+    assert.equal(runCanBeRerun({ prompt: { output: { 1: {} } } }), false);
 });
 
 test("latestMediaPreviewFromHistory finds private image outputs", () => {
@@ -190,5 +198,7 @@ test("queue manager row markup uses compact one-line container", () => {
 
     assert.match(source, /class="helto-qm-row-line"/);
     assert.match(source, /grid-template-columns: minmax\(0, 1fr\) auto auto/);
+    assert.match(source, /data-action="rerun-history"/);
+    assert.match(source, /rerunHistoryRun/);
     assert.doesNotMatch(source, /<div class="helto-qm-row-title"[^>]*>\$\{escapeHtml\(run\.title\)\}<\/div>\s*<div class="helto-qm-row-meta">/);
 });

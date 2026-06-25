@@ -24,6 +24,7 @@ import {
     normalizeQueueState,
     queueSummary,
     runCanBeLoaded,
+    runCanBeRerun,
 } from "./queue_manager_helpers.js";
 
 const STATE_ROUTE = "/helto_queue_manager/state";
@@ -40,6 +41,7 @@ const QUEUE_ICONS = {
     trash: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v5"/><path d="M14 11v5"/></svg>`,
     clear: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>`,
     preview: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6Z"/><circle cx="12" cy="12" r="3"/></svg>`,
+    rerun: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>`,
     close: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>`,
 };
 
@@ -835,6 +837,16 @@ class HeltoQueueManager {
         await app.loadGraphData(cloneJson(run.prompt.workflow));
     }
 
+    async rerunHistoryRun(runId) {
+        const run = this.findRun(runId, "history");
+        if (!runCanBeRerun(run)) return;
+        this.activeTab = "running";
+        this.preview = null;
+        await this.enqueuePromptData(cloneJson(run.prompt), {
+            title: run.title,
+        });
+    }
+
     deletePendingRun(runId) {
         const run = this.state.queue.find((item) => item.id === runId);
         if (!run || run.status !== QUEUE_STATUS_PENDING) return;
@@ -900,6 +912,10 @@ class HeltoQueueManager {
         const error = run.error ? escapeHtml(run.error) : "";
         const previewTitle = preview ? `Preview latest ${preview.kind}` : "No image or video output available";
         const previewButton = `<button class="helto-qm-icon-btn" data-action="preview-${source}" data-run-id="${escapeHtml(run.id)}" title="${escapeHtml(previewTitle)}" aria-label="${escapeHtml(previewTitle)}" ${preview ? "" : "disabled"}>${QUEUE_ICONS.preview}</button>`;
+        const rerunTitle = runCanBeRerun(run) ? "Rerun workflow" : "Cannot rerun this history item";
+        const rerunButton = source === "history"
+            ? `<button class="helto-qm-icon-btn" data-action="rerun-history" data-run-id="${escapeHtml(run.id)}" title="${rerunTitle}" aria-label="${rerunTitle}" ${runCanBeRerun(run) ? "" : "disabled"}>${QUEUE_ICONS.rerun}</button>`
+            : "";
         const deleteButton = source === "history" || run.status === QUEUE_STATUS_PENDING
             ? `<button class="helto-qm-icon-btn is-danger" data-action="delete-${source}" data-run-id="${escapeHtml(run.id)}" title="Delete ${source === "history" ? "history run" : "queued run"}" aria-label="Delete ${source === "history" ? "history run" : "queued run"}">${QUEUE_ICONS.trash}</button>`
             : "";
@@ -915,6 +931,7 @@ class HeltoQueueManager {
                     </div>
                     <div class="helto-qm-actions">
                         ${previewButton}
+                        ${rerunButton}
                         <button class="helto-qm-icon-btn" data-action="load-${source}" data-run-id="${escapeHtml(run.id)}" title="Load workflow" aria-label="Load workflow" ${runCanBeLoaded(run) ? "" : "disabled"}>${QUEUE_ICONS.load}</button>
                         ${deleteButton}
                     </div>
@@ -967,6 +984,9 @@ class HeltoQueueManager {
         });
         this.root.querySelectorAll("[data-action='preview-history']").forEach((button) => {
             button.addEventListener("click", () => this.previewRun(button.dataset.runId, "history"));
+        });
+        this.root.querySelectorAll("[data-action='rerun-history']").forEach((button) => {
+            button.addEventListener("click", () => this.rerunHistoryRun(button.dataset.runId));
         });
         this.root.querySelectorAll("[data-action='delete-queue']").forEach((button) => {
             button.addEventListener("click", () => this.deletePendingRun(button.dataset.runId));
