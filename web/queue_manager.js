@@ -439,6 +439,9 @@ function injectStyles() {
             border-color: var(--helto-danger-border);
             color: var(--helto-text);
         }
+        .helto-qm-time-pill {
+            max-width: 180px;
+        }
         .helto-qm-error-pill {
             justify-content: center;
             max-width: 24px;
@@ -926,8 +929,7 @@ class HeltoQueueManager {
                     <div class="helto-qm-row-meta">
                         <span class="helto-qm-pill ${statusClass}" title="${error || escapeHtml(statusText)}">${escapeHtml(statusText)}</span>
                         ${error ? `<span class="helto-qm-pill helto-qm-error-pill error" title="${error}">!</span>` : ""}
-                        ${time ? `<span class="helto-qm-pill" title="${escapeHtml(time)}">${escapeHtml(time)}</span>` : ""}
-                        ${run.prompt_id ? `<span class="helto-qm-pill" title="${escapeHtml(run.prompt_id)}">${escapeHtml(run.prompt_id.slice(0, 8))}</span>` : ""}
+                        ${time ? `<span class="helto-qm-pill helto-qm-time-pill" title="${escapeHtml(time)}">${escapeHtml(time)}</span>` : ""}
                     </div>
                     <div class="helto-qm-actions">
                         ${previewButton}

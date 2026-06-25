@@ -200,5 +200,7 @@ test("queue manager row markup uses compact one-line container", () => {
     assert.match(source, /grid-template-columns: minmax\(0, 1fr\) auto auto/);
     assert.match(source, /data-action="rerun-history"/);
     assert.match(source, /rerunHistoryRun/);
+    assert.match(source, /helto-qm-time-pill/);
+    assert.doesNotMatch(source, /run\.prompt_id\.slice\(0, 8\)/);
     assert.doesNotMatch(source, /<div class="helto-qm-row-title"[^>]*>\$\{escapeHtml\(run\.title\)\}<\/div>\s*<div class="helto-qm-row-meta">/);
 });
