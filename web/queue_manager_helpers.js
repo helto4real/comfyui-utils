@@ -5,6 +5,18 @@ export const QUEUE_STATUS_COMPLETED = "completed";
 export const QUEUE_STATUS_ERROR = "error";
 
 const RUNTIME_QUEUE_STATUSES = new Set([QUEUE_STATUS_SUBMITTING, QUEUE_STATUS_RUNNING]);
+const DEFAULT_RUN_TITLE = "Untitled run";
+const WORKFLOW_FILE_RE = /\.json$/i;
+const VIDEO_EXTENSIONS = new Set([".avi", ".m4v", ".mkv", ".mov", ".mp4", ".webm"]);
+const IMAGE_EXTENSIONS = new Set([".apng", ".avif", ".gif", ".jpeg", ".jpg", ".png", ".webp"]);
+const MEDIA_OUTPUT_KEYS = [
+    "helto_private_images",
+    "images",
+    "videos",
+    "gifs",
+    "b_images",
+    "a_images",
+];
 
 function coerceQueueNumber(value) {
     if (typeof value === "number" && Number.isFinite(value)) {
@@ -36,19 +48,78 @@ export function cloneJson(value) {
     return JSON.parse(JSON.stringify(value));
 }
 
-export function promptWorkflowTitle(promptData, fallback = "Workflow") {
+function basenameWithoutWorkflowExtension(value) {
+    const name = String(value ?? "").trim().split(/[\\/]/).pop()?.trim() || "";
+    return name.replace(WORKFLOW_FILE_RE, "").trim() || name;
+}
+
+function cleanTitleCandidate(value, { fileLike = false } = {}) {
+    if (typeof value !== "string") {
+        return null;
+    }
+    const trimmed = value.trim();
+    if (!trimmed) {
+        return null;
+    }
+    if (fileLike || trimmed.includes("/") || trimmed.includes("\\") || WORKFLOW_FILE_RE.test(trimmed)) {
+        return basenameWithoutWorkflowExtension(trimmed);
+    }
+    return trimmed;
+}
+
+function collectWorkflowTitleCandidates(value) {
+    if (Array.isArray(value)) {
+        return value.flatMap(collectWorkflowTitleCandidates);
+    }
+    if (typeof value === "string") {
+        return [cleanTitleCandidate(value)];
+    }
+    if (!value || typeof value !== "object") {
+        return [];
+    }
+    return [
+        cleanTitleCandidate(value.name),
+        cleanTitleCandidate(value.title),
+        cleanTitleCandidate(value.workflow_name),
+        cleanTitleCandidate(value.filename, { fileLike: true }),
+        cleanTitleCandidate(value.file, { fileLike: true }),
+        cleanTitleCandidate(value.path, { fileLike: true }),
+    ];
+}
+
+export function resolveQueueRunTitle(promptData, context = {}) {
     const workflow = promptData?.workflow;
     const candidates = [
+        ...collectWorkflowTitleCandidates(context.activeWorkflow),
+        cleanTitleCandidate(context.workflowName),
+        cleanTitleCandidate(context.workflowTitle),
+        cleanTitleCandidate(context.name),
+        cleanTitleCandidate(context.title),
+        cleanTitleCandidate(context.filename, { fileLike: true }),
+        cleanTitleCandidate(context.path, { fileLike: true }),
         workflow?.name,
         workflow?.title,
+        workflow?.filename,
+        workflow?.file,
+        workflow?.path,
         workflow?.extra?.name,
         workflow?.extra?.title,
         workflow?.extra?.workflow_name,
+        workflow?.extra?.filename,
+        workflow?.extra?.file,
+        workflow?.extra?.path,
         workflow?.metadata?.name,
         workflow?.metadata?.title,
-    ];
-    const found = candidates.find((value) => typeof value === "string" && value.trim());
-    return found ? found.trim() : fallback;
+        workflow?.metadata?.filename,
+        workflow?.metadata?.file,
+        workflow?.metadata?.path,
+    ].map((value) => cleanTitleCandidate(value));
+    const found = candidates.find(Boolean);
+    return found || context.fallback || DEFAULT_RUN_TITLE;
+}
+
+export function promptWorkflowTitle(promptData, fallback = "Workflow") {
+    return resolveQueueRunTitle(promptData, { fallback });
 }
 
 export function formatQueueTime(timestamp) {
@@ -65,10 +136,11 @@ export function formatQueueTime(timestamp) {
 export function createQueueRun(promptData, options = {}) {
     const now = Number.isFinite(Number(options.now)) ? Number(options.now) : Date.now();
     const id = options.id || globalThis.crypto?.randomUUID?.() || `helto-run-${now}-${Math.random().toString(36).slice(2)}`;
+    const explicitTitle = cleanTitleCandidate(options.title);
     return {
         id,
         prompt_id: options.promptId || null,
-        title: options.title || promptWorkflowTitle(promptData, `Workflow ${new Date(now).toLocaleString()}`),
+        title: explicitTitle || resolveQueueRunTitle(promptData, options.titleContext || {}),
         status: QUEUE_STATUS_PENDING,
         created_at: now,
         started_at: null,
@@ -85,7 +157,7 @@ export function normalizeQueueRun(run) {
     const normalized = {
         id: "",
         prompt_id: null,
-        title: "Workflow",
+        title: DEFAULT_RUN_TITLE,
         status: QUEUE_STATUS_PENDING,
         created_at: Date.now(),
         started_at: null,
@@ -99,7 +171,7 @@ export function normalizeQueueRun(run) {
     };
     normalized.id = String(normalized.id || globalThis.crypto?.randomUUID?.() || `helto-run-${Date.now()}`);
     normalized.prompt_id = typeof normalized.prompt_id === "string" && normalized.prompt_id ? normalized.prompt_id : null;
-    normalized.title = typeof normalized.title === "string" && normalized.title.trim() ? normalized.title.trim() : "Workflow";
+    normalized.title = cleanTitleCandidate(normalized.title) || DEFAULT_RUN_TITLE;
     normalized.status = typeof normalized.status === "string" && normalized.status ? normalized.status : QUEUE_STATUS_PENDING;
     normalized.front = !!normalized.front;
     normalized.number = coerceQueueNumber(normalized.number);
@@ -241,6 +313,112 @@ export function clearQueueHistory(state) {
 
 export function runCanBeLoaded(run) {
     return !!run?.prompt?.workflow;
+}
+
+function extensionFromFilename(filename) {
+    const clean = String(filename || "").split(/[?#]/, 1)[0];
+    const index = clean.lastIndexOf(".");
+    return index >= 0 ? clean.slice(index).toLowerCase() : "";
+}
+
+function mediaKindForRecord(record, output) {
+    const contentType = String(record?.content_type || "").toLowerCase();
+    if (contentType.startsWith("video/")) {
+        return "video";
+    }
+    if (contentType.startsWith("image/")) {
+        return "image";
+    }
+
+    const extension = extensionFromFilename(record?.filename);
+    if (VIDEO_EXTENSIONS.has(extension)) {
+        return "video";
+    }
+    if (IMAGE_EXTENSIONS.has(extension)) {
+        return "image";
+    }
+    if (output?.animated?.[0] === true) {
+        return "video";
+    }
+    return null;
+}
+
+function normalizeMediaPreviewRecord(record, output, nodeId, key, index) {
+    if (!record || typeof record !== "object") {
+        return null;
+    }
+    const hasPrivateRoute = !!record.private && typeof record.token === "string" && record.token.trim();
+    const hasViewRoute = typeof record.filename === "string" && record.filename.trim() && typeof record.type === "string" && record.type.trim();
+    if (!hasPrivateRoute && !hasViewRoute) {
+        return null;
+    }
+    const kind = mediaKindForRecord(record, output);
+    if (!kind) {
+        return null;
+    }
+    return {
+        kind,
+        record,
+        nodeId,
+        key,
+        index,
+        label: record.filename || `${kind} preview`,
+    };
+}
+
+export function latestMediaPreviewFromHistory(history) {
+    const outputs = history?.outputs;
+    if (!outputs || typeof outputs !== "object") {
+        return null;
+    }
+
+    for (const [nodeId, output] of Object.entries(outputs).reverse()) {
+        if (!output || typeof output !== "object") {
+            continue;
+        }
+        const keys = [
+            ...MEDIA_OUTPUT_KEYS.filter((key) => Array.isArray(output[key])),
+            ...Object.keys(output).filter((key) => !MEDIA_OUTPUT_KEYS.includes(key) && Array.isArray(output[key])),
+        ];
+        for (const key of keys) {
+            const records = output[key];
+            for (let index = records.length - 1; index >= 0; index -= 1) {
+                const preview = normalizeMediaPreviewRecord(records[index], output, nodeId, key, index);
+                if (preview) {
+                    return preview;
+                }
+            }
+        }
+    }
+    return null;
+}
+
+function appendOptionalParams(route, ...parts) {
+    return `${route}${parts.filter(Boolean).join("")}`;
+}
+
+export function mediaRecordToPreviewUrl(preview, options = {}) {
+    const record = preview?.record || preview;
+    if (!record || typeof record !== "object") {
+        return null;
+    }
+    const apiURL = typeof options.apiURL === "function" ? options.apiURL : (route) => route;
+    const randParam = typeof options.getRandParam === "function" ? options.getRandParam() : "";
+    if (record.private && record.token) {
+        const params = new URLSearchParams({ token: record.token });
+        return apiURL(appendOptionalParams(`/helto_utils/private_media?${params.toString()}`, randParam));
+    }
+
+    if (!record.filename || !record.type) {
+        return null;
+    }
+    const params = new URLSearchParams({
+        filename: record.filename,
+        type: record.type,
+        subfolder: record.subfolder ?? "",
+    });
+    const previewFormatParam = typeof options.getPreviewFormatParam === "function" ? options.getPreviewFormatParam() : "";
+    return apiURL(appendOptionalParams(`/view?${params.toString()}`, previewFormatParam, randParam));
 }
 
 export function queueSummary(state) {

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -7,10 +8,13 @@ import {
     QUEUE_STATUS_RUNNING,
     createDefaultQueueState,
     createQueueRun,
+    latestMediaPreviewFromHistory,
+    mediaRecordToPreviewUrl,
     moveRunToHistory,
     normalizeQueueState,
     promptWorkflowTitle,
     queueSummary,
+    resolveQueueRunTitle,
 } from "../../web/queue_manager_helpers.js";
 
 test("promptWorkflowTitle reads workflow metadata with fallback", () => {
@@ -18,10 +22,22 @@ test("promptWorkflowTitle reads workflow metadata with fallback", () => {
     assert.equal(promptWorkflowTitle({ workflow: {} }, "Untitled"), "Untitled");
 });
 
+test("resolveQueueRunTitle prefers active workflow names and cleans filenames", () => {
+    assert.equal(
+        resolveQueueRunTitle(
+            { workflow: { name: "Serialized name" } },
+            { activeWorkflow: { filename: "/tmp/Long Workflow Name.json" } },
+        ),
+        "Long Workflow Name",
+    );
+    assert.equal(resolveQueueRunTitle({ workflow: {} }), "Untitled run");
+});
+
 test("createQueueRun leaves queue number empty when not supplied", () => {
     const run = createQueueRun({ workflow: {}, output: {} }, { id: "run-default", now: 1000 });
 
     assert.equal(run.number, null);
+    assert.equal(run.title, "Untitled run");
     assert.equal(normalizeQueueState({ queue: [run] }).queue[0].number, null);
 });
 
@@ -74,4 +90,105 @@ test("moveRunToHistory removes current run and prepends completed history", () =
     assert.equal(next.history[0].status, QUEUE_STATUS_COMPLETED);
     assert.equal(next.history[0].completed_at, 2000);
     assert.deepEqual(queueSummary(next), { pending: 0, running: 0, history: 1 });
+});
+
+test("latestMediaPreviewFromHistory finds private image outputs", () => {
+    const preview = latestMediaPreviewFromHistory({
+        outputs: {
+            7: {
+                helto_private_images: [{
+                    filename: "secret.png",
+                    type: "private",
+                    private: true,
+                    token: "abc.def",
+                    content_type: "image/png",
+                }],
+                images: [],
+            },
+        },
+    });
+
+    assert.equal(preview.kind, "image");
+    assert.equal(preview.record.token, "abc.def");
+    assert.equal(preview.key, "helto_private_images");
+});
+
+test("latestMediaPreviewFromHistory finds standard image outputs", () => {
+    const preview = latestMediaPreviewFromHistory({
+        outputs: {
+            9: {
+                images: [
+                    { filename: "old.png", subfolder: "", type: "temp" },
+                    { filename: "new.png", subfolder: "run", type: "output" },
+                ],
+            },
+        },
+    });
+
+    assert.equal(preview.kind, "image");
+    assert.equal(preview.record.filename, "new.png");
+});
+
+test("latestMediaPreviewFromHistory detects video outputs", () => {
+    const preview = latestMediaPreviewFromHistory({
+        outputs: {
+            12: {
+                images: [{ filename: "clip.mp4", subfolder: "helto_save_video_advanced", type: "temp" }],
+                animated: [true],
+            },
+        },
+    });
+
+    assert.equal(preview.kind, "video");
+    assert.equal(preview.record.filename, "clip.mp4");
+});
+
+test("latestMediaPreviewFromHistory detects private video outputs", () => {
+    const preview = latestMediaPreviewFromHistory({
+        outputs: {
+            13: {
+                images: [{
+                    filename: "clip.mp4",
+                    type: "private",
+                    private: true,
+                    token: "video.token",
+                    content_type: "video/mp4",
+                }],
+                animated: [true],
+            },
+        },
+    });
+
+    assert.equal(preview.kind, "video");
+    assert.equal(preview.record.token, "video.token");
+});
+
+test("latestMediaPreviewFromHistory ignores unsupported outputs", () => {
+    assert.equal(latestMediaPreviewFromHistory({ outputs: { 1: { helto_pause_control: [{ mode: "ready" }] } } }), null);
+});
+
+test("mediaRecordToPreviewUrl builds private and view URLs", () => {
+    const privateUrl = mediaRecordToPreviewUrl(
+        { record: { private: true, token: "abc.def" } },
+        { apiURL: (route) => `/api${route}`, getRandParam: () => "&r=1" },
+    );
+    const imageUrl = mediaRecordToPreviewUrl(
+        { record: { filename: "new.png", subfolder: "run", type: "output" } },
+        {
+            apiURL: (route) => `/api${route}`,
+            getPreviewFormatParam: () => "&format=webp",
+            getRandParam: () => "&r=2",
+        },
+    );
+
+    assert.equal(privateUrl, "/api/helto_utils/private_media?token=abc.def&r=1");
+    assert.equal(imageUrl, "/api/view?filename=new.png&type=output&subfolder=run&format=webp&r=2");
+});
+
+test("queue manager row markup uses compact one-line container", () => {
+    const source = readFileSync(new URL("../../web/queue_manager.js", import.meta.url), "utf8");
+
+    assert.match(source, /class="helto-qm-row-line"/);
+    assert.match(source, /grid-template-columns: minmax\(0, 1fr\) auto auto/);
+    assert.doesNotMatch(source, /<div class="helto-qm-row-title"[^>]*>\$\{escapeHtml\(run\.title\)\}<\/div>\s*<div class="helto-qm-row-meta">/);
 });
