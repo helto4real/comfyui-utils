@@ -176,6 +176,34 @@ function injectStyles() {
             --helto-transition: 0.12s ease;
             --helto-ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
         }
+        @keyframes heltoQmPulse {
+            0% {
+                box-shadow: var(--helto-shadow-glow);
+                border-color: var(--helto-accent-border);
+            }
+            100% {
+                box-shadow: 0 0 16px rgba(241, 199, 92, 0.55);
+                border-color: var(--helto-accent-strong);
+            }
+        }
+        @keyframes heltoQmShimmer {
+            0%, 18% {
+                transform: translateX(-120%);
+            }
+            100% {
+                transform: translateX(220%);
+            }
+        }
+        @keyframes heltoQmDot {
+            0%, 100% {
+                opacity: 1;
+                transform: scale(1);
+            }
+            50% {
+                opacity: 0.4;
+                transform: scale(0.7);
+            }
+        }
         .HeltoQueueManagerIcon:before {
             content: "Q";
             color: var(--helto-accent);
@@ -441,10 +469,36 @@ function injectStyles() {
             grid-template-columns: minmax(0, 1fr) auto auto;
             min-height: 28px;
             min-width: 0;
+            position: relative;
+            z-index: 1;
         }
         .helto-qm-row.running {
             border-color: var(--helto-accent-border);
             box-shadow: var(--helto-shadow-glow);
+            overflow: hidden;
+            position: relative;
+            animation: heltoQmPulse 2s ease-in-out infinite alternate;
+        }
+        .helto-qm-row.running::after {
+            content: "";
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            background: linear-gradient(100deg, transparent 30%, rgba(241, 199, 92, 0.14) 50%, transparent 70%);
+            transform: translateX(-120%);
+            animation: heltoQmShimmer 2.8s ease-in-out infinite;
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .helto-qm-row.running {
+                animation: none;
+            }
+            .helto-qm-row.running::after {
+                animation: none;
+                display: none;
+            }
+            .helto-qm-pill.running::before {
+                animation: none;
+            }
         }
         .helto-qm-row.error {
             border-color: var(--helto-danger-border);
@@ -490,6 +544,15 @@ function injectStyles() {
             background: var(--helto-accent-bg);
             border-color: var(--helto-accent-border);
             color: var(--helto-accent-strong);
+        }
+        .helto-qm-pill.running::before {
+            content: "";
+            width: 6px;
+            height: 6px;
+            border-radius: 999px;
+            background: var(--helto-accent-strong);
+            flex: 0 0 auto;
+            animation: heltoQmDot 1.4s ease-in-out infinite;
         }
         .helto-qm-pill.error {
             background: var(--helto-danger-bg);
