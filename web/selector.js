@@ -32,6 +32,7 @@ import {
     createModal,
 } from "./ui.js";
 import { openBboxEditor, openMaskEditor } from "./mask_editor.js";
+import { closeHeltoMediaPreview, openHeltoMediaPreview } from "./media_preview.js";
 
 // Load Stylesheet dynamically using modern ES modules URL resolving
 if (!document.getElementById("helto-utils-styles")) {
@@ -627,58 +628,12 @@ app.registerExtension({
         }
         
         function showPreviewPopup(img) {
-            const existing = document.querySelector(".helto-preview-overlay");
-            if (existing) existing.remove();
-
-            const overlay = document.createElement("div");
-            overlay.className = "helto-preview-overlay";
-            containPointerEvents(overlay);
-
-            const windowEl = document.createElement("div");
-            windowEl.className = "helto-preview-window";
-
-            const closeBtn = document.createElement("div");
-            closeBtn.className = "helto-preview-close";
-            closeBtn.innerHTML = "&times;";
-
-            const imgEl = document.createElement("img");
-            imgEl.className = "helto-preview-img";
-            imgEl.src = selectorApi.viewImageUrl(img.path);
-
-            const titleEl = document.createElement("div");
-            titleEl.className = "helto-preview-title";
-            titleEl.innerText = img.name;
-
-            windowEl.appendChild(closeBtn);
-            windowEl.appendChild(imgEl);
-            windowEl.appendChild(titleEl);
-            overlay.appendChild(windowEl);
-            document.body.appendChild(overlay);
-
-            requestAnimationFrame(() => {
-                overlay.classList.add("active");
+            openHeltoMediaPreview({
+                kind: "image",
+                url: selectorApi.viewImageUrl(img.path),
+                title: img.name,
+                label: img.name,
             });
-
-            function dismissPreview() {
-                overlay.classList.remove("active");
-                setTimeout(() => {
-                    if (document.body.contains(overlay)) {
-                        overlay.remove();
-                    }
-                }, 250);
-            }
-
-            closeBtn.onclick = (e) => {
-                e.stopPropagation();
-                dismissPreview();
-            };
-
-            overlay.onclick = (e) => {
-                e.stopPropagation();
-                if (e.target === overlay) {
-                    dismissPreview();
-                }
-            };
         }
 
         function saveOriginalImage(img) {
@@ -1408,7 +1363,7 @@ app.registerExtension({
                         );
                     }
                     removeSelectedPreviewPopover();
-                    document.querySelectorAll(".helto-preview-overlay").forEach((overlay) => overlay.remove());
+                    closeHeltoMediaPreview();
                     renderGrid();
                     updateFooter();
                     await updateWidgetValue();

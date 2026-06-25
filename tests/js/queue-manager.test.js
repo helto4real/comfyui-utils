@@ -204,3 +204,36 @@ test("queue manager row markup uses compact one-line container", () => {
     assert.doesNotMatch(source, /run\.prompt_id\.slice\(0, 8\)/);
     assert.doesNotMatch(source, /<div class="helto-qm-row-title"[^>]*>\$\{escapeHtml\(run\.title\)\}<\/div>\s*<div class="helto-qm-row-meta">/);
 });
+
+test("queue manager preview button uses shared hover thumbnail and preview window", () => {
+    const source = readFileSync(new URL("../../web/queue_manager.js", import.meta.url), "utf8");
+
+    assert.match(source, /from "\.\/media_preview\.js"/);
+    assert.match(source, /openHeltoMediaPreview/);
+    assert.match(source, /attachHeltoMediaPreviewHover/);
+    assert.match(source, /data-preview-url/);
+    assert.match(source, /data-preview-kind/);
+    assert.doesNotMatch(source, /helto-qm-preview/);
+    assert.doesNotMatch(source, /previewHtml\(/);
+});
+
+test("selector preview popup delegates to the shared media preview window", () => {
+    const source = readFileSync(new URL("../../web/selector.js", import.meta.url), "utf8");
+
+    assert.match(source, /from "\.\/media_preview\.js"/);
+    assert.match(source, /openHeltoMediaPreview\(\{/);
+    assert.match(source, /closeHeltoMediaPreview\(\)/);
+    assert.doesNotMatch(source, /overlay\.className = "helto-preview-overlay"/);
+});
+
+test("shared media preview supports image and video modals plus hover thumbnails", () => {
+    const source = readFileSync(new URL("../../web/media_preview.js", import.meta.url), "utf8");
+
+    assert.match(source, /export function openHeltoMediaPreview/);
+    assert.match(source, /export function attachHeltoMediaPreviewHover/);
+    assert.match(source, /documentRef\.createElement\("video"\)/);
+    assert.match(source, /video\.controls = true/);
+    assert.match(source, /video\.loop = true/);
+    assert.match(source, /helto-media-preview-thumb-popover/);
+    assert.match(source, /documentRef\.createElement\("img"\)/);
+});

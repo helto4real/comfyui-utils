@@ -1,5 +1,10 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import {
+    attachHeltoMediaPreviewHover,
+    hideHeltoMediaPreviewThumbnail,
+    openHeltoMediaPreview,
+} from "./media_preview.js";
 
 import {
     QUEUE_STATUS_COMPLETED,
@@ -42,7 +47,6 @@ const QUEUE_ICONS = {
     clear: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>`,
     preview: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6Z"/><circle cx="12" cy="12" r="3"/></svg>`,
     rerun: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>`,
-    close: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>`,
 };
 
 function routeUrl(route) {
@@ -463,71 +467,6 @@ function injectStyles() {
             padding: 10px;
             text-align: center;
         }
-        .helto-qm-preview {
-            align-items: stretch;
-            background: rgba(13, 19, 32, 0.82);
-            bottom: 0;
-            display: flex;
-            left: 0;
-            padding: 10px;
-            position: absolute;
-            right: 0;
-            top: 0;
-            z-index: 5;
-        }
-        .helto-qm-preview-panel {
-            background: var(--helto-surface);
-            border: 1px solid var(--helto-border-strong);
-            border-radius: var(--helto-radius);
-            box-shadow: var(--helto-shadow-pop);
-            display: flex;
-            flex: 1;
-            flex-direction: column;
-            min-height: 0;
-            min-width: 0;
-            overflow: hidden;
-        }
-        .helto-qm-preview-head {
-            align-items: center;
-            border-bottom: 1px solid var(--helto-border);
-            display: grid;
-            gap: 6px;
-            grid-template-columns: minmax(0, 1fr) auto;
-            padding: 6px;
-        }
-        .helto-qm-preview-title {
-            color: var(--helto-text);
-            font-weight: 650;
-            min-width: 0;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
-        .helto-qm-preview-body {
-            align-items: center;
-            display: flex;
-            flex: 1;
-            justify-content: center;
-            min-height: 0;
-            padding: 8px;
-            position: relative;
-        }
-        .helto-qm-preview-media {
-            background: var(--helto-bg);
-            border-radius: var(--helto-radius-sm);
-            max-height: 100%;
-            max-width: 100%;
-            object-fit: contain;
-        }
-        .helto-qm-preview-status {
-            bottom: 8px;
-            color: var(--helto-text-dim);
-            left: 8px;
-            pointer-events: none;
-            position: absolute;
-            right: 8px;
-            text-align: center;
-        }
         #${FALLBACK_PANEL_ID} {
             background: var(--helto-surface);
             border-right: 1px solid var(--helto-border-strong);
@@ -555,7 +494,6 @@ class HeltoQueueManager {
         this.promptResults = new Map();
         this.historyPoll = null;
         this.activeTab = "running";
-        this.preview = null;
     }
 
     async init() {
@@ -848,7 +786,6 @@ class HeltoQueueManager {
         const run = this.findRun(runId, "history");
         if (!runCanBeRerun(run)) return;
         this.activeTab = "running";
-        this.preview = null;
         await this.enqueuePromptData(cloneJson(run.prompt), {
             title: run.title,
         });
@@ -896,17 +833,13 @@ class HeltoQueueManager {
         const preview = latestMediaPreviewFromHistory(run?.comfy_history);
         const url = previewUrl(preview);
         if (!run || !preview || !url) return;
-        this.preview = {
-            ...preview,
+        hideHeltoMediaPreviewThumbnail();
+        openHeltoMediaPreview({
             url,
-            runTitle: run.title,
-        };
-        this.render();
-    }
-
-    closePreview() {
-        this.preview = null;
-        this.render();
+            kind: preview.kind,
+            title: run.title,
+            label: preview.label,
+        });
     }
 
     rowHtml(run, source) {
@@ -916,10 +849,15 @@ class HeltoQueueManager {
         const time = source === "history" ? formatQueueTime(run.completed_at) : formatQueueTime(run.created_at);
         const statusText = run.status === QUEUE_STATUS_SUBMITTING ? "submitting" : run.status;
         const preview = latestMediaPreviewFromHistory(run.comfy_history);
+        const previewHref = previewUrl(preview);
         const title = escapeHtml(run.title);
         const error = run.error ? escapeHtml(run.error) : "";
-        const previewTitle = preview ? `Preview latest ${preview.kind}` : "No image or video output available";
-        const previewButton = `<button class="helto-qm-icon-btn" data-action="preview-${source}" data-run-id="${escapeHtml(run.id)}" title="${escapeHtml(previewTitle)}" aria-label="${escapeHtml(previewTitle)}" ${preview ? "" : "disabled"}>${QUEUE_ICONS.preview}</button>`;
+        const canPreview = !!preview && !!previewHref;
+        const previewTitle = canPreview ? `Preview latest ${preview.kind}` : "No image or video output available";
+        const previewAttrs = canPreview
+            ? `data-preview-url="${escapeHtml(previewHref)}" data-preview-kind="${escapeHtml(preview.kind)}" data-preview-title="${title}" data-preview-label="${escapeHtml(preview.label || preview.kind)}"`
+            : "";
+        const previewButton = `<button class="helto-qm-icon-btn" data-action="preview-${source}" data-run-id="${escapeHtml(run.id)}" ${previewAttrs} title="${escapeHtml(previewTitle)}" aria-label="${escapeHtml(previewTitle)}" ${canPreview ? "" : "disabled"}>${QUEUE_ICONS.preview}</button>`;
         const rerunTitle = runCanBeRerun(run) ? "Rerun workflow" : "Cannot rerun this history item";
         const rerunButton = source === "history"
             ? `<button class="helto-qm-icon-btn" data-action="rerun-history" data-run-id="${escapeHtml(run.id)}" title="${rerunTitle}" aria-label="${rerunTitle}" ${runCanBeRerun(run) ? "" : "disabled"}>${QUEUE_ICONS.rerun}</button>`
@@ -947,30 +885,6 @@ class HeltoQueueManager {
         `;
     }
 
-    previewHtml() {
-        if (!this.preview) return "";
-        const title = escapeHtml(this.preview.runTitle || this.preview.label || "Preview");
-        const label = escapeHtml(this.preview.label || "Preview");
-        const url = escapeHtml(this.preview.url);
-        const media = this.preview.kind === "video"
-            ? `<video class="helto-qm-preview-media" data-preview-media controls autoplay muted playsinline src="${url}"></video>`
-            : `<img class="helto-qm-preview-media" data-preview-media src="${url}" alt="${label}">`;
-        return `
-            <div class="helto-qm-preview" role="dialog" aria-modal="true" aria-label="Latest output preview">
-                <div class="helto-qm-preview-panel">
-                    <div class="helto-qm-preview-head">
-                        <div class="helto-qm-preview-title" title="${title}">${title}</div>
-                        <button class="helto-qm-icon-btn" data-action="close-preview" title="Close preview" aria-label="Close preview">${QUEUE_ICONS.close}</button>
-                    </div>
-                    <div class="helto-qm-preview-body">
-                        ${media}
-                        <div class="helto-qm-preview-status" data-preview-status></div>
-                    </div>
-                </div>
-            </div>
-        `;
-    }
-
     bindEvents() {
         if (!this.root) return;
         this.root.querySelector("[data-action='resume']")?.addEventListener("click", () => this.resumeQueue());
@@ -988,9 +902,11 @@ class HeltoQueueManager {
         });
         this.root.querySelectorAll("[data-action='preview-queue']").forEach((button) => {
             button.addEventListener("click", () => this.previewRun(button.dataset.runId, "queue"));
+            this.attachPreviewHover(button);
         });
         this.root.querySelectorAll("[data-action='preview-history']").forEach((button) => {
             button.addEventListener("click", () => this.previewRun(button.dataset.runId, "history"));
+            this.attachPreviewHover(button);
         });
         this.root.querySelectorAll("[data-action='rerun-history']").forEach((button) => {
             button.addEventListener("click", () => this.rerunHistoryRun(button.dataset.runId));
@@ -1001,19 +917,21 @@ class HeltoQueueManager {
         this.root.querySelectorAll("[data-action='delete-history']").forEach((button) => {
             button.addEventListener("click", () => this.deleteHistoryRun(button.dataset.runId));
         });
-        this.root.querySelector("[data-action='close-preview']")?.addEventListener("click", () => this.closePreview());
-        this.root.querySelectorAll("[data-preview-media]").forEach((media) => {
-            media.addEventListener("error", () => {
-                const status = this.root?.querySelector("[data-preview-status]");
-                if (status) {
-                    status.textContent = "Preview unavailable.";
-                }
-            });
-        });
+    }
+
+    attachPreviewHover(button) {
+        if (button.disabled || !button.dataset.previewUrl) return;
+        attachHeltoMediaPreviewHover(button, () => ({
+            url: button.dataset.previewUrl,
+            kind: button.dataset.previewKind,
+            title: button.dataset.previewTitle,
+            label: button.dataset.previewLabel,
+        }));
     }
 
     render() {
         if (!this.root) return;
+        hideHeltoMediaPreviewThumbnail();
         const summary = queueSummary(this.state);
         const queueRows = this.state.queue.map((run) => this.rowHtml(run, "queue")).join("");
         const historyRows = this.state.history.map((run) => this.rowHtml(run, "history")).join("");
@@ -1026,7 +944,7 @@ class HeltoQueueManager {
         this.root.innerHTML = `
             <div class="helto-qm">
                 <div class="helto-qm-header">
-                    <div class="helto-qm-title">Queue Manager</div>
+                    <div class="helto-qm-title">QManager</div>
                 </div>
                 <div class="helto-qm-toolbar">
                     <button class="helto-qm-icon-btn is-primary" data-action="resume" title="Resume queue" aria-label="Resume queue" ${resumeDisabled ? "disabled" : ""}>${QUEUE_ICONS.play}</button>
@@ -1059,7 +977,6 @@ class HeltoQueueManager {
                         ${currentRows || `<div class="helto-qm-empty">${currentEmpty}</div>`}
                     </div>
                 </div>
-                ${this.previewHtml()}
             </div>
         `;
         this.bindEvents();
@@ -1070,7 +987,7 @@ function registerSidebar(manager) {
     if (typeof app.extensionManager?.registerSidebarTab === "function") {
         app.extensionManager.registerSidebarTab({
             id: "helto-queue-manager",
-            title: "Queue Manager",
+            title: "QManager",
             icon: "HeltoQueueManagerIcon",
             type: "custom",
             render: (element) => manager.attach(element),
