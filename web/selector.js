@@ -114,6 +114,7 @@ function installGraphToPromptPatch() {
             outputNode.inputs.resize_mode = node.properties?.resizeMode || "zoom to fit";
             outputNode.inputs.edited_masks = await serializeEditedMasksForPrompt(node);
             outputNode.inputs.edited_bboxes = await serializeEditedBboxesForPrompt(node);
+            outputNode.inputs.batching_mode = !!node.properties?.batchingMode;
         }
 
         return result;
@@ -154,7 +155,8 @@ app.registerExtension({
                 input.name !== "selected_images" &&
                 input.name !== "resize_mode" &&
                 input.name !== "edited_masks" &&
-                input.name !== "edited_bboxes"
+                input.name !== "edited_bboxes" &&
+                input.name !== "batching_mode"
             ));
         }
         
@@ -181,10 +183,12 @@ app.registerExtension({
         const resizeModeWidget = ensureHiddenWidget("resize_mode", "zoom to fit");
         const editedMasksWidget = ensureHiddenWidget("edited_masks", "{}");
         const editedBboxesWidget = ensureHiddenWidget("edited_bboxes", "{}");
+        const batchingModeWidget = ensureHiddenWidget("batching_mode", false);
         collapseHiddenWidgetLayout(selectedImagesWidget);
         collapseHiddenWidgetLayout(resizeModeWidget);
         collapseHiddenWidgetLayout(editedMasksWidget);
         collapseHiddenWidgetLayout(editedBboxesWidget);
+        collapseHiddenWidgetLayout(batchingModeWidget);
         
         node.normalizeHeltoSelectorSize = function() {
             normalizeHeltoSelectorSize(node);
@@ -404,6 +408,7 @@ app.registerExtension({
             
             // Sync current resizeMode from properties to the hidden widget
             resizeModeWidget.value = node.properties.resizeMode || "zoom to fit";
+            batchingModeWidget.value = !!node.properties.batchingMode;
         };
         
         node.onConfigure = function(config) {
@@ -478,6 +483,11 @@ app.registerExtension({
         resizeModeWidget.serializeValue = () => {
             resizeModeWidget.value = node.properties.resizeMode || "zoom to fit";
             return resizeModeWidget.value;
+        };
+
+        batchingModeWidget.serializeValue = () => {
+            batchingModeWidget.value = !!node.properties.batchingMode;
+            return batchingModeWidget.value;
         };
 
         editedMasksWidget.serializeValue = async () => {
@@ -1537,6 +1547,7 @@ app.registerExtension({
         function openSettingsModal() {
             const hideChecked = node.properties.hideMode ? "checked" : "";
             const privacyChecked = node.properties.privacyMode ? "checked" : "";
+            const batchingChecked = node.properties.batchingMode ? "checked" : "";
             
             const content = `
                 <div class="settings-modal-row">
@@ -1561,6 +1572,16 @@ app.registerExtension({
                 </div>
                 <div class="settings-modal-row">
                     <div class="settings-modal-text">
+                        <div class="settings-title">Batching Mode</div>
+                        <div class="settings-desc">Runs downstream nodes once per selected image instead of once with the full image batch.</div>
+                    </div>
+                    <label class="helto-switch">
+                        <input type="checkbox" id="batching-mode-toggle" ${batchingChecked}>
+                        <span class="helto-switch-slider"></span>
+                    </label>
+                </div>
+                <div class="settings-modal-row">
+                    <div class="settings-modal-text">
                         <div class="settings-title">Resize Mode</div>
                         <div class="settings-desc">How selected images are sized when outputted.</div>
                     </div>
@@ -1579,6 +1600,7 @@ app.registerExtension({
                 preserveSelectorSizeOnNextResize();
                 const newHideMode = bodyEl.querySelector("#hide-mode-toggle").checked;
                 const newPrivacyMode = bodyEl.querySelector("#privacy-mode-toggle").checked;
+                const newBatchingMode = bodyEl.querySelector("#batching-mode-toggle").checked;
                 const newResizeMode = bodyEl.querySelector("#resize-mode-select").value;
                 
                 const privacyChanged = newPrivacyMode !== node.properties.privacyMode;
@@ -1592,11 +1614,17 @@ app.registerExtension({
                 
                 node.properties.hideMode = newHideMode;
                 node.properties.privacyMode = newPrivacyMode;
+                node.properties.batchingMode = newBatchingMode;
                 node.properties.resizeMode = newResizeMode;
                 
                 const resizeModeWidget = node.widgets.find(w => w.name === "resize_mode");
                 if (resizeModeWidget) {
                     resizeModeWidget.value = newResizeMode;
+                }
+
+                const batchingModeWidget = node.widgets.find(w => w.name === "batching_mode");
+                if (batchingModeWidget) {
+                    batchingModeWidget.value = newBatchingMode;
                 }
                 
                 applyHideModeListeners();

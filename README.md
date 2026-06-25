@@ -291,8 +291,9 @@ Inputs:
 | `resize_mode` | String | `zoom to fit` | Hidden output sizing mode: `zoom to fit`, `pad`, or `No resize`. |
 | `edited_masks` | String | `{}` | Hidden serialized edited-mask references. In privacy mode this is encrypted before prompt serialization. |
 | `edited_bboxes` | String | `{}` | Hidden serialized original-pixel bounding boxes. In privacy mode this is encrypted before prompt serialization. |
+| `batching_mode` | Boolean | `false` | Hidden batching switch. Disabled emits one full-batch item through the list outputs; enabled emits one item per selected image. |
 
-Outputs: `images` as an image list, `image_batch` as a batched image tensor, `masks` as a mask list, `mask_batch` as a batched mask tensor, and `bboxes` as SAM3-compatible `BOUNDING_BOX` data. The `bboxes` output is a nested list aligned to the selected image order, with one box list per emitted image.
+Outputs: `images` as an image list, `image_batch` as a batched image tensor, `masks` as a mask list, `mask_batch` as a batched mask tensor, and `bboxes` as SAM3-compatible `BOUNDING_BOX` data. With `batching_mode` disabled, `images`, `masks`, and `bboxes` each emit one list item containing the full selection, matching the aggregate batch behavior. With `batching_mode` enabled, those list outputs emit one item per selected image so downstream nodes run once per image while `image_batch` and `mask_batch` still provide the full aggregate tensors. The `bboxes` data stays aligned to the selected image order.
 
 When no valid image is selected, the node returns a 512x512 black placeholder. `zoom to fit` resizes selected images to the first image's dimensions, `pad` pads images to the largest selected dimensions, and `No resize` preserves each loaded image before the batch output normalizes mixed sizes. Privacy mode also encrypts thumbnail cache entries and serialized selections.
 

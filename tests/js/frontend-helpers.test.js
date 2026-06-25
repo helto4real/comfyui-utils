@@ -39,6 +39,7 @@ import {
     applyEditedBboxSaveResult,
     applyEditedMaskSaveResult,
     buildPastedImageFilename,
+    coerceSelectorBoolean,
     filterSelectorImages,
     firstClipboardImageFile,
     initializeSelectorProperties,
@@ -444,6 +445,7 @@ test("selector property defaults and folder labels match existing behavior", () 
     assert.equal(properties.cols, 6);
     assert.equal(properties.recursive, false);
     assert.equal(properties.privacyMode, true);
+    assert.equal(properties.batchingMode, false);
     assert.equal(properties.resizeMode, "zoom to fit");
 
     const savedProperties = initializeSelectorProperties({
@@ -451,11 +453,15 @@ test("selector property defaults and folder labels match existing behavior", () 
         folderFilter: "/root/a/",
         subfolderFilter: "/root/a/child/",
         privacyMode: false,
+        batchingMode: "true",
     });
     assert.deepEqual(savedProperties.folders, ["/root/a"]);
     assert.equal(savedProperties.folderFilter, "/root/a");
     assert.equal(savedProperties.subfolderFilter, "/root/a/child");
     assert.equal(savedProperties.privacyMode, false);
+    assert.equal(savedProperties.batchingMode, true);
+    assert.equal(coerceSelectorBoolean("false", true), false);
+    assert.equal(coerceSelectorBoolean("", true), true);
 
     const allFolders = [
         { path: "/root/a", root: "/root/a", relative: "", name: "a" },

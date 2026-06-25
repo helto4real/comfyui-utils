@@ -4,6 +4,7 @@ export const DEFAULT_NODE_PROPERTIES = Object.freeze({
     folders: [],
     hideMode: false,
     privacyMode: true,
+    batchingMode: false,
     resizeMode: "zoom to fit",
     cols: 4,
     sortBy: "newest",
@@ -12,6 +13,18 @@ export const DEFAULT_NODE_PROPERTIES = Object.freeze({
 });
 
 export const SORT_OPTIONS = Object.freeze(["newest", "oldest", "name A-Z", "name Z-A"]);
+
+export function coerceSelectorBoolean(value, defaultValue = false) {
+    if (value === undefined || value === null || value === "") return defaultValue;
+    if (typeof value === "boolean") return value;
+    if (typeof value === "number") return value !== 0;
+    if (typeof value === "string") {
+        const normalized = value.trim().toLowerCase();
+        if (["1", "true", "yes", "on"].includes(normalized)) return true;
+        if (["0", "false", "no", "off"].includes(normalized)) return false;
+    }
+    return Boolean(value);
+}
 
 export function initializeSelectorProperties(properties) {
     for (const [key, value] of Object.entries(DEFAULT_NODE_PROPERTIES)) {
@@ -28,6 +41,7 @@ export function initializeSelectorProperties(properties) {
     if (properties.subfolderFilter && properties.subfolderFilter !== "all") {
         properties.subfolderFilter = normalizeFolderPath(properties.subfolderFilter);
     }
+    properties.batchingMode = coerceSelectorBoolean(properties.batchingMode, DEFAULT_NODE_PROPERTIES.batchingMode);
     return properties;
 }
 

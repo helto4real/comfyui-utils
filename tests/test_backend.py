@@ -721,13 +721,19 @@ class NodeSchemaContractTests(unittest.TestCase):
 
         self.assertEqual(schema.node_id, "HeltoImageSelector")
         self.assertEqual(schema.display_name, "Helto Multi-Image Selector")
-        self.assertEqual([input_def.id for input_def in schema.inputs], ["selected_images", "resize_mode", "edited_masks", "edited_bboxes"])
+        self.assertEqual([input_def.id for input_def in schema.inputs], [
+            "selected_images",
+            "resize_mode",
+            "edited_masks",
+            "edited_bboxes",
+            "batching_mode",
+        ])
         self.assertEqual([output_def.id for output_def in schema.outputs], ["images", "image_batch", "masks", "mask_batch", "bboxes"])
         self.assertTrue(schema.outputs[0].is_output_list)
         self.assertFalse(schema.outputs[1].is_output_list)
         self.assertTrue(schema.outputs[2].is_output_list)
         self.assertFalse(schema.outputs[3].is_output_list)
-        self.assertFalse(schema.outputs[4].is_output_list)
+        self.assertTrue(schema.outputs[4].is_output_list)
         self.assertEqual(len(result), 5)
         self.assertEqual(len(result[0]), 1)
         self.assertEqual(tuple(result[0][0].shape), (1, 512, 512, 3))
@@ -735,7 +741,57 @@ class NodeSchemaContractTests(unittest.TestCase):
         self.assertEqual(len(result[2]), 1)
         self.assertEqual(tuple(result[2][0].shape), (1, 512, 512))
         self.assertEqual(tuple(result[3].shape), (1, 512, 512))
-        self.assertEqual(result[4], [[]])
+        self.assertEqual(result[4], [[[]]])
+
+    def test_node_execute_batched_mode_controls_list_outputs(self):
+        node_module = self._import_node_with_fake_comfy_api()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            first = os.path.join(tmpdir, "first.png")
+            second = os.path.join(tmpdir, "second.png")
+            write_image(first, (10, 8), (255, 0, 0))
+            write_image(second, (4, 6), (0, 255, 0))
+            selected = json.dumps([first, second])
+            edited_bboxes = json.dumps({
+                first: [{"x": 2, "y": 1, "width": 4, "height": 3}],
+                second: [{"x": 1, "y": 2, "width": 2, "height": 2}],
+            })
+
+            aggregate = node_module.HeltoImageSelector.execute(selected, "zoom to fit", "{}", edited_bboxes, False)
+            self.assertEqual(len(aggregate[0]), 1)
+            self.assertEqual(tuple(aggregate[0][0].shape), (2, 8, 10, 3))
+            self.assertEqual(tuple(aggregate[1].shape), (2, 8, 10, 3))
+            self.assertEqual(len(aggregate[2]), 1)
+            self.assertEqual(tuple(aggregate[2][0].shape), (2, 8, 10))
+            self.assertEqual(tuple(aggregate[3].shape), (2, 8, 10))
+            self.assertEqual(aggregate[4], [[
+                [{"x": 2, "y": 1, "width": 4, "height": 3}],
+                [{"x": 2, "y": 3, "width": 6, "height": 2}],
+            ]])
+
+            per_image = node_module.HeltoImageSelector.execute(selected, "zoom to fit", "{}", edited_bboxes, "true")
+            self.assertEqual(len(per_image[0]), 2)
+            self.assertEqual([tuple(tensor.shape) for tensor in per_image[0]], [(1, 8, 10, 3), (1, 8, 10, 3)])
+            self.assertEqual(tuple(per_image[1].shape), (2, 8, 10, 3))
+            self.assertEqual(len(per_image[2]), 2)
+            self.assertEqual([tuple(tensor.shape) for tensor in per_image[2]], [(1, 8, 10), (1, 8, 10)])
+            self.assertEqual(tuple(per_image[3].shape), (2, 8, 10))
+            self.assertEqual(per_image[4], [
+                [{"x": 2, "y": 1, "width": 4, "height": 3}],
+                [{"x": 2, "y": 3, "width": 6, "height": 2}],
+            ])
+
+    def test_batching_mode_boolean_coercion_accepts_saved_widget_values(self):
+        node_module = self._import_node_with_fake_comfy_api()
+
+        self.assertFalse(node_module.coerce_batching_mode(None))
+        self.assertFalse(node_module.coerce_batching_mode(""))
+        self.assertFalse(node_module.coerce_batching_mode("false"))
+        self.assertFalse(node_module.coerce_batching_mode(0))
+        self.assertTrue(node_module.coerce_batching_mode(True))
+        self.assertTrue(node_module.coerce_batching_mode("true"))
+        self.assertTrue(node_module.coerce_batching_mode("1"))
+        self.assertTrue(node_module.coerce_batching_mode(1))
 
     def test_registered_node_display_names_are_helto_prefixed(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()
@@ -2233,6 +2289,9 @@ Second beat moves toward the doorway. @image1:end
         class FakeString:
             Input = FakeField
 
+        class FakeBoolean:
+            Input = FakeField
+
         class FakeImage:
             Output = FakeField
 
@@ -2246,6 +2305,7 @@ Second beat moves toward the doorway. @image1:end
             ComfyNode = object
             Schema = FakeSchema
             String = FakeString
+            Boolean = FakeBoolean
             Image = FakeImage
             Mask = FakeMask
             BoundingBox = FakeBoundingBox
