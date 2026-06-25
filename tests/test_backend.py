@@ -882,6 +882,30 @@ class NodeSchemaContractTests(unittest.TestCase):
             ],
         )
 
+    def test_save_image_advanced_appends_save_image_toggle(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+
+        schema = extension_module.SaveImageAdvanced.define_schema()
+
+        self.assertEqual(
+            [input_def.id for input_def in schema.inputs],
+            [
+                "images",
+                "folder",
+                "alternative_folder",
+                "use_alternative_folder",
+                "use_date_folder",
+                "subfolder",
+                "filename_prefix",
+                "pause_mode",
+                "privacy_mode",
+                "save_image",
+            ],
+        )
+        save_image_input = schema.inputs[-1]
+        self.assertEqual(save_image_input.display_name, "save image")
+        self.assertTrue(save_image_input.kwargs["default"])
+
     def test_image_comparer_accepts_optional_images_and_masks(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()
 
@@ -1657,6 +1681,51 @@ Second beat moves toward the doorway. @image1:end
                 if "helto_private" not in path.parts
             ]
             self.assertEqual(plain_mp4s, [])
+
+    def test_save_image_can_preview_without_saving_output(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        node_cls = extension_module.SaveImageAdvanced
+        original_save_images = node_cls.__dict__["_save_images"]
+        original_private_records = node_cls.__dict__["_private_preview_records"]
+        original_hidden = getattr(node_cls, "hidden", None)
+        saved_calls = []
+        preview_calls = []
+
+        def fake_save_images(cls, images, save_dir, filename_prefix):
+            saved_calls.append((images, save_dir, filename_prefix))
+            raise AssertionError("save_image=False should not save output images")
+
+        def fake_private_records(cls, images, filename_prefix):
+            preview_calls.append((images, filename_prefix))
+            return [{"filename": f"{filename_prefix}_00001.png"}]
+
+        node_cls._save_images = classmethod(fake_save_images)
+        node_cls._private_preview_records = classmethod(fake_private_records)
+        node_cls.hidden = types.SimpleNamespace(unique_id="preview-only-image-node")
+        node_cls.state["previews"].clear()
+        node_cls.state["media"].clear()
+        node_cls.state["releases"].clear()
+        try:
+            images = ["image-tensor"]
+            result = node_cls.execute(
+                images=images,
+                folder="relative-folder-is-ignored",
+                filename_prefix="preview",
+                save_image=False,
+            )
+        finally:
+            node_cls._save_images = original_save_images
+            node_cls._private_preview_records = original_private_records
+            node_cls.hidden = original_hidden
+
+        self.assertEqual(result[0], images)
+        self.assertEqual(saved_calls, [])
+        self.assertEqual(preview_calls, [(images, "preview")])
+        self.assertEqual(result.kwargs["ui"]["helto_private_images"], [{"filename": "preview_00001.png"}])
+        control = result.kwargs["ui"]["helto_pause_control"][0]
+        self.assertTrue(control["has_media"])
+        self.assertFalse(control["paused"])
+        self.assertEqual(control["mode"], "ready")
 
     def test_save_image_pause_mode_stores_image_and_blocks_downstream_quietly(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()

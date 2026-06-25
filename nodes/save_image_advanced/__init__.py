@@ -44,6 +44,7 @@ class SaveImageAdvanced(io.ComfyNode):
                 io.String.Input("filename_prefix", default="img"),
                 io.Boolean.Input("pause_mode", display_name="pause mode", default=False),
                 io.Boolean.Input("privacy_mode", default=True),
+                io.Boolean.Input("save_image", display_name="save image", default=True),
             ],
             outputs=[
                 io.Image.Output("images"),
@@ -71,6 +72,7 @@ class SaveImageAdvanced(io.ComfyNode):
         filename_prefix: str = "img",
         pause_mode: bool = False,
         privacy_mode: bool = True,
+        save_image: bool = True,
     ) -> io.NodeOutput:
         node_id = cls._node_id()
         cached_preview = cls.state["previews"].get(node_id)
@@ -95,17 +97,21 @@ class SaveImageAdvanced(io.ComfyNode):
                 ),
             )
 
-        save_dir = cls._resolve_save_dir(
-            folder=folder,
-            alternative_folder=alternative_folder,
-            use_alternative_folder=use_alternative_folder,
-            use_date_folder=use_date_folder,
-            subfolder=subfolder,
-        )
         filename_prefix = cls._normalize_filename_prefix(filename_prefix)
 
-        saved_paths = cls._save_images(images, save_dir, filename_prefix)
-        print(f"Save Image Advanced saved {len(saved_paths)} image(s) to: {save_dir}")
+        if save_image:
+            save_dir = cls._resolve_save_dir(
+                folder=folder,
+                alternative_folder=alternative_folder,
+                use_alternative_folder=use_alternative_folder,
+                use_date_folder=use_date_folder,
+                subfolder=subfolder,
+            )
+            saved_paths = cls._save_images(images, save_dir, filename_prefix)
+            print(f"Save Image Advanced saved {len(saved_paths)} image(s) to: {save_dir}")
+        else:
+            print("Save Image Advanced created a preview without saving output files.")
+
         if privacy_mode:
             preview = {
                 "helto_private_images": cls._private_preview_records(images, filename_prefix),
