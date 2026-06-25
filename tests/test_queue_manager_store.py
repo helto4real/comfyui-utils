@@ -19,6 +19,8 @@ class QueueManagerStoreTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertFalse(result["encrypted_at_rest"])
+        self.assertTrue(result["privacy_enabled"])
+        self.assertTrue(result["state"]["privacy_enabled"])
         self.assertTrue(result["state"]["paused"])
         self.assertEqual(result["state"]["queue"], [])
         self.assertEqual(result["state"]["history"], [])

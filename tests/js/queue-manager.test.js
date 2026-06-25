@@ -25,6 +25,11 @@ test("createQueueRun leaves queue number empty when not supplied", () => {
     assert.equal(normalizeQueueState({ queue: [run] }).queue[0].number, null);
 });
 
+test("queue privacy defaults on for new persisted state", () => {
+    assert.equal(createDefaultQueueState().privacy_enabled, true);
+    assert.equal(normalizeQueueState(null).privacy_enabled, true);
+});
+
 test("normalizeQueueState demotes runtime jobs after server restart", () => {
     const state = createDefaultQueueState();
     state.paused = false;

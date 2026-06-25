@@ -19,7 +19,7 @@ function coerceQueueNumber(value) {
 export function createDefaultQueueState() {
     return {
         version: 1,
-        privacy_enabled: false,
+        privacy_enabled: true,
         paused: true,
         resume_required: false,
         active_run_id: null,

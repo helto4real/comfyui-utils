@@ -1,7 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
-import { ICONS } from "./constants.js";
 import {
     QUEUE_STATUS_COMPLETED,
     QUEUE_STATUS_ERROR,
@@ -35,6 +34,9 @@ const QUEUE_ICONS = {
     pause: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4v16"/><path d="M16 4v16"/></svg>`,
     load: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>`,
     lock: `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>`,
+    unlock: `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 7.5-1.9"/></svg>`,
+    trash: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v5"/><path d="M14 11v5"/></svg>`,
+    clear: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>`,
 };
 
 function routeUrl(route) {
@@ -89,22 +91,63 @@ function injectStyles() {
     const style = document.createElement("style");
     style.id = STYLE_ID;
     style.textContent = `
+        :root {
+            --helto-bg: #0d1320;
+            --helto-surface: #151c2a;
+            --helto-surface-2: #1b2333;
+            --helto-surface-3: #232d3f;
+            --helto-surface-hover: #2c3850;
+            --helto-border: #2a3346;
+            --helto-border-strong: #3a465c;
+            --helto-border-hover: #4c5970;
+            --helto-text: #e7ebf3;
+            --helto-text-dim: #9aa6bd;
+            --helto-text-faint: #6f7c95;
+            --helto-accent: #f1c75c;
+            --helto-accent-strong: #ffd873;
+            --helto-accent-bg: rgba(241, 199, 92, 0.16);
+            --helto-accent-border: rgba(241, 199, 92, 0.55);
+            --helto-focus: #5e9bff;
+            --helto-focus-ring: 0 0 0 2px rgba(94, 155, 255, 0.5);
+            --helto-danger: #ec5a6b;
+            --helto-danger-bg: #3a1a22;
+            --helto-danger-border: #8f3a44;
+            --helto-ok: #baf0c8;
+            --helto-warn: #ffe3a3;
+            --helto-info: #b9dafc;
+            --helto-radius-sm: 5px;
+            --helto-radius: 6px;
+            --helto-radius-lg: 10px;
+            --helto-font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            --helto-font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Roboto Mono", monospace;
+            --helto-font-size: 12px;
+            --helto-line: 1.4;
+            --helto-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+            --helto-shadow-pop: 0 14px 36px rgba(0, 0, 0, 0.55);
+            --helto-shadow-glow: 0 0 10px rgba(241, 199, 92, 0.35);
+            --helto-transition: 0.12s ease;
+            --helto-ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
         .HeltoQueueManagerIcon:before {
             content: "Q";
+            color: var(--helto-accent);
             font-weight: 800;
         }
         .helto-qm {
             box-sizing: border-box;
-            color: var(--fg-color, #dfe4ee);
+            color: var(--helto-text);
             display: flex;
             flex-direction: column;
-            font: 12px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+            font: var(--helto-font-size) / var(--helto-line) var(--helto-font-sans);
             height: 100%;
             min-height: 0;
-            padding: 10px;
+            padding: 9px;
             width: 100%;
+            -webkit-font-smoothing: antialiased;
         }
-        .helto-qm * {
+        .helto-qm *,
+        .helto-qm *::before,
+        .helto-qm *::after {
             box-sizing: border-box;
         }
         .helto-qm-header {
@@ -112,108 +155,170 @@ function injectStyles() {
             display: flex;
             gap: 8px;
             justify-content: space-between;
-            margin-bottom: 10px;
-        }
-        .helto-qm-title {
-            color: #f3f5f8;
-            font-size: 14px;
-            font-weight: 700;
-        }
-        .helto-qm-privacy {
-            align-items: center;
-            color: #bac3d2;
-            display: flex;
-            gap: 5px;
-            white-space: nowrap;
-        }
-        .helto-qm-privacy input {
-            accent-color: #5fa36b;
-        }
-        .helto-qm-toolbar {
-            display: grid;
-            gap: 6px;
-            grid-template-columns: 1fr 1fr;
             margin-bottom: 8px;
         }
-        .helto-qm-btn,
+        .helto-qm-title {
+            color: var(--helto-text);
+            font-size: 14px;
+            font-weight: 700;
+            letter-spacing: 0.02em;
+        }
+        .helto-qm-toolbar {
+            align-items: center;
+            display: flex;
+            gap: 6px;
+            min-height: 34px;
+            padding: 5px;
+            border-radius: var(--helto-radius);
+            background: linear-gradient(180deg, var(--helto-surface-2), var(--helto-surface));
+            box-shadow: inset 0 0 0 1px var(--helto-border);
+            margin-bottom: 9px;
+        }
         .helto-qm-icon-btn {
             align-items: center;
-            background: #222936;
-            border: 1px solid #3a4456;
-            border-radius: 5px;
-            color: #e8edf5;
+            background: linear-gradient(180deg, var(--helto-surface-3), var(--helto-surface-2));
+            border: 1px solid var(--helto-border-strong);
+            border-radius: var(--helto-radius-sm);
+            color: var(--helto-text);
             cursor: pointer;
             display: inline-flex;
             font: inherit;
-            gap: 6px;
             height: 28px;
             justify-content: center;
-            min-width: 0;
-            padding: 0 8px;
-        }
-        .helto-qm-btn:hover,
-        .helto-qm-icon-btn:hover {
-            background: #2c3545;
-            border-color: #566278;
-        }
-        .helto-qm-btn:disabled,
-        .helto-qm-icon-btn:disabled {
-            cursor: default;
-            opacity: 0.48;
-        }
-        .helto-qm-btn.primary {
-            background: #244633;
-            border-color: #3e7550;
-        }
-        .helto-qm-btn.warn {
-            background: #4a3620;
-            border-color: #806237;
-        }
-        .helto-qm-icon-btn {
-            flex: 0 0 28px;
+            min-width: 28px;
             padding: 0;
+            transition: background var(--helto-transition), border-color var(--helto-transition), color var(--helto-transition), box-shadow var(--helto-transition), transform 0.03s ease;
             width: 28px;
         }
+        .helto-qm-icon-btn:hover:not(:disabled) {
+            background: linear-gradient(180deg, var(--helto-surface-hover), var(--helto-surface-3));
+            border-color: var(--helto-border-hover);
+            color: var(--helto-text);
+        }
+        .helto-qm-icon-btn:active:not(:disabled) {
+            transform: translateY(1px);
+        }
+        .helto-qm-icon-btn:disabled {
+            cursor: default;
+            opacity: 0.4;
+        }
+        .helto-qm-icon-btn.is-active,
+        .helto-qm-icon-btn.is-primary {
+            background: linear-gradient(180deg, #4f4322, #3c3318);
+            border-color: var(--helto-accent-border);
+            color: var(--helto-accent-strong);
+            box-shadow: inset 0 0 0 1px rgba(241, 199, 92, 0.18);
+        }
+        .helto-qm-icon-btn.is-active:hover:not(:disabled),
+        .helto-qm-icon-btn.is-primary:hover:not(:disabled) {
+            background: linear-gradient(180deg, #5b4d27, #46391b);
+            color: var(--helto-accent-strong);
+        }
+        .helto-qm-icon-btn.is-danger {
+            background: linear-gradient(180deg, #5a2330, #471b25);
+            border-color: var(--helto-danger-border);
+            color: var(--helto-text);
+        }
+        .helto-qm-icon-btn.is-danger:hover:not(:disabled) {
+            background: linear-gradient(180deg, #6e2937, #57212c);
+            border-color: var(--helto-danger);
+        }
+        .helto-qm-icon-btn:focus-visible,
+        .helto-qm-tab:focus-visible {
+            border-color: var(--helto-focus);
+            box-shadow: var(--helto-focus-ring);
+            outline: none;
+        }
+        .helto-qm-toolbar-spacer {
+            background: var(--helto-border-strong);
+            flex: 0 0 auto;
+            height: 18px;
+            margin: 0 2px;
+            opacity: 0.7;
+            width: 1px;
+        }
         .helto-qm-status {
-            border: 1px solid #344052;
-            border-radius: 6px;
-            color: #c9d2df;
+            background: var(--helto-surface);
+            border: 1px solid var(--helto-border);
+            border-radius: var(--helto-radius);
+            box-shadow: var(--helto-shadow);
+            color: var(--helto-text-dim);
             display: grid;
             gap: 4px;
             grid-template-columns: repeat(3, 1fr);
-            margin-bottom: 10px;
-            padding: 7px;
+            margin-bottom: 9px;
+            padding: 8px;
         }
         .helto-qm-status strong {
-            color: #f3f5f8;
+            color: var(--helto-text);
             display: block;
             font-size: 13px;
+            font-variant-numeric: tabular-nums;
         }
         .helto-qm-banner {
-            background: #3b2d1a;
-            border: 1px solid #806237;
-            border-radius: 6px;
-            color: #f3d8a4;
+            background: var(--helto-accent-bg);
+            border: 1px solid var(--helto-accent-border);
+            border-radius: var(--helto-radius);
+            color: var(--helto-accent-strong);
             margin-bottom: 8px;
             padding: 7px;
         }
+        .helto-qm-tabs {
+            align-items: center;
+            background: linear-gradient(180deg, var(--helto-surface-2), var(--helto-surface));
+            border-radius: var(--helto-radius);
+            box-shadow: inset 0 0 0 1px var(--helto-border);
+            display: grid;
+            gap: 5px;
+            grid-template-columns: 1fr 1fr;
+            margin-bottom: 8px;
+            padding: 5px;
+        }
+        .helto-qm-tab {
+            align-items: center;
+            background: transparent;
+            border: 1px solid transparent;
+            border-radius: var(--helto-radius-sm);
+            color: var(--helto-text-dim);
+            cursor: pointer;
+            display: flex;
+            font: inherit;
+            gap: 6px;
+            height: 26px;
+            justify-content: center;
+            padding: 0 8px;
+            transition: background var(--helto-transition), border-color var(--helto-transition), color var(--helto-transition), box-shadow var(--helto-transition);
+        }
+        .helto-qm-tab:hover {
+            background: var(--helto-surface-hover);
+            color: var(--helto-text);
+        }
+        .helto-qm-tab.is-active {
+            background: linear-gradient(180deg, #4f4322, #3c3318);
+            border-color: var(--helto-accent-border);
+            color: var(--helto-accent-strong);
+            box-shadow: inset 0 0 0 1px rgba(241, 199, 92, 0.18);
+        }
+        .helto-qm-tab-count {
+            color: inherit;
+            font-family: var(--helto-font-mono);
+            font-variant-numeric: tabular-nums;
+        }
         .helto-qm-section {
             display: flex;
+            flex: 1;
             flex-direction: column;
             min-height: 0;
         }
-        .helto-qm-section.history {
-            flex: 1;
-        }
         .helto-qm-section-head {
             align-items: center;
-            color: #aeb9c8;
+            color: var(--helto-text-faint);
             display: flex;
             font-size: 11px;
-            font-weight: 700;
+            font-weight: 600;
             justify-content: space-between;
-            letter-spacing: 0.04em;
-            margin: 7px 0 6px;
+            letter-spacing: 0.06em;
+            margin: 0 0 6px;
             text-transform: uppercase;
         }
         .helto-qm-list {
@@ -223,49 +328,68 @@ function injectStyles() {
             overflow: auto;
             padding-right: 2px;
         }
+        .helto-qm-list::-webkit-scrollbar {
+            height: 6px;
+            width: 6px;
+        }
+        .helto-qm-list::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .helto-qm-list::-webkit-scrollbar-thumb {
+            background: var(--helto-border-strong);
+            border-radius: 3px;
+        }
+        .helto-qm-list::-webkit-scrollbar-thumb:hover {
+            background: var(--helto-text-faint);
+        }
         .helto-qm-row {
-            background: #151a23;
-            border: 1px solid #2e3748;
-            border-radius: 6px;
+            background: var(--helto-surface-2);
+            border: 1px solid var(--helto-border);
+            border-radius: var(--helto-radius);
             display: grid;
             gap: 7px;
             padding: 8px;
+            transition: border-color var(--helto-transition), box-shadow var(--helto-transition);
         }
         .helto-qm-row.running {
-            border-color: #3e7550;
+            border-color: var(--helto-accent-border);
+            box-shadow: var(--helto-shadow-glow);
         }
         .helto-qm-row.error {
-            border-color: #8b4d4d;
+            border-color: var(--helto-danger-border);
         }
         .helto-qm-row-title {
-            color: #f3f5f8;
+            color: var(--helto-text);
             font-weight: 650;
             min-width: 0;
             overflow-wrap: anywhere;
         }
         .helto-qm-row-meta {
-            color: #9ba7b8;
+            color: var(--helto-text-dim);
             display: flex;
             flex-wrap: wrap;
             gap: 5px;
         }
         .helto-qm-pill {
             align-items: center;
-            background: #242c39;
-            border-radius: 4px;
-            color: #c6cfdc;
+            background: var(--helto-surface);
+            border: 1px solid var(--helto-border-strong);
+            border-radius: 999px;
+            color: var(--helto-text-dim);
             display: inline-flex;
             gap: 4px;
-            min-height: 20px;
-            padding: 2px 6px;
+            min-height: 22px;
+            padding: 0 8px;
         }
         .helto-qm-pill.running {
-            background: #1f3b2b;
-            color: #a9e2b7;
+            background: var(--helto-accent-bg);
+            border-color: var(--helto-accent-border);
+            color: var(--helto-accent-strong);
         }
         .helto-qm-pill.error {
-            background: #442626;
-            color: #f0b0b0;
+            background: var(--helto-danger-bg);
+            border-color: var(--helto-danger-border);
+            color: var(--helto-text);
         }
         .helto-qm-actions {
             display: flex;
@@ -273,17 +397,18 @@ function injectStyles() {
             justify-content: flex-end;
         }
         .helto-qm-empty {
-            border: 1px dashed #384456;
-            border-radius: 6px;
-            color: #8f9bad;
+            background: var(--helto-bg);
+            border: 1px dashed var(--helto-border-strong);
+            border-radius: var(--helto-radius);
+            color: var(--helto-text-faint);
             padding: 10px;
             text-align: center;
         }
         #${FALLBACK_PANEL_ID} {
-            background: #111721;
-            border-right: 1px solid #313b4b;
+            background: var(--helto-surface);
+            border-right: 1px solid var(--helto-border-strong);
             bottom: 0;
-            box-shadow: 8px 0 24px rgba(0, 0, 0, 0.32);
+            box-shadow: var(--helto-shadow-pop);
             left: 0;
             position: fixed;
             top: 0;
@@ -305,6 +430,7 @@ class HeltoQueueManager {
         this.bypass = false;
         this.promptResults = new Map();
         this.historyPoll = null;
+        this.activeTab = "running";
     }
 
     async init() {
@@ -610,6 +736,11 @@ class HeltoQueueManager {
         });
     }
 
+    setActiveTab(tab) {
+        this.activeTab = tab === "history" ? "history" : "running";
+        this.render();
+    }
+
     attach(root) {
         this.root = root;
         this.render();
@@ -622,7 +753,7 @@ class HeltoQueueManager {
         const time = source === "history" ? formatQueueTime(run.completed_at) : formatQueueTime(run.created_at);
         const statusText = run.status === QUEUE_STATUS_SUBMITTING ? "submitting" : run.status;
         const deleteButton = source === "history" || run.status === QUEUE_STATUS_PENDING
-            ? `<button class="helto-qm-icon-btn" data-action="delete-${source}" data-run-id="${escapeHtml(run.id)}" title="Delete">${ICONS.trash}</button>`
+            ? `<button class="helto-qm-icon-btn is-danger" data-action="delete-${source}" data-run-id="${escapeHtml(run.id)}" title="Delete ${source === "history" ? "history run" : "queued run"}" aria-label="Delete ${source === "history" ? "history run" : "queued run"}">${QUEUE_ICONS.trash}</button>`
             : "";
         return `
             <div class="helto-qm-row ${statusClass}">
@@ -634,7 +765,7 @@ class HeltoQueueManager {
                 </div>
                 ${run.error ? `<div class="helto-qm-row-meta">${escapeHtml(run.error)}</div>` : ""}
                 <div class="helto-qm-actions">
-                    <button class="helto-qm-icon-btn" data-action="load-${source}" data-run-id="${escapeHtml(run.id)}" title="Load workflow" ${runCanBeLoaded(run) ? "" : "disabled"}>${QUEUE_ICONS.load}</button>
+                    <button class="helto-qm-icon-btn" data-action="load-${source}" data-run-id="${escapeHtml(run.id)}" title="Load workflow" aria-label="Load workflow" ${runCanBeLoaded(run) ? "" : "disabled"}>${QUEUE_ICONS.load}</button>
                     ${deleteButton}
                 </div>
             </div>
@@ -645,8 +776,11 @@ class HeltoQueueManager {
         if (!this.root) return;
         this.root.querySelector("[data-action='resume']")?.addEventListener("click", () => this.resumeQueue());
         this.root.querySelector("[data-action='pause']")?.addEventListener("click", () => this.pauseQueue());
-        this.root.querySelector("[data-action='privacy']")?.addEventListener("change", (event) => this.setPrivacy(event.target.checked));
+        this.root.querySelector("[data-action='privacy']")?.addEventListener("click", () => this.setPrivacy(!this.state.privacy_enabled));
         this.root.querySelector("[data-action='clear-history']")?.addEventListener("click", () => this.clearHistory());
+        this.root.querySelectorAll("[data-tab]").forEach((button) => {
+            button.addEventListener("click", () => this.setActiveTab(button.dataset.tab));
+        });
         this.root.querySelectorAll("[data-action='load-queue']").forEach((button) => {
             button.addEventListener("click", () => this.loadWorkflow(button.dataset.runId, "queue"));
         });
@@ -668,19 +802,20 @@ class HeltoQueueManager {
         const historyRows = this.state.history.map((run) => this.rowHtml(run, "history")).join("");
         const resumeDisabled = !this.state.queue.some((run) => run.status === QUEUE_STATUS_PENDING) || activeQueueRun(this.state);
         const pauseDisabled = this.state.paused;
+        const currentRows = this.activeTab === "history" ? historyRows : queueRows;
+        const currentEmpty = this.activeTab === "history" ? "No history" : "No queued runs";
+        const currentTitle = this.activeTab === "history" ? "History" : "Running";
 
         this.root.innerHTML = `
             <div class="helto-qm">
                 <div class="helto-qm-header">
                     <div class="helto-qm-title">Queue Manager</div>
-                    <label class="helto-qm-privacy" title="Encrypt persisted queue data">
-                        ${QUEUE_ICONS.lock}
-                        <input type="checkbox" data-action="privacy" ${this.state.privacy_enabled ? "checked" : ""}>
-                    </label>
                 </div>
                 <div class="helto-qm-toolbar">
-                    <button class="helto-qm-btn primary" data-action="resume" ${resumeDisabled ? "disabled" : ""}>${QUEUE_ICONS.play}<span>Resume</span></button>
-                    <button class="helto-qm-btn warn" data-action="pause" ${pauseDisabled ? "disabled" : ""}>${QUEUE_ICONS.pause}<span>Pause</span></button>
+                    <button class="helto-qm-icon-btn is-primary" data-action="resume" title="Resume queue" aria-label="Resume queue" ${resumeDisabled ? "disabled" : ""}>${QUEUE_ICONS.play}</button>
+                    <button class="helto-qm-icon-btn" data-action="pause" title="Pause queue" aria-label="Pause queue" ${pauseDisabled ? "disabled" : ""}>${QUEUE_ICONS.pause}</button>
+                    <span class="helto-qm-toolbar-spacer"></span>
+                    <button class="helto-qm-icon-btn ${this.state.privacy_enabled ? "is-active" : ""}" data-action="privacy" title="${this.state.privacy_enabled ? "Disable encrypted persistence" : "Enable encrypted persistence"}" aria-label="${this.state.privacy_enabled ? "Disable encrypted persistence" : "Enable encrypted persistence"}" aria-pressed="${this.state.privacy_enabled ? "true" : "false"}">${this.state.privacy_enabled ? QUEUE_ICONS.lock : QUEUE_ICONS.unlock}</button>
                 </div>
                 ${this.state.resume_required ? `<div class="helto-qm-banner">Queue paused after restart.</div>` : ""}
                 <div class="helto-qm-status">
@@ -688,19 +823,23 @@ class HeltoQueueManager {
                     <div><strong>${summary.pending}</strong><span>Pending</span></div>
                     <div><strong>${summary.history}</strong><span>History</span></div>
                 </div>
-                <div class="helto-qm-section">
-                    <div class="helto-qm-section-head"><span>Current</span></div>
-                    <div class="helto-qm-list">
-                        ${queueRows || `<div class="helto-qm-empty">No queued runs</div>`}
-                    </div>
-                </div>
-                <div class="helto-qm-section history">
-                    <div class="helto-qm-section-head">
+                <div class="helto-qm-tabs" role="tablist" aria-label="Queue views">
+                    <button class="helto-qm-tab ${this.activeTab === "running" ? "is-active" : ""}" data-tab="running" role="tab" aria-selected="${this.activeTab === "running" ? "true" : "false"}">
+                        <span>Running</span>
+                        <span class="helto-qm-tab-count">${summary.running + summary.pending}</span>
+                    </button>
+                    <button class="helto-qm-tab ${this.activeTab === "history" ? "is-active" : ""}" data-tab="history" role="tab" aria-selected="${this.activeTab === "history" ? "true" : "false"}">
                         <span>History</span>
-                        <button class="helto-qm-icon-btn" data-action="clear-history" title="Delete all history" ${this.state.history.length ? "" : "disabled"}>${ICONS.clear}</button>
+                        <span class="helto-qm-tab-count">${summary.history}</span>
+                    </button>
+                </div>
+                <div class="helto-qm-section">
+                    <div class="helto-qm-section-head">
+                        <span>${currentTitle}</span>
+                        ${this.activeTab === "history" ? `<button class="helto-qm-icon-btn is-danger" data-action="clear-history" title="Delete all history" aria-label="Delete all history" ${this.state.history.length ? "" : "disabled"}>${QUEUE_ICONS.clear}</button>` : ""}
                     </div>
                     <div class="helto-qm-list">
-                        ${historyRows || `<div class="helto-qm-empty">No history</div>`}
+                        ${currentRows || `<div class="helto-qm-empty">${currentEmpty}</div>`}
                     </div>
                 </div>
             </div>

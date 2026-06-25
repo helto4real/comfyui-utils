@@ -20,7 +20,7 @@ STATE_PATH = CONFIG_DIR / "queue_manager_state.json"
 def default_queue_manager_state() -> dict[str, Any]:
     return {
         "version": STATE_VERSION,
-        "privacy_enabled": False,
+        "privacy_enabled": True,
         "paused": True,
         "resume_required": False,
         "active_run_id": None,
@@ -73,7 +73,7 @@ def load_queue_manager_state(path: Path | str = STATE_PATH) -> dict[str, Any]:
         return {
             "ok": True,
             "state": default_queue_manager_state(),
-            "privacy_enabled": False,
+            "privacy_enabled": True,
             "encrypted_at_rest": False,
             "server_session_id": SERVER_SESSION_ID,
             "stored_server_session_id": None,
