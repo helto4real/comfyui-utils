@@ -599,7 +599,11 @@ class HeltoQueueManager {
     async saveNow() {
         clearTimeout(this.saveTimer);
         this.saveTimer = null;
-        if (!this.loaded || this.saving) return;
+        if (!this.loaded) return;
+        if (this.saving) {
+            this.scheduleSave();
+            return;
+        }
         this.saving = true;
         try {
             const payload = await jsonFetch(STATE_ROUTE, {
@@ -869,7 +873,8 @@ class HeltoQueueManager {
         this.setState({
             ...this.state,
             privacy_enabled: !!enabled,
-        });
+        }, { save: false });
+        this.saveNow();
     }
 
     setActiveTab(tab) {
