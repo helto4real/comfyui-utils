@@ -15,6 +15,7 @@ from .nodes.video_comparer import VideoComparer
 from .nodes.wan_video_params import HeltoVideoParams
 from .helto_image_selector import HeltoImageSelector
 from .shared import private_media_routes  # noqa: F401
+from .shared import queue_manager_routes  # noqa: F401
 
 
 WEB_DIRECTORY = "./web"
