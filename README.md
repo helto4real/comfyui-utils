@@ -1,6 +1,6 @@
 # Helto ComfyUI Utils
 
-Helto ComfyUI Utils is a small ComfyUI custom node pack for everyday workflow glue: video parameter helpers, image and video comparison previews, model routing, multi-image selection, and advanced image/video saving.
+Helto ComfyUI Utils is a small ComfyUI custom node pack for everyday workflow glue: video parameter helpers, image and video comparison previews, model routing, multi-image selection, advanced image/video saving, and the `QManager` left-sidebar workflow queue.
 
 ![Helto ComfyUI Utils overview](docs/assets/helto-utils-overview.png)
 
@@ -33,6 +33,16 @@ The pack registers through ComfyUI's V3 `comfy_entrypoint()` extension API and e
 | Helto Multi-Image Selector | `HeltoImageSelector` | `image` | Selects multiple local images from a searchable browser and outputs image, mask, and bbox data. |
 | Save Image Advanced | `HeltoSaveImageAdvanced` | `HELTO/Image` | Saves PNG images to an absolute folder with alternate/date/subfolder routing. |
 | Save Video Advanced | `HeltoSaveVideoAdvanced` | `HELTO/Video` | Saves frame batches or latents as GIF, WebP, or video with folder routing and format controls. |
+
+## QManager
+
+`QManager` is a left-sidebar queue manager for queued workflow runs. New queued workflows are added to the Running tab, move to History when they finish, and then automatically allow the next pending workflow to start.
+
+Queue state is persisted in `config/queue_manager_state.sqlite3`. Privacy mode is enabled by default and encrypts the stored SQLite payload at rest, including queue and history metadata. When ComfyUI restarts, the queue stays paused and does not auto-resume; use the resume control when you are ready to continue.
+
+Rows stay compact and show the workflow title, status, time, and icon actions on one line. Current and history runs can load their saved workflow. History runs can also be rerun, deleted individually, or cleared all at once.
+
+The latest output preview button supports image and video outputs. Hovering the icon shows a small thumbnail, and clicking opens the shared media preview window. Preview URLs support both regular ComfyUI `/view` image/video records and encrypted private-media records produced by this node pack's privacy-aware save and preview nodes.
 
 ## Parameter Helpers
 
@@ -281,7 +291,7 @@ Supported picker extensions are `mp4`, `mov`, `mkv`, `webm`, `avi`, and `m4v`. T
 
 `Helto Multi-Image Selector` is a searchable image browser for selecting multiple local images directly in a ComfyUI node.
 
-The frontend widget can scan one or more folders, enable recursive browsing, filter by root folder or subfolder, sort by date or name, search by filename/path, preview selected images, edit masks and bounding boxes, clear the selection, and delete selected images from disk when they are inside the configured scan scope. The selected-image list and annotations are stored in hidden widgets so the workflow can run without visible input sockets.
+The frontend widget can scan one or more folders, enable recursive browsing, filter by root folder or subfolder, sort by date or name, search by filename/path, preview selected images in the shared media preview window, edit masks and bounding boxes, clear the selection, and delete selected images from disk when they are inside the configured scan scope. The selected-image list and annotations are stored in hidden widgets so the workflow can run without visible input sockets.
 
 Inputs:
 
@@ -385,6 +395,8 @@ This README is based on the current node schemas and behavior in this repository
 - Pack registration and web directory: `__init__.py`
 - Node implementations: `nodes/**/__init__.py` and `helto_selector_backend/node.py`
 - Selector backend routes and services: `helto_selector_backend/routes.py`, `helto_selector_backend/services.py`, and `helto_selector_backend/image_processing.py`
+- Queue manager routes, SQLite persistence, and frontend: `shared/queue_manager_routes.py`, `shared/queue_manager_store.py`, and `web/queue_manager.js`
+- Shared frontend media preview utility: `web/media_preview.js`
 - Shared video dimensions and frame calculations: `shared/video_params.py`
 - Frontend selector, preview, load, and save widgets: `web/*.js`
 
