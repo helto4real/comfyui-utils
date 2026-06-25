@@ -3,6 +3,7 @@ export const QUEUE_STATUS_SUBMITTING = "submitting";
 export const QUEUE_STATUS_RUNNING = "running";
 export const QUEUE_STATUS_COMPLETED = "completed";
 export const QUEUE_STATUS_ERROR = "error";
+export const QUEUE_STATUS_ABORTED = "aborted";
 
 const RUNTIME_QUEUE_STATUSES = new Set([QUEUE_STATUS_SUBMITTING, QUEUE_STATUS_RUNNING]);
 const DEFAULT_RUN_TITLE = "Untitled run";
@@ -423,6 +424,44 @@ export function mediaRecordToPreviewUrl(preview, options = {}) {
     });
     const previewFormatParam = typeof options.getPreviewFormatParam === "function" ? options.getPreviewFormatParam() : "";
     return apiURL(appendOptionalParams(`/view?${params.toString()}`, previewFormatParam, randParam));
+}
+
+export function historyHasExecutionEvent(history, eventName) {
+    const messages = history?.status?.messages;
+    if (!Array.isArray(messages) || !eventName) {
+        return false;
+    }
+    return messages.some((entry) => {
+        if (Array.isArray(entry)) {
+            return entry[0] === eventName;
+        }
+        if (entry && typeof entry === "object") {
+            return entry.event === eventName || entry.type === eventName || entry.name === eventName;
+        }
+        return false;
+    });
+}
+
+function promptIdFromComfyQueueItem(item) {
+    if (Array.isArray(item)) {
+        return item[1] || null;
+    }
+    if (!item || typeof item !== "object") {
+        return null;
+    }
+    return item.prompt_id || item.promptId || item.job_id || item.id || null;
+}
+
+export function comfyQueueHasPromptId(queueInfo, promptId) {
+    if (!promptId || !queueInfo || typeof queueInfo !== "object") {
+        return false;
+    }
+    const promptIdValue = String(promptId);
+    const queueItems = [
+        ...(Array.isArray(queueInfo.queue_running) ? queueInfo.queue_running : []),
+        ...(Array.isArray(queueInfo.queue_pending) ? queueInfo.queue_pending : []),
+    ];
+    return queueItems.some((item) => promptIdFromComfyQueueItem(item) === promptIdValue);
 }
 
 export function queueSummary(state) {

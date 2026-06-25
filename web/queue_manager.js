@@ -7,6 +7,7 @@ import {
 } from "./media_preview.js";
 
 import {
+    QUEUE_STATUS_ABORTED,
     QUEUE_STATUS_COMPLETED,
     QUEUE_STATUS_ERROR,
     QUEUE_STATUS_PENDING,
@@ -15,11 +16,13 @@ import {
     activeQueueRun,
     clearQueueHistory,
     cloneJson,
+    comfyQueueHasPromptId,
     createQueueRun,
     deleteHistoryRun,
     deleteQueueRun,
     enqueueRun,
     formatQueueTime,
+    historyHasExecutionEvent,
     latestMediaPreviewFromHistory,
     markRunRunning,
     markRunSubmitting,
@@ -36,6 +39,7 @@ const STATE_ROUTE = "/helto_queue_manager/state";
 const PATCHED_KEY = "__heltoQueueManagerPatched";
 const STYLE_ID = "helto-queue-manager-styles";
 const FALLBACK_PANEL_ID = "helto-queue-manager-fallback";
+const STALE_PROMPT_MISS_LIMIT = 2;
 
 const QUEUE_ICONS = {
     play: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 5v14l11-7z"/></svg>`,
@@ -47,6 +51,7 @@ const QUEUE_ICONS = {
     clear: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>`,
     preview: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6Z"/><circle cx="12" cy="12" r="3"/></svg>`,
     rerun: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>`,
+    abort: `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5l14 14"/><path d="M19 5 5 19"/></svg>`,
 };
 
 function routeUrl(route) {
@@ -108,12 +113,24 @@ function escapeHtml(value) {
     }[char]));
 }
 
+function normalizeFilterText(value) {
+    return String(value ?? "").trim().toLocaleLowerCase();
+}
+
 function previewUrl(preview) {
     return mediaRecordToPreviewUrl(preview, {
         apiURL: routeUrl,
         getPreviewFormatParam: app?.getPreviewFormatParam?.bind(app),
         getRandParam: app?.getRandParam?.bind(app),
     });
+}
+
+function isActiveRunStatus(status) {
+    return status === QUEUE_STATUS_RUNNING || status === QUEUE_STATUS_SUBMITTING;
+}
+
+function displayStatus(status) {
+    return status === QUEUE_STATUS_ABORTED ? "Aborted" : status;
 }
 
 function injectStyles() {
@@ -256,7 +273,9 @@ function injectStyles() {
             border-color: var(--helto-danger);
         }
         .helto-qm-icon-btn:focus-visible,
-        .helto-qm-tab:focus-visible {
+        .helto-qm-tab:focus-visible,
+        .helto-qm-filter-input:focus-visible,
+        .helto-qm-filter-select:focus-visible {
             border-color: var(--helto-focus);
             box-shadow: var(--helto-focus-ring);
             outline: none;
@@ -353,6 +372,37 @@ function injectStyles() {
             margin: 0 0 6px;
             text-transform: uppercase;
         }
+        .helto-qm-history-filters {
+            display: grid;
+            gap: 5px;
+            grid-template-columns: minmax(0, 1fr) minmax(96px, 0.7fr);
+            margin: 0 0 6px;
+            min-width: 0;
+        }
+        .helto-qm-filter-input,
+        .helto-qm-filter-select {
+            background: var(--helto-surface);
+            border: 1px solid var(--helto-border-strong);
+            border-radius: var(--helto-radius-sm);
+            color: var(--helto-text);
+            font: inherit;
+            height: 28px;
+            min-width: 0;
+            padding: 0 7px;
+            transition: background var(--helto-transition), border-color var(--helto-transition), box-shadow var(--helto-transition);
+            width: 100%;
+        }
+        .helto-qm-filter-input::placeholder {
+            color: var(--helto-text-faint);
+        }
+        .helto-qm-filter-input:hover,
+        .helto-qm-filter-select:hover {
+            border-color: var(--helto-border-hover);
+        }
+        .helto-qm-filter-select {
+            cursor: pointer;
+            padding-right: 4px;
+        }
         .helto-qm-list {
             display: grid;
             gap: 6px;
@@ -399,6 +449,9 @@ function injectStyles() {
         .helto-qm-row.error {
             border-color: var(--helto-danger-border);
         }
+        .helto-qm-row.aborted {
+            border-color: var(--helto-border-hover);
+        }
         .helto-qm-row-title {
             color: var(--helto-text);
             font-weight: 650;
@@ -442,6 +495,11 @@ function injectStyles() {
             background: var(--helto-danger-bg);
             border-color: var(--helto-danger-border);
             color: var(--helto-text);
+        }
+        .helto-qm-pill.aborted {
+            background: var(--helto-surface-3);
+            border-color: var(--helto-border-hover);
+            color: var(--helto-warn);
         }
         .helto-qm-time-pill {
             max-width: 180px;
@@ -492,8 +550,12 @@ class HeltoQueueManager {
         this.submitting = false;
         this.bypass = false;
         this.promptResults = new Map();
+        this.stalePromptMisses = new Map();
         this.historyPoll = null;
+        this.reconcilingActiveRun = false;
         this.activeTab = "running";
+        this.historySearch = "";
+        this.historyWorkflowFilter = "";
     }
 
     async init() {
@@ -610,6 +672,11 @@ class HeltoQueueManager {
                 });
             }
         });
+        api?.addEventListener?.("execution_interrupted", ({ detail }) => {
+            if (detail?.prompt_id) {
+                this.promptResults.set(detail.prompt_id, { status: QUEUE_STATUS_ABORTED, detail });
+            }
+        });
         api?.addEventListener?.("executing", ({ detail }) => {
             if (detail?.node === null && detail?.prompt_id) {
                 this.finishPrompt(detail.prompt_id);
@@ -620,10 +687,9 @@ class HeltoQueueManager {
     startHistoryPoll() {
         if (this.historyPoll) return;
         this.historyPoll = setInterval(() => {
-            const run = activeQueueRun(this.state);
-            if (run?.prompt_id && (run.status === QUEUE_STATUS_RUNNING || run.status === QUEUE_STATUS_SUBMITTING)) {
-                this.finishPromptIfHistoryExists(run.prompt_id);
-            }
+            this.reconcileActiveRun().catch((err) => {
+                console.error("[Helto Queue Manager] Failed to reconcile active run:", err);
+            });
         }, 2500);
     }
 
@@ -718,15 +784,39 @@ class HeltoQueueManager {
         return payload;
     }
 
+    async cancelComfyPrompt(promptIdValue) {
+        const cancelRoute = `/api/jobs/${encodeURIComponent(promptIdValue)}/cancel`;
+        const response = await fetch(routeUrl(cancelRoute), { method: "POST" });
+        if (response.status !== 404 && response.status !== 405) {
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || payload?.error) {
+                throw new Error(payload?.error || `Request failed: ${cancelRoute}`);
+            }
+            return payload?.cancelled !== false;
+        }
+
+        const fallback = await fetch(routeUrl("/interrupt"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ prompt_id: promptIdValue }),
+        });
+        if (!fallback.ok) {
+            throw new Error("Failed to abort workflow.");
+        }
+        return true;
+    }
+
     async finishPromptIfHistoryExists(promptIdValue) {
         try {
             const history = await this.fetchPromptHistory(promptIdValue);
             if (history) {
                 await this.finishPrompt(promptIdValue, history);
+                return true;
             }
         } catch (_err) {
             // Polling is opportunistic; websocket lifecycle events remain primary.
         }
+        return false;
     }
 
     async fetchPromptHistory(promptIdValue) {
@@ -734,6 +824,53 @@ class HeltoQueueManager {
         if (!response.ok) return null;
         const payload = await response.json();
         return payload?.[promptIdValue] || null;
+    }
+
+    async fetchComfyQueue() {
+        const response = await fetch(routeUrl("/queue"));
+        if (!response.ok) return null;
+        return response.json().catch(() => null);
+    }
+
+    async reconcileActiveRun() {
+        if (this.reconcilingActiveRun) return;
+        const run = activeQueueRun(this.state);
+        if (!run?.prompt_id || !isActiveRunStatus(run.status)) return;
+
+        this.reconcilingActiveRun = true;
+        try {
+            const finished = await this.finishPromptIfHistoryExists(run.prompt_id);
+            if (finished) {
+                this.stalePromptMisses.delete(run.prompt_id);
+                return;
+            }
+
+            const queueInfo = await this.fetchComfyQueue();
+            if (!queueInfo) return;
+            if (comfyQueueHasPromptId(queueInfo, run.prompt_id)) {
+                this.stalePromptMisses.delete(run.prompt_id);
+                return;
+            }
+
+            const misses = (this.stalePromptMisses.get(run.prompt_id) || 0) + 1;
+            this.stalePromptMisses.set(run.prompt_id, misses);
+            if (misses < STALE_PROMPT_MISS_LIMIT) return;
+
+            const currentRun = activeQueueRun(this.state);
+            if (!currentRun || currentRun.prompt_id !== run.prompt_id || !isActiveRunStatus(currentRun.status)) {
+                return;
+            }
+
+            this.stalePromptMisses.delete(run.prompt_id);
+            this.promptResults.delete(run.prompt_id);
+            this.setState(moveRunToHistory(this.state, currentRun.id, {
+                status: QUEUE_STATUS_ERROR,
+                error: "ComfyUI stopped before this run completed.",
+            }));
+            setTimeout(() => this.drainQueue(), 0);
+        } finally {
+            this.reconcilingActiveRun = false;
+        }
     }
 
     async finishPrompt(promptIdValue, historyRecord = null) {
@@ -746,18 +883,45 @@ class HeltoQueueManager {
             history = await this.fetchPromptHistory(promptIdValue).catch(() => null);
         }
         const historyStatus = history?.status?.status_str;
-        const status = result.status === QUEUE_STATUS_ERROR || historyStatus === "error"
-            ? QUEUE_STATUS_ERROR
-            : QUEUE_STATUS_COMPLETED;
+        const wasAborted = result.status === QUEUE_STATUS_ABORTED || historyHasExecutionEvent(history, "execution_interrupted");
+        const status = wasAborted
+            ? QUEUE_STATUS_ABORTED
+            : (result.status === QUEUE_STATUS_ERROR || historyStatus === "error"
+                ? QUEUE_STATUS_ERROR
+                : QUEUE_STATUS_COMPLETED);
         const error = result.error || history?.status?.messages?.join("\n") || null;
 
         this.promptResults.delete(promptIdValue);
+        this.stalePromptMisses.delete(promptIdValue);
         this.setState(moveRunToHistory(this.state, run.id, {
             status,
             error: status === QUEUE_STATUS_ERROR ? error : null,
             comfy_history: history,
         }));
         setTimeout(() => this.drainQueue(), 0);
+    }
+
+    async abortRun(runId) {
+        const run = this.state.queue.find((item) => item.id === runId);
+        if (!run?.prompt_id || !isActiveRunStatus(run.status)) return;
+
+        try {
+            const aborted = await this.cancelComfyPrompt(run.prompt_id);
+            if (!aborted) {
+                await this.finishPromptIfHistoryExists(run.prompt_id);
+                return;
+            }
+            this.promptResults.set(run.prompt_id, { status: QUEUE_STATUS_ABORTED });
+            this.setState(moveRunToHistory(this.state, run.id, {
+                status: QUEUE_STATUS_ABORTED,
+                error: null,
+            }));
+            this.stalePromptMisses.delete(run.prompt_id);
+            this.promptResults.delete(run.prompt_id);
+            setTimeout(() => this.drainQueue(), 0);
+        } catch (err) {
+            console.error("[Helto Queue Manager] Failed to abort workflow:", err);
+        }
     }
 
     resumeQueue() {
@@ -819,6 +983,16 @@ class HeltoQueueManager {
         this.render();
     }
 
+    setHistorySearch(value) {
+        this.historySearch = String(value ?? "");
+        this.refreshHistoryResults();
+    }
+
+    setHistoryWorkflowFilter(value) {
+        this.historyWorkflowFilter = String(value ?? "");
+        this.refreshHistoryResults();
+    }
+
     attach(root) {
         this.root = root;
         this.render();
@@ -844,10 +1018,10 @@ class HeltoQueueManager {
 
     rowHtml(run, source) {
         const statusClass = run.status === QUEUE_STATUS_ERROR ? "error" : (
-            run.status === QUEUE_STATUS_RUNNING || run.status === QUEUE_STATUS_SUBMITTING ? "running" : ""
+            run.status === QUEUE_STATUS_ABORTED ? "aborted" : (isActiveRunStatus(run.status) ? "running" : "")
         );
         const time = source === "history" ? formatQueueTime(run.completed_at) : formatQueueTime(run.created_at);
-        const statusText = run.status === QUEUE_STATUS_SUBMITTING ? "submitting" : run.status;
+        const statusText = displayStatus(run.status === QUEUE_STATUS_SUBMITTING ? "submitting" : run.status);
         const preview = latestMediaPreviewFromHistory(run.comfy_history);
         const previewHref = previewUrl(preview);
         const title = escapeHtml(run.title);
@@ -861,6 +1035,9 @@ class HeltoQueueManager {
         const rerunTitle = runCanBeRerun(run) ? "Rerun workflow" : "Cannot rerun this history item";
         const rerunButton = source === "history"
             ? `<button class="helto-qm-icon-btn" data-action="rerun-history" data-run-id="${escapeHtml(run.id)}" title="${rerunTitle}" aria-label="${rerunTitle}" ${runCanBeRerun(run) ? "" : "disabled"}>${QUEUE_ICONS.rerun}</button>`
+            : "";
+        const abortButton = source === "queue" && isActiveRunStatus(run.status)
+            ? `<button class="helto-qm-icon-btn is-danger" data-action="abort-queue" data-run-id="${escapeHtml(run.id)}" title="Abort workflow" aria-label="Abort workflow" ${run.prompt_id ? "" : "disabled"}>${QUEUE_ICONS.abort}</button>`
             : "";
         const deleteButton = source === "history" || run.status === QUEUE_STATUS_PENDING
             ? `<button class="helto-qm-icon-btn is-danger" data-action="delete-${source}" data-run-id="${escapeHtml(run.id)}" title="Delete ${source === "history" ? "history run" : "queued run"}" aria-label="Delete ${source === "history" ? "history run" : "queued run"}">${QUEUE_ICONS.trash}</button>`
@@ -877,12 +1054,63 @@ class HeltoQueueManager {
                     <div class="helto-qm-actions">
                         ${previewButton}
                         ${rerunButton}
+                        ${abortButton}
                         <button class="helto-qm-icon-btn" data-action="load-${source}" data-run-id="${escapeHtml(run.id)}" title="Load workflow" aria-label="Load workflow" ${runCanBeLoaded(run) ? "" : "disabled"}>${QUEUE_ICONS.load}</button>
                         ${deleteButton}
                     </div>
                 </div>
             </div>
         `;
+    }
+
+    historyWorkflowNames() {
+        return [...new Set((this.state.history || []).map((run) => run.title).filter(Boolean))]
+            .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+    }
+
+    filteredHistoryRuns() {
+        const query = normalizeFilterText(this.historySearch);
+        const workflowNames = this.historyWorkflowNames();
+        const workflow = workflowNames.includes(this.historyWorkflowFilter) ? this.historyWorkflowFilter : "";
+        return (this.state.history || []).filter((run) => {
+            if (workflow && run.title !== workflow) {
+                return false;
+            }
+            if (!query) {
+                return true;
+            }
+            return [
+                run.title,
+                run.status,
+                run.error,
+                formatQueueTime(run.completed_at),
+            ].some((value) => normalizeFilterText(value).includes(query));
+        });
+    }
+
+    historyFilterHtml() {
+        const workflowNames = this.historyWorkflowNames();
+        const selectedWorkflow = workflowNames.includes(this.historyWorkflowFilter) ? this.historyWorkflowFilter : "";
+        const options = [
+            `<option value="">All workflows</option>`,
+            ...workflowNames.map((name) => (
+                `<option value="${escapeHtml(name)}" ${name === selectedWorkflow ? "selected" : ""}>${escapeHtml(name)}</option>`
+            )),
+        ].join("");
+        return `
+            <div class="helto-qm-history-filters">
+                <input class="helto-qm-filter-input" data-action="history-search" type="search" value="${escapeHtml(this.historySearch)}" placeholder="Search history" aria-label="Search history">
+                <select class="helto-qm-filter-select" data-action="history-workflow-filter" aria-label="Filter history by workflow">
+                    ${options}
+                </select>
+            </div>
+        `;
+    }
+
+    historyListHtml() {
+        const rows = this.filteredHistoryRuns().map((run) => this.rowHtml(run, "history")).join("");
+        const empty = this.state.history.length ? "No matching history" : "No history";
+        return rows || `<div class="helto-qm-empty">${empty}</div>`;
     }
 
     bindEvents() {
@@ -894,29 +1122,51 @@ class HeltoQueueManager {
         this.root.querySelectorAll("[data-tab]").forEach((button) => {
             button.addEventListener("click", () => this.setActiveTab(button.dataset.tab));
         });
-        this.root.querySelectorAll("[data-action='load-queue']").forEach((button) => {
+        this.root.querySelector("[data-action='history-search']")?.addEventListener("input", (event) => {
+            this.setHistorySearch(event.target.value);
+        });
+        this.root.querySelector("[data-action='history-workflow-filter']")?.addEventListener("change", (event) => {
+            this.setHistoryWorkflowFilter(event.target.value);
+        });
+        this.bindRunRowEvents(this.root);
+    }
+
+    bindRunRowEvents(root) {
+        if (!root) return;
+        root.querySelectorAll("[data-action='load-queue']").forEach((button) => {
             button.addEventListener("click", () => this.loadWorkflow(button.dataset.runId, "queue"));
         });
-        this.root.querySelectorAll("[data-action='load-history']").forEach((button) => {
+        root.querySelectorAll("[data-action='load-history']").forEach((button) => {
             button.addEventListener("click", () => this.loadWorkflow(button.dataset.runId, "history"));
         });
-        this.root.querySelectorAll("[data-action='preview-queue']").forEach((button) => {
+        root.querySelectorAll("[data-action='preview-queue']").forEach((button) => {
             button.addEventListener("click", () => this.previewRun(button.dataset.runId, "queue"));
             this.attachPreviewHover(button);
         });
-        this.root.querySelectorAll("[data-action='preview-history']").forEach((button) => {
+        root.querySelectorAll("[data-action='preview-history']").forEach((button) => {
             button.addEventListener("click", () => this.previewRun(button.dataset.runId, "history"));
             this.attachPreviewHover(button);
         });
-        this.root.querySelectorAll("[data-action='rerun-history']").forEach((button) => {
+        root.querySelectorAll("[data-action='rerun-history']").forEach((button) => {
             button.addEventListener("click", () => this.rerunHistoryRun(button.dataset.runId));
         });
-        this.root.querySelectorAll("[data-action='delete-queue']").forEach((button) => {
+        root.querySelectorAll("[data-action='abort-queue']").forEach((button) => {
+            button.addEventListener("click", () => this.abortRun(button.dataset.runId));
+        });
+        root.querySelectorAll("[data-action='delete-queue']").forEach((button) => {
             button.addEventListener("click", () => this.deletePendingRun(button.dataset.runId));
         });
-        this.root.querySelectorAll("[data-action='delete-history']").forEach((button) => {
+        root.querySelectorAll("[data-action='delete-history']").forEach((button) => {
             button.addEventListener("click", () => this.deleteHistoryRun(button.dataset.runId));
         });
+    }
+
+    refreshHistoryResults() {
+        if (!this.root || this.activeTab !== "history") return;
+        const list = this.root.querySelector("[data-history-list]");
+        if (!list) return;
+        list.innerHTML = this.historyListHtml();
+        this.bindRunRowEvents(list);
     }
 
     attachPreviewHover(button) {
@@ -934,7 +1184,7 @@ class HeltoQueueManager {
         hideHeltoMediaPreviewThumbnail();
         const summary = queueSummary(this.state);
         const queueRows = this.state.queue.map((run) => this.rowHtml(run, "queue")).join("");
-        const historyRows = this.state.history.map((run) => this.rowHtml(run, "history")).join("");
+        const historyRows = this.historyListHtml();
         const resumeDisabled = !this.state.queue.some((run) => run.status === QUEUE_STATUS_PENDING) || activeQueueRun(this.state);
         const pauseDisabled = this.state.paused;
         const currentRows = this.activeTab === "history" ? historyRows : queueRows;
@@ -973,7 +1223,8 @@ class HeltoQueueManager {
                         <span>${currentTitle}</span>
                         ${this.activeTab === "history" ? `<button class="helto-qm-icon-btn is-danger" data-action="clear-history" title="Delete all history" aria-label="Delete all history" ${this.state.history.length ? "" : "disabled"}>${QUEUE_ICONS.clear}</button>` : ""}
                     </div>
-                    <div class="helto-qm-list">
+                    ${this.activeTab === "history" ? this.historyFilterHtml() : ""}
+                    <div class="helto-qm-list" ${this.activeTab === "history" ? "data-history-list" : ""}>
                         ${currentRows || `<div class="helto-qm-empty">${currentEmpty}</div>`}
                     </div>
                 </div>

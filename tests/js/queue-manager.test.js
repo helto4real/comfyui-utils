@@ -3,11 +3,14 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+    QUEUE_STATUS_ABORTED,
     QUEUE_STATUS_COMPLETED,
     QUEUE_STATUS_PENDING,
     QUEUE_STATUS_RUNNING,
+    comfyQueueHasPromptId,
     createDefaultQueueState,
     createQueueRun,
+    historyHasExecutionEvent,
     latestMediaPreviewFromHistory,
     mediaRecordToPreviewUrl,
     moveRunToHistory,
@@ -91,6 +94,57 @@ test("moveRunToHistory removes current run and prepends completed history", () =
     assert.equal(next.history[0].status, QUEUE_STATUS_COMPLETED);
     assert.equal(next.history[0].completed_at, 2000);
     assert.deepEqual(queueSummary(next), { pending: 0, running: 0, history: 1 });
+});
+
+test("moveRunToHistory preserves aborted history status", () => {
+    const run = createQueueRun({ workflow: { name: "Stopped" }, output: {} }, {
+        id: "run-aborted",
+        now: 1000,
+    });
+    const state = {
+        ...createDefaultQueueState(),
+        active_run_id: "run-aborted",
+        queue: [{ ...run, status: QUEUE_STATUS_RUNNING, prompt_id: "prompt-aborted" }],
+        history: [],
+    };
+
+    const next = moveRunToHistory(state, "run-aborted", { status: QUEUE_STATUS_ABORTED }, 2000);
+
+    assert.equal(next.active_run_id, null);
+    assert.equal(next.queue.length, 0);
+    assert.equal(next.history[0].status, QUEUE_STATUS_ABORTED);
+    assert.equal(next.history[0].completed_at, 2000);
+});
+
+test("historyHasExecutionEvent detects interrupted ComfyUI history", () => {
+    assert.equal(historyHasExecutionEvent({
+        status: {
+            messages: [
+                ["execution_start", { prompt_id: "a" }],
+                ["execution_interrupted", { prompt_id: "a" }],
+            ],
+        },
+    }, "execution_interrupted"), true);
+    assert.equal(historyHasExecutionEvent({
+        status: {
+            messages: [["execution_success", { prompt_id: "a" }]],
+        },
+    }, "execution_interrupted"), false);
+});
+
+test("comfyQueueHasPromptId detects positional and object queue items", () => {
+    assert.equal(comfyQueueHasPromptId({
+        queue_running: [[3, "running-prompt", {}, {}, []]],
+        queue_pending: [],
+    }, "running-prompt"), true);
+    assert.equal(comfyQueueHasPromptId({
+        queue_running: [],
+        queue_pending: [{ prompt_id: "pending-prompt" }],
+    }, "pending-prompt"), true);
+    assert.equal(comfyQueueHasPromptId({
+        queue_running: [[3, "other-prompt", {}, {}, []]],
+        queue_pending: [],
+    }, "missing-prompt"), false);
 });
 
 test("runCanBeRerun requires stored workflow and executable prompt data", () => {
@@ -200,9 +254,36 @@ test("queue manager row markup uses compact one-line container", () => {
     assert.match(source, /grid-template-columns: minmax\(0, 1fr\) auto auto/);
     assert.match(source, /data-action="rerun-history"/);
     assert.match(source, /rerunHistoryRun/);
+    assert.match(source, /data-action="abort-queue"/);
+    assert.match(source, /Abort workflow/);
     assert.match(source, /helto-qm-time-pill/);
     assert.doesNotMatch(source, /run\.prompt_id\.slice\(0, 8\)/);
     assert.doesNotMatch(source, /<div class="helto-qm-row-title"[^>]*>\$\{escapeHtml\(run\.title\)\}<\/div>\s*<div class="helto-qm-row-meta">/);
+});
+
+test("queue manager aborts active runs and maps interrupted prompts to Aborted", () => {
+    const source = readFileSync(new URL("../../web/queue_manager.js", import.meta.url), "utf8");
+
+    assert.match(source, /QUEUE_STATUS_ABORTED/);
+    assert.match(source, /execution_interrupted/);
+    assert.match(source, /historyHasExecutionEvent\(history, "execution_interrupted"\)/);
+    assert.match(source, /\/api\/jobs\/\$\{encodeURIComponent\(promptIdValue\)\}\/cancel/);
+    assert.match(source, /routeUrl\("\/interrupt"\)/);
+    assert.match(source, /data-action="abort-queue"/);
+    assert.match(source, /isActiveRunStatus\(run\.status\)/);
+    assert.match(source, /displayStatus/);
+});
+
+test("queue manager reconciles stale active runs after ComfyUI crashes", () => {
+    const source = readFileSync(new URL("../../web/queue_manager.js", import.meta.url), "utf8");
+
+    assert.match(source, /STALE_PROMPT_MISS_LIMIT = 2/);
+    assert.match(source, /fetchComfyQueue/);
+    assert.match(source, /routeUrl\("\/queue"\)/);
+    assert.match(source, /reconcileActiveRun/);
+    assert.match(source, /comfyQueueHasPromptId\(queueInfo, run\.prompt_id\)/);
+    assert.match(source, /ComfyUI stopped before this run completed\./);
+    assert.match(source, /setTimeout\(\(\) => this\.drainQueue\(\), 0\)/);
 });
 
 test("queue manager preview button uses shared hover thumbnail and preview window", () => {
@@ -215,6 +296,23 @@ test("queue manager preview button uses shared hover thumbnail and preview windo
     assert.match(source, /data-preview-kind/);
     assert.doesNotMatch(source, /helto-qm-preview/);
     assert.doesNotMatch(source, /previewHtml\(/);
+});
+
+test("queue manager history has compact live search and workflow filters", () => {
+    const source = readFileSync(new URL("../../web/queue_manager.js", import.meta.url), "utf8");
+
+    assert.match(source, /class="helto-qm-history-filters"/);
+    assert.match(source, /grid-template-columns: minmax\(0, 1fr\) minmax\(96px, 0\.7fr\)/);
+    assert.match(source, /data-action="history-search"/);
+    assert.match(source, /type="search"/);
+    assert.match(source, /data-action="history-workflow-filter"/);
+    assert.match(source, /All workflows/);
+    assert.match(source, /historyWorkflowNames/);
+    assert.match(source, /filteredHistoryRuns/);
+    assert.match(source, /refreshHistoryResults/);
+    assert.match(source, /addEventListener\("input"/);
+    assert.match(source, /addEventListener\("change"/);
+    assert.match(source, /data-history-list/);
 });
 
 test("selector preview popup delegates to the shared media preview window", () => {

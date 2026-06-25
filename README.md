@@ -40,7 +40,7 @@ The pack registers through ComfyUI's V3 `comfy_entrypoint()` extension API and e
 
 Queue state is persisted in `config/queue_manager_state.sqlite3`. Privacy mode is enabled by default and encrypts the stored SQLite payload at rest, including queue and history metadata. When ComfyUI restarts, the queue stays paused and does not auto-resume; use the resume control when you are ready to continue.
 
-Rows stay compact and show the workflow title, status, time, and icon actions on one line. Current and history runs can load their saved workflow. History runs can also be rerun, deleted individually, or cleared all at once.
+Rows stay compact and show the workflow title, status, time, and icon actions on one line. Current and history runs can load their saved workflow. Active runs can be aborted from the queue row and move to History with the `Aborted` status. If ComfyUI stops tracking an active run after a crash, QManager moves that stale run to History as an error and continues with the next pending run when the queue is not paused. History runs can also be rerun, deleted individually, or cleared all at once. The History tab includes a same-row search box and workflow-name dropdown for filtering completed runs.
 
 The latest output preview button supports image and video outputs. Hovering the icon shows a small thumbnail, and clicking opens the shared media preview window. Preview URLs support both regular ComfyUI `/view` image/video records and encrypted private-media records produced by this node pack's privacy-aware save and preview nodes.
 
