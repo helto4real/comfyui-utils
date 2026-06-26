@@ -9,7 +9,7 @@ import sys
 import tempfile
 import types
 
-from .constants import CONFIG_DIR, ENC_PREFIX, ensure_runtime_dirs
+from .constants import CONFIG_DIR, ENC_PREFIX
 
 def _install_folder_paths_stub() -> None:
     folder_paths = types.ModuleType("folder_paths")
@@ -40,17 +40,20 @@ def _import_shared_privacy():
 
 shared_privacy = _import_shared_privacy()
 
-KEY_PATH = os.path.join(CONFIG_DIR, "key.bin")
+KEY_PATH = shared_privacy.KEY_PATH
+LEGACY_KEY_PATH = os.path.join(CONFIG_DIR, "key.bin")
 
 
 def load_encryption_key() -> bytes:
-    ensure_runtime_dirs()
-    if not os.path.exists(KEY_PATH):
-        with open(KEY_PATH, "wb") as f:
-            f.write(secrets.token_bytes(32))
+    return shared_privacy.load_encryption_key()
 
-    with open(KEY_PATH, "rb") as f:
-        return f.read()
+
+def _load_legacy_encryption_key() -> bytes | None:
+    if not os.path.exists(LEGACY_KEY_PATH):
+        return None
+    with open(LEGACY_KEY_PATH, "rb") as f:
+        key = f.read()
+    return key or None
 
 
 ENCRYPTION_KEY = load_encryption_key()
@@ -87,9 +90,19 @@ def encrypt_bytes(key: bytes, plaintext: bytes) -> bytes:
 
 
 def decrypt_bytes(key: bytes, ciphertext: bytes) -> bytes:
-    if ciphertext.startswith((shared_privacy.ENC_MAGIC_V1, shared_privacy.ENC_MAGIC_V2, shared_privacy.ENC_MAGIC_V3)):
+    legacy_key = _load_legacy_encryption_key() if key == ENCRYPTION_KEY else None
+    privacy_headers = (shared_privacy.ENC_MAGIC_V1, shared_privacy.ENC_MAGIC_V2, shared_privacy.ENC_MAGIC_V3)
+    if not ciphertext.startswith(privacy_headers):
+        if legacy_key and legacy_key != key:
+            return _legacy_decrypt_bytes(legacy_key, ciphertext)
+        return _legacy_decrypt_bytes(key, ciphertext)
+
+    try:
         return shared_privacy.decrypt_bytes(ciphertext, key=key)
-    return _legacy_decrypt_bytes(key, ciphertext)
+    except ValueError:
+        if legacy_key and legacy_key != key:
+            return shared_privacy.decrypt_bytes(ciphertext, key=legacy_key)
+        raise
 
 
 def encrypt_string(key: bytes, text: str) -> str:
@@ -103,11 +116,13 @@ def decrypt_string(key: bytes, encrypted_b64: str) -> str:
     return decrypted.decode("utf-8")
 
 
-def encrypt_selection(plain_json: str, key: bytes = ENCRYPTION_KEY) -> str:
+def encrypt_selection(plain_json: str, key: bytes | None = None) -> str:
+    key = key if key is not None else ENCRYPTION_KEY
     return ENC_PREFIX + encrypt_string(key, plain_json)
 
 
-def decrypt_selection(encrypted_text: str, key: bytes = ENCRYPTION_KEY) -> str:
+def decrypt_selection(encrypted_text: str, key: bytes | None = None) -> str:
+    key = key if key is not None else ENCRYPTION_KEY
     if not encrypted_text.startswith(ENC_PREFIX):
         return encrypted_text
     encrypted_part = encrypted_text[len(ENC_PREFIX):]

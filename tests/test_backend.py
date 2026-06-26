@@ -258,6 +258,59 @@ class ImageProcessingTests(unittest.TestCase):
         self.assertFalse(legacy_payload.startswith(selector_crypto.shared_privacy.ENC_MAGIC_V1))
         self.assertEqual(decrypt_selection(encrypted, key=key), plain)
 
+    def test_selector_default_encryption_uses_shared_privacy_key_file(self):
+        original_config_dir = selector_crypto.shared_privacy.CONFIG_DIR
+        original_key_path = selector_crypto.shared_privacy.KEY_PATH
+        original_selector_key_path = selector_crypto.KEY_PATH
+        original_legacy_key_path = selector_crypto.LEGACY_KEY_PATH
+        original_encryption_key = selector_crypto.ENCRYPTION_KEY
+        plain = json.dumps(["/tmp/shared-key.png"])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            try:
+                config_dir = Path(tmpdir) / "config"
+                key_path = config_dir / "privacy_key.bin"
+                selector_crypto.shared_privacy.CONFIG_DIR = config_dir
+                selector_crypto.shared_privacy.KEY_PATH = key_path
+                selector_crypto.KEY_PATH = key_path
+                selector_crypto.LEGACY_KEY_PATH = os.path.join(config_dir, "key.bin")
+                selector_crypto.ENCRYPTION_KEY = selector_crypto.load_encryption_key()
+
+                encrypted = selector_crypto.encrypt_selection(plain)
+
+                self.assertTrue(key_path.exists())
+                self.assertFalse(os.path.exists(selector_crypto.LEGACY_KEY_PATH))
+                self.assertEqual(selector_crypto.decrypt_selection(encrypted), plain)
+            finally:
+                selector_crypto.shared_privacy.CONFIG_DIR = original_config_dir
+                selector_crypto.shared_privacy.KEY_PATH = original_key_path
+                selector_crypto.KEY_PATH = original_selector_key_path
+                selector_crypto.LEGACY_KEY_PATH = original_legacy_key_path
+                selector_crypto.ENCRYPTION_KEY = original_encryption_key
+
+    def test_selector_default_decryption_can_read_existing_legacy_key_file(self):
+        original_legacy_key_path = selector_crypto.LEGACY_KEY_PATH
+        original_encryption_key = selector_crypto.ENCRYPTION_KEY
+        shared_key = b"s" * 32
+        legacy_key = b"l" * 32
+        plain = json.dumps(["/tmp/legacy-key-file.png"])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            try:
+                selector_crypto.LEGACY_KEY_PATH = os.path.join(tmpdir, "key.bin")
+                selector_crypto.ENCRYPTION_KEY = shared_key
+                with open(selector_crypto.LEGACY_KEY_PATH, "wb") as f:
+                    f.write(legacy_key)
+
+                legacy_payload = selector_crypto._legacy_encrypt_bytes(legacy_key, plain.encode("utf-8"))
+                encrypted = selector_crypto.ENC_PREFIX + base64.b64encode(legacy_payload).decode("utf-8")
+                privacy_payload = selector_crypto.shared_privacy.encrypt_bytes(plain.encode("utf-8"), key=legacy_key)
+                encrypted_privacy_payload = selector_crypto.ENC_PREFIX + base64.b64encode(privacy_payload).decode("utf-8")
+
+                self.assertEqual(selector_crypto.decrypt_selection(encrypted), plain)
+                self.assertEqual(selector_crypto.decrypt_selection(encrypted_privacy_payload), plain)
+            finally:
+                selector_crypto.LEGACY_KEY_PATH = original_legacy_key_path
+                selector_crypto.ENCRYPTION_KEY = original_encryption_key
+
     def test_selector_encrypt_bytes_falls_back_to_shared_v1_without_fast_crypto(self):
         key = b"5" * 32
         original_aesgcm = selector_crypto.shared_privacy.AESGCM
