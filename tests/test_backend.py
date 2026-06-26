@@ -62,6 +62,11 @@ def image_bytes(size: tuple[int, int] = (4, 4), color: tuple[int, int, int] = (2
     return buffer.getvalue()
 
 
+def thumbnail_pixel(webp_bytes: bytes) -> tuple[int, int, int]:
+    with Image.open(BytesIO(webp_bytes)) as thumb:
+        return thumb.convert("RGB").getpixel((0, 0))
+
+
 class ImageProcessingTests(unittest.TestCase):
     def test_empty_selection_returns_black_placeholder_and_batch(self):
         images, image_batch, masks, mask_batch, bboxes = select_images("[]")
@@ -402,6 +407,53 @@ class ScanningAndThumbnailTests(unittest.TestCase):
             self.assertEqual(plain_bytes, plain_again_bytes)
             self.assertTrue(os.path.exists(plain_cache))
             self.assertFalse(os.path.exists(encrypted_cache))
+
+    def test_thumbnail_cache_regenerates_when_source_file_changes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = os.path.join(tmpdir, "image.png")
+            cache_dir = os.path.join(tmpdir, "cache")
+            os.makedirs(cache_dir)
+            write_image(image_path, (16, 16), (255, 0, 0))
+
+            first_bytes = get_thumbnail_bytes(image_path, False, cache_dir=cache_dir)
+            plain_cache, _ = thumbnail_cache_paths(image_path, cache_dir)
+            write_image(image_path, (16, 16), (0, 0, 255))
+            newer_mtime = os.path.getmtime(plain_cache) + 1
+            os.utime(image_path, (newer_mtime, newer_mtime))
+
+            second_bytes = get_thumbnail_bytes(image_path, False, cache_dir=cache_dir)
+
+            self.assertNotEqual(first_bytes, second_bytes)
+            first_pixel = thumbnail_pixel(first_bytes)
+            second_pixel = thumbnail_pixel(second_bytes)
+            self.assertGreater(first_pixel[0], 200)
+            self.assertLess(first_pixel[2], 80)
+            self.assertLess(second_pixel[0], 80)
+            self.assertGreater(second_pixel[2], 200)
+
+    def test_encrypted_thumbnail_cache_regenerates_when_source_file_changes(self):
+        key = b"5" * 32
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = os.path.join(tmpdir, "image.png")
+            cache_dir = os.path.join(tmpdir, "cache")
+            os.makedirs(cache_dir)
+            write_image(image_path, (16, 16), (255, 0, 0))
+
+            first_bytes = get_thumbnail_bytes(image_path, True, cache_dir=cache_dir, key=key)
+            _, encrypted_cache = thumbnail_cache_paths(image_path, cache_dir)
+            write_image(image_path, (16, 16), (0, 0, 255))
+            newer_mtime = os.path.getmtime(encrypted_cache) + 1
+            os.utime(image_path, (newer_mtime, newer_mtime))
+
+            second_bytes = get_thumbnail_bytes(image_path, True, cache_dir=cache_dir, key=key)
+
+            self.assertNotEqual(first_bytes, second_bytes)
+            first_pixel = thumbnail_pixel(first_bytes)
+            second_pixel = thumbnail_pixel(second_bytes)
+            self.assertGreater(first_pixel[0], 200)
+            self.assertLess(first_pixel[2], 80)
+            self.assertLess(second_pixel[0], 80)
+            self.assertGreater(second_pixel[2], 200)
 
     def test_thumbnail_cache_reads_and_migrates_legacy_encrypted_payload(self):
         key = b"6" * 32

@@ -261,6 +261,20 @@ test("queue manager row markup uses compact one-line container", () => {
     assert.doesNotMatch(source, /<div class="helto-qm-row-title"[^>]*>\$\{escapeHtml\(run\.title\)\}<\/div>\s*<div class="helto-qm-row-meta">/);
 });
 
+test("queue manager sidebar icon shows active queue count badge", () => {
+    const source = readFileSync(new URL("../../web/queue_manager.js", import.meta.url), "utf8");
+
+    assert.match(source, /\.HeltoQueueManagerIcon::after/);
+    assert.match(source, /content: attr\(data-queue-count\)/);
+    assert.match(source, /data-queue-count=""\]::after/);
+    assert.match(source, /updateSidebarBadge\(summary = queueSummary\(this\.state\)\)/);
+    assert.match(source, /const count = summary\.running \+ summary\.pending/);
+    assert.match(source, /count > 99 \? "99\+" : String\(count\)/);
+    assert.match(source, /icon\.dataset\.queueCount = label/);
+    assert.match(source, /delete icon\.dataset\.queueCount/);
+    assert.match(source, /scheduleSidebarBadgeUpdate/);
+});
+
 test("queue manager aborts active runs and maps interrupted prompts to Aborted", () => {
     const source = readFileSync(new URL("../../web/queue_manager.js", import.meta.url), "utf8");
 

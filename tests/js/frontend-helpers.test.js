@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+    selectorApi,
+    selectorImageVersionToken,
+} from "../../web/api.js";
+import {
     createSelectorLayoutController,
     getCanvasRendererLayoutMode,
     getSelectorWidgetHeight,
@@ -168,6 +172,35 @@ function jsonResponse(payload, ok = true) {
         },
     };
 }
+
+test("selector image urls include metadata version tokens and keep legacy calls working", () => {
+    const image = { date_modified: 1712345678.123, size_bytes: 4096 };
+    assert.equal(selectorImageVersionToken(image), "m1712345678.123-s4096");
+
+    const thumbUrl = new URL(selectorApi.thumbnailUrl("/tmp/a b.png", true, image), "http://localhost");
+    assert.equal(thumbUrl.pathname, "/helto_selector/thumbnail");
+    assert.equal(thumbUrl.searchParams.get("path"), "/tmp/a b.png");
+    assert.equal(thumbUrl.searchParams.get("privacy"), "true");
+    assert.equal(thumbUrl.searchParams.get("v"), "m1712345678.123-s4096");
+
+    const viewUrl = new URL(selectorApi.viewImageUrl("/tmp/a b.png", image), "http://localhost");
+    assert.equal(viewUrl.pathname, "/helto_selector/view_image");
+    assert.equal(viewUrl.searchParams.get("path"), "/tmp/a b.png");
+    assert.equal(viewUrl.searchParams.get("v"), "m1712345678.123-s4096");
+
+    const legacyThumbUrl = new URL(selectorApi.thumbnailUrl("/tmp/a.png", false), "http://localhost");
+    assert.equal(legacyThumbUrl.searchParams.get("path"), "/tmp/a.png");
+    assert.equal(legacyThumbUrl.searchParams.get("privacy"), "false");
+    assert.equal(legacyThumbUrl.searchParams.has("v"), false);
+    assert.equal(
+        new URL(selectorApi.thumbnailUrl("/tmp/a.png", "false"), "http://localhost").searchParams.get("privacy"),
+        "false",
+    );
+
+    const legacyViewUrl = new URL(selectorApi.viewImageUrl("/tmp/a.png"), "http://localhost");
+    assert.equal(legacyViewUrl.searchParams.get("path"), "/tmp/a.png");
+    assert.equal(legacyViewUrl.searchParams.has("v"), false);
+});
 
 test("mask editor overlay treats unaffected masks as transparent", () => {
     assert.equal(UNAFFECTED_MASK_VALUE, 0);

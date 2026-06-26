@@ -209,6 +209,34 @@ function injectStyles() {
             color: var(--helto-accent);
             font-weight: 800;
         }
+        .HeltoQueueManagerIcon {
+            position: relative;
+        }
+        .HeltoQueueManagerIcon::after {
+            align-items: center;
+            background: var(--helto-danger);
+            border: 1px solid rgba(255, 255, 255, 0.65);
+            border-radius: 999px;
+            box-shadow: 0 2px 7px rgba(0, 0, 0, 0.45);
+            color: #fff;
+            content: attr(data-queue-count);
+            display: inline-flex;
+            font: 700 9px / 1 var(--helto-font-sans);
+            height: 16px;
+            justify-content: center;
+            min-width: 16px;
+            padding: 0 4px;
+            pointer-events: none;
+            position: absolute;
+            right: -8px;
+            top: -6px;
+            transform: translateZ(0);
+            z-index: 2;
+        }
+        .HeltoQueueManagerIcon:not([data-queue-count])::after,
+        .HeltoQueueManagerIcon[data-queue-count=""]::after {
+            display: none;
+        }
         .helto-qm {
             box-sizing: border-box;
             color: var(--helto-text);
@@ -684,6 +712,24 @@ class HeltoQueueManager {
             this.saving = false;
             this.render();
         }
+    }
+
+    updateSidebarBadge(summary = queueSummary(this.state)) {
+        const count = summary.running + summary.pending;
+        const label = count > 99 ? "99+" : String(count);
+        document.querySelectorAll(".HeltoQueueManagerIcon").forEach((icon) => {
+            if (count > 0) {
+                icon.dataset.queueCount = label;
+            } else {
+                delete icon.dataset.queueCount;
+            }
+        });
+    }
+
+    scheduleSidebarBadgeUpdate() {
+        this.updateSidebarBadge();
+        globalThis.requestAnimationFrame?.(() => this.updateSidebarBadge());
+        setTimeout(() => this.updateSidebarBadge(), 250);
     }
 
     installQueuePatch() {
@@ -1243,9 +1289,10 @@ class HeltoQueueManager {
     }
 
     render() {
+        const summary = queueSummary(this.state);
+        this.updateSidebarBadge(summary);
         if (!this.root) return;
         hideHeltoMediaPreviewThumbnail();
-        const summary = queueSummary(this.state);
         const queueRows = this.state.queue.map((run) => this.rowHtml(run, "queue")).join("");
         const historyRows = this.historyListHtml();
         const resumeDisabled = !this.state.queue.some((run) => run.status === QUEUE_STATUS_PENDING) || activeQueueRun(this.state);
@@ -1306,6 +1353,7 @@ function registerSidebar(manager) {
             type: "custom",
             render: (element) => manager.attach(element),
         });
+        manager.scheduleSidebarBadgeUpdate();
         return;
     }
 
@@ -1315,6 +1363,7 @@ function registerSidebar(manager) {
         document.body.appendChild(panel);
         manager.attach(panel);
     }
+    manager.scheduleSidebarBadgeUpdate();
 }
 
 injectStyles();

@@ -33,6 +33,20 @@ def generate_thumbnail_bytes(image_path: str) -> bytes:
         return out.getvalue()
 
 
+def _is_cache_fresh(cache_path: str, image_path: str) -> bool:
+    try:
+        return os.stat(cache_path).st_mtime_ns >= os.stat(image_path).st_mtime_ns
+    except OSError:
+        return False
+
+
+def _read_fresh_cache(cache_path: str, image_path: str) -> bytes | None:
+    if not _is_cache_fresh(cache_path, image_path):
+        return None
+    with open(cache_path, "rb") as f:
+        return f.read()
+
+
 def get_thumbnail_bytes(
     image_path: str,
     privacy_mode: bool,
@@ -43,14 +57,12 @@ def get_thumbnail_bytes(
     plain_cache_path, enc_cache_path = thumbnail_cache_paths(image_path, cache_dir)
 
     if privacy_mode:
-        if os.path.exists(enc_cache_path):
-            with open(enc_cache_path, "rb") as f:
-                return decrypt_bytes(key, f.read())
+        encrypted_bytes = _read_fresh_cache(enc_cache_path, image_path)
+        if encrypted_bytes is not None:
+            return decrypt_bytes(key, encrypted_bytes)
 
-        if os.path.exists(plain_cache_path):
-            with open(plain_cache_path, "rb") as f:
-                webp_bytes = f.read()
-        else:
+        webp_bytes = _read_fresh_cache(plain_cache_path, image_path)
+        if webp_bytes is None:
             webp_bytes = generate_thumbnail_bytes(image_path)
 
         with open(enc_cache_path, "wb") as f:
@@ -61,13 +73,13 @@ def get_thumbnail_bytes(
             pass
         return webp_bytes
 
-    if os.path.exists(plain_cache_path):
-        with open(plain_cache_path, "rb") as f:
-            return f.read()
+    plain_bytes = _read_fresh_cache(plain_cache_path, image_path)
+    if plain_bytes is not None:
+        return plain_bytes
 
-    if os.path.exists(enc_cache_path):
-        with open(enc_cache_path, "rb") as f:
-            webp_bytes = decrypt_bytes(key, f.read())
+    encrypted_bytes = _read_fresh_cache(enc_cache_path, image_path)
+    if encrypted_bytes is not None:
+        webp_bytes = decrypt_bytes(key, encrypted_bytes)
     else:
         webp_bytes = generate_thumbnail_bytes(image_path)
 

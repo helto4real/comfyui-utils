@@ -630,7 +630,7 @@ app.registerExtension({
         function showPreviewPopup(img) {
             openHeltoMediaPreview({
                 kind: "image",
-                url: selectorApi.viewImageUrl(img.path),
+                url: selectorApi.viewImageUrl(img.path, img),
                 title: img.name,
                 label: img.name,
             });
@@ -638,7 +638,7 @@ app.registerExtension({
 
         function saveOriginalImage(img) {
             const link = document.createElement("a");
-            link.href = selectorApi.viewImageUrl(img.path);
+            link.href = selectorApi.viewImageUrl(img.path, img);
             link.download = img.name || "image";
             document.body.appendChild(link);
             link.click();
@@ -650,7 +650,7 @@ app.registerExtension({
                 document,
                 window,
                 img,
-                imageUrl: selectorApi.viewImageUrl(img.path),
+                imageUrl: selectorApi.viewImageUrl(img.path, img),
                 maskUrl: selectorApi.maskUrl(img.path),
                 privacyMode: node.properties.privacyMode,
                 hideMode: node.properties.hideMode,
@@ -672,7 +672,7 @@ app.registerExtension({
                 document,
                 window,
                 img,
-                imageUrl: selectorApi.viewImageUrl(img.path),
+                imageUrl: selectorApi.viewImageUrl(img.path, img),
                 bboxes: node.editedBboxes?.[img.path] || [],
                 hideMode: node.properties.hideMode,
                 containPointerEvents,
@@ -844,7 +844,7 @@ app.registerExtension({
 
                 const thumb = document.createElement("img");
                 thumb.className = `helto-selected-preview-thumb ${aspectClass}`;
-                thumb.src = selectorApi.thumbnailUrl(img.path, isPrivacy);
+                thumb.src = selectorApi.thumbnailUrl(img.path, isPrivacy, img);
                 thumb.alt = img.name;
                 thumbWrap.appendChild(thumb);
 
@@ -967,7 +967,7 @@ app.registerExtension({
                 
                 // Thumb url targeting our backend endpoint
                 const isPrivacy = node.properties.privacyMode;
-                thumb.dataset.src = selectorApi.thumbnailUrl(img.path, isPrivacy);
+                thumb.dataset.src = selectorApi.thumbnailUrl(img.path, isPrivacy, img);
                 
                 const checkmark = document.createElement("div");
                 checkmark.className = "helto-item-checkmark";

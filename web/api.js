@@ -1,3 +1,26 @@
+export function selectorImageVersionToken(image) {
+    const modified = Number(image?.date_modified);
+    const size = Number(image?.size_bytes);
+    const parts = [];
+    if (Number.isFinite(modified)) parts.push(`m${modified}`);
+    if (Number.isFinite(size)) parts.push(`s${size}`);
+    return parts.join("-");
+}
+
+function selectorImageUrl(path, extraParams = {}) {
+    const params = new URLSearchParams({ path: String(path ?? "") });
+    for (const [key, value] of Object.entries(extraParams)) {
+        if (value !== undefined && value !== null && value !== "") {
+            params.set(key, String(value));
+        }
+    }
+    return `?${params.toString()}`;
+}
+
+function selectorPrivacyQueryValue(privacyMode) {
+    return privacyMode === true || String(privacyMode).toLowerCase() === "true" ? "true" : "false";
+}
+
 export const selectorApi = {
     async getInputDir() {
         const response = await fetch("/helto_selector/input_dir");
@@ -93,12 +116,17 @@ export const selectorApi = {
         return response.json();
     },
 
-    thumbnailUrl(path, privacyMode) {
-        return `/helto_selector/thumbnail?path=${encodeURIComponent(path)}&privacy=${privacyMode}`;
+    thumbnailUrl(path, privacyMode, image = null) {
+        const version = selectorImageVersionToken(image);
+        return `/helto_selector/thumbnail${selectorImageUrl(path, {
+            privacy: selectorPrivacyQueryValue(privacyMode),
+            v: version,
+        })}`;
     },
 
-    viewImageUrl(path) {
-        return `/helto_selector/view_image?path=${encodeURIComponent(path)}`;
+    viewImageUrl(path, image = null) {
+        const version = selectorImageVersionToken(image);
+        return `/helto_selector/view_image${selectorImageUrl(path, { v: version })}`;
     },
 
     maskUrl(path) {
