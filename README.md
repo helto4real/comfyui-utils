@@ -120,7 +120,7 @@ If `model_a` is connected, it is returned. If `model_a` is missing and `model_b`
 
 ### Prompt Enhancer
 
-`Prompt enhancer` can enhance a plain image prompt or a structured video script. The `script` field is privacy-aware: with `privacy_mode` enabled, saved workflow text is encrypted, and `hide_mode` hides the inline editor until hovered. Use the `edit script` button when you want a larger editor.
+`Prompt enhancer` can enhance a plain image prompt or a structured video script. The `script` field is privacy-aware: with `privacy_mode` enabled, saved workflow text is encrypted, and `hide_mode` hides the inline editor until hovered. Use the `edit script` button when you want a larger editor. A non-empty `external_prompt` input overrides the editor text for the current run.
 
 Inputs:
 
@@ -135,10 +135,15 @@ Inputs:
 | `segment_generation_mode` | Combo | `all segments` | `all segments` generates every parsed video segment. `single segment` generates only `active_segment_index`. Ignored in image mode. |
 | `vision_context_mode` | Combo | `auto` | `auto` sends images directly to image-capable writer models, otherwise uses the configured separate vision model. Use `off` for text-only runs. |
 | `script` | String | empty | Plain image prompt, or video script when `prompt_type` is `video` or `multi scene video`. |
+| `external_prompt` | String | optional | Connectable prompt/script input. Non-empty text overrides `script`; blank or unconnected falls back to `script`. |
 | `variables` | String | `[]` | Serialized variables used by `{{variable_name}}` tokens. |
+| `image_system_prompt_preset` / `video_system_prompt_preset` | String | `default` | Hidden per-node system prompt preset selections. |
 | `hide_mode` / `privacy_mode` | Boolean | `False` / `True` | Hide the editor content on the canvas, and encrypt serialized script text. |
+| `generation_max_tokens` | Int | `0` | Maximum writer generation tokens. `0` preserves provider defaults. |
 
 Outputs include the final `enhanced_prompt`, the rendered `system_prompt`, parsed segment diagnostics, generated `visual_context`, `segment_count`, and parser `warnings`.
+
+The settings modal manages named image and video system prompt presets. The `default` image preset uses `config/prompt enhancer/image_system_prompt.txt` when present before falling back to the packaged prompt. Each node saves its selected image and video preset IDs so workflows keep using the intended prompt even when the global preset catalog changes.
 
 Image handling supports both multimodal writer models and text-only writer models. In `direct to writer` mode, selected images are sent to the main writer model. In `separate vision model` mode, the selected images are first analyzed by `vision_provider` / `vision_model_id`, then the resulting visual notes are sent as text to the writer model. `auto` chooses direct mode for known image-capable writer models such as Llava-style Ollama models, otherwise it uses the configured separate vision model when images are selected.
 

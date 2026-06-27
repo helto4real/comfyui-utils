@@ -15,7 +15,16 @@ from .local_provider import (
     unload_local_model,
 )
 from .provider import DEFAULT_OLLAMA_TIMEOUT, DEFAULT_OLLAMA_URL, OllamaPromptProvider
-from .prompts import reset_system_prompt, save_system_prompt, system_prompt_payload
+from .prompts import (
+    delete_system_prompt_preset,
+    list_system_prompt_presets,
+    reset_default_system_prompt,
+    reset_system_prompt,
+    save_default_system_prompt,
+    save_system_prompt,
+    save_system_prompt_preset,
+    system_prompt_payload,
+)
 
 
 ROUTE_PREFIX = "/helto_prompt_enhancer"
@@ -100,6 +109,48 @@ async def _save_system_prompt(data: dict) -> web.Response:
 async def _reset_system_prompt(data: dict) -> web.Response:
     try:
         return web.json_response(reset_system_prompt(data.get("kind")))
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+
+
+async def _request_system_prompt_presets(kind: str | None) -> web.Response:
+    try:
+        return web.json_response(list_system_prompt_presets(kind))
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+
+
+async def _save_system_prompt_preset(data: dict) -> web.Response:
+    try:
+        return web.json_response(
+            save_system_prompt_preset(
+                data.get("kind"),
+                data.get("name"),
+                data.get("prompt"),
+                data.get("id") or data.get("preset_id"),
+            )
+        )
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+
+
+async def _save_default_system_prompt(data: dict) -> web.Response:
+    try:
+        return web.json_response(save_default_system_prompt(data.get("kind"), data.get("prompt")))
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+
+
+async def _reset_default_system_prompt(data: dict) -> web.Response:
+    try:
+        return web.json_response(reset_default_system_prompt(data.get("kind")))
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+
+
+async def _delete_system_prompt_preset(data: dict) -> web.Response:
+    try:
+        return web.json_response(delete_system_prompt_preset(data.get("kind"), data.get("id") or data.get("preset_id")))
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=400)
 
@@ -195,3 +246,44 @@ async def post_system_prompt_reset(request):
     except Exception:
         data = {}
     return await _reset_system_prompt(data if isinstance(data, dict) else {})
+
+
+@server.PromptServer.instance.routes.get(f"{ROUTE_PREFIX}/system_prompts")
+async def get_system_prompt_presets(request):
+    return await _request_system_prompt_presets(request.query.get("kind"))
+
+
+@server.PromptServer.instance.routes.post(f"{ROUTE_PREFIX}/system_prompts")
+async def post_system_prompt_preset(request):
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    return await _save_system_prompt_preset(data if isinstance(data, dict) else {})
+
+
+@server.PromptServer.instance.routes.post(f"{ROUTE_PREFIX}/system_prompts/default")
+async def post_default_system_prompt(request):
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    return await _save_default_system_prompt(data if isinstance(data, dict) else {})
+
+
+@server.PromptServer.instance.routes.post(f"{ROUTE_PREFIX}/system_prompts/reset_default")
+async def post_default_system_prompt_reset(request):
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    return await _reset_default_system_prompt(data if isinstance(data, dict) else {})
+
+
+@server.PromptServer.instance.routes.post(f"{ROUTE_PREFIX}/system_prompts/delete")
+async def post_system_prompt_preset_delete(request):
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    return await _delete_system_prompt_preset(data if isinstance(data, dict) else {})

@@ -933,7 +933,16 @@ class NodeSchemaContractTests(unittest.TestCase):
             input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "provider_model_history"
         )
         prompt_enhancer_variables_input = next(input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "variables")
+        prompt_enhancer_image_preset_input = next(
+            input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "image_system_prompt_preset"
+        )
+        prompt_enhancer_video_preset_input = next(
+            input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "video_system_prompt_preset"
+        )
         prompt_enhancer_script_input = next(input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "script")
+        prompt_enhancer_external_prompt_input = next(
+            input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "external_prompt"
+        )
         prompt_enhancer_segment_input = next(
             input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "active_segment_index"
         )
@@ -949,14 +958,26 @@ class NodeSchemaContractTests(unittest.TestCase):
         prompt_enhancer_keep_alive_unit_input = next(
             input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "ollama_keep_alive_unit"
         )
+        prompt_enhancer_max_tokens_input = next(
+            input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "generation_max_tokens"
+        )
         self.assertEqual(prompt_enhancer_model_input.kwargs["io_kind"], "String")
         self.assertEqual(prompt_enhancer_provider_input.kwargs["io_kind"], "String")
         self.assertEqual(prompt_enhancer_model_id_input.kwargs["io_kind"], "String")
         self.assertEqual(prompt_enhancer_model_history_input.kwargs["io_kind"], "String")
         self.assertEqual(prompt_enhancer_model_history_input.kwargs["default"], "{}")
         self.assertEqual(prompt_enhancer_variables_input.kwargs["io_kind"], "String")
+        self.assertEqual(prompt_enhancer_image_preset_input.kwargs["io_kind"], "String")
+        self.assertEqual(prompt_enhancer_image_preset_input.kwargs["default"], "default")
+        self.assertEqual(prompt_enhancer_video_preset_input.kwargs["io_kind"], "String")
+        self.assertEqual(prompt_enhancer_video_preset_input.kwargs["default"], "default")
         self.assertEqual(prompt_enhancer_script_input.kwargs["io_kind"], "String")
         self.assertTrue(prompt_enhancer_script_input.kwargs["multiline"])
+        self.assertEqual(prompt_enhancer_external_prompt_input.kwargs["io_kind"], "String")
+        self.assertEqual(prompt_enhancer_external_prompt_input.kwargs["default"], "")
+        self.assertTrue(prompt_enhancer_external_prompt_input.kwargs["optional"])
+        self.assertTrue(prompt_enhancer_external_prompt_input.kwargs["force_input"])
+        self.assertFalse(prompt_enhancer_external_prompt_input.kwargs["dynamic_prompts"])
         self.assertEqual(prompt_enhancer_segment_input.kwargs["io_kind"], "Int")
         self.assertEqual(prompt_enhancer_segment_input.kwargs["default"], 1)
         self.assertEqual(prompt_enhancer_segment_mode_input.kwargs["io_kind"], "Combo")
@@ -970,6 +991,10 @@ class NodeSchemaContractTests(unittest.TestCase):
         self.assertEqual(prompt_enhancer_vision_mode_input.kwargs["default"], "auto")
         self.assertEqual(prompt_enhancer_vision_provider_input.kwargs["default"], "local_transformers_vlm")
         self.assertEqual(prompt_enhancer_keep_alive_unit_input.kwargs["options"], ["seconds", "minutes", "hours"])
+        self.assertEqual(prompt_enhancer_max_tokens_input.kwargs["io_kind"], "Int")
+        self.assertEqual(prompt_enhancer_max_tokens_input.kwargs["default"], 0)
+        self.assertEqual(prompt_enhancer_max_tokens_input.kwargs["min"], 0)
+        self.assertEqual(prompt_enhancer_max_tokens_input.kwargs["max"], 4096)
         self.assertEqual(len(prompt_enhancer_schema.hidden), 1)
         self.assertEqual(
             [output_def.id for output_def in prompt_enhancer_schema.outputs],
@@ -1127,10 +1152,12 @@ class NodeSchemaContractTests(unittest.TestCase):
         try:
             result = prompt_node.execute(
                 seed=11,
+                generation_max_tokens=77,
                 prompt_type="image",
                 active_segment_index=999,
                 segment_generation_mode="single segment",
                 script=encrypt_selection("A {{style}} portrait"),
+                external_prompt="   ",
                 variables=json.dumps([
                     {"name": "style", "mode": "fixed", "values": ["documentary"], "fixed_index": 0}
                 ]),
@@ -1141,6 +1168,41 @@ class NodeSchemaContractTests(unittest.TestCase):
         self.assertEqual(result[0], "A documentary portrait")
         self.assertEqual(result[2], "A documentary portrait")
         self.assertEqual(requests[0].prompt, "A documentary portrait")
+        self.assertEqual(requests[0].max_tokens, 77)
+
+    def test_prompt_enhancer_external_prompt_overrides_script_and_substitutes_variables(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        prompt_node = next(
+            node_cls
+            for node_cls in asyncio.run(extension_module.HeltoUtilsExtension().get_node_list())
+            if node_cls.define_schema().node_id == "HeltoPromptEnhancer"
+        )
+        globals_ = prompt_node.execute.__func__.__globals__
+        original_provider = globals_["PromptProviderRegistry"]
+        requests = []
+
+        class FakeRegistry:
+            def generate(self, request, progress=None):
+                requests.append(request)
+                return request.prompt
+
+        globals_["PromptProviderRegistry"] = FakeRegistry
+        try:
+            result = prompt_node.execute(
+                seed=11,
+                prompt_type="image",
+                script=encrypt_selection("Internal {{style}} portrait"),
+                external_prompt=" External {{style}} storyboard ",
+                variables=json.dumps([
+                    {"name": "style", "mode": "fixed", "values": ["documentary"], "fixed_index": 0}
+                ]),
+            )
+        finally:
+            globals_["PromptProviderRegistry"] = original_provider
+
+        self.assertEqual(result[0], "External documentary storyboard")
+        self.assertEqual(result[2], "External documentary storyboard")
+        self.assertEqual(requests[0].prompt, "External documentary storyboard")
 
     def test_prompt_enhancer_video_script_sends_selected_segment_to_provider(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()
@@ -1176,7 +1238,8 @@ Second beat moves toward the doorway. @image1:end
                 prompt_type="multi scene video",
                 active_segment_index=2,
                 segment_generation_mode="single segment",
-                script=script,
+                script="This editor script should be ignored.",
+                external_prompt=script,
             )
         finally:
             globals_["PromptProviderRegistry"] = original_provider
@@ -1605,6 +1668,7 @@ Second beat moves toward the doorway. @image1:end
         try:
             result = prompt_node.execute(
                 seed=3,
+                generation_max_tokens=256,
                 images=[object(), object()],
                 prompt_type="video",
                 vision_context_mode="auto",
@@ -1624,8 +1688,10 @@ Second beat moves toward the doorway. @image1:end
 
         self.assertEqual(len(vision_requests), 1)
         self.assertEqual(vision_requests[0].images, ["encoded-image-1"])
+        self.assertEqual(vision_requests[0].max_tokens, 0)
         self.assertEqual(len(writer_requests), 1)
         self.assertEqual(writer_requests[0].images, [])
+        self.assertEqual(writer_requests[0].max_tokens, 256)
         self.assertIn("Visual context: subject raises one hand", writer_requests[0].prompt)
         self.assertEqual(result[7], "subject raises one hand while rain falls")
 

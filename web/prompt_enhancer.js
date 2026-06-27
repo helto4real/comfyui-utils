@@ -1,6 +1,7 @@
 import { app } from "/scripts/app.js";
 
 import { selectorApi } from "./api.js";
+import { ICONS } from "./constants.js";
 import { collapseHiddenWidgetLayout, containPointerEvents, createModal, setWidgetHeight } from "./ui.js";
 import {
     PROMPT_ENHANCER_NODE_CLASS,
@@ -12,7 +13,8 @@ import {
     dismissPromptAutocompleteUntilInput,
     emptyAutocompleteState,
     getWidget,
-    fetchSystemPrompt,
+    deleteSystemPromptPreset,
+    fetchSystemPromptPresets,
     hideSerializedSettingsWidgets,
     keepFixedPromptSeed,
     isPointInPromptWidget,
@@ -30,8 +32,9 @@ import {
     readPromptVariables,
     rememberPromptEnhancerProviderModel,
     removePromptVariable,
-    resetSystemPrompt,
-    saveSystemPrompt,
+    resetDefaultSystemPrompt,
+    saveDefaultSystemPrompt,
+    saveSystemPromptPreset,
     serializedPromptValue,
     serializedPromptVariablesValue,
     setGenerateNewEachPrompt,
@@ -68,6 +71,13 @@ const PROMPT_EDITOR_STATE = "__heltoPromptEnhancerPromptEditor";
 const PROMPT_PRIVACY_SERIALIZATION = "__heltoPromptEnhancerPromptPrivacySerialization";
 const PROMPT_AUTOCOMPLETE_VISIBLE = "__heltoPromptEnhancerAutocompleteVisible";
 const PROMPT_AUTOCOMPLETE_SHORTCUT_CLEANUP = "__heltoPromptEnhancerAutocompleteShortcutCleanup";
+const SYSTEM_PROMPT_PRESET_ACTIONS = [
+    { action: "new", label: "New preset", icon: "plus" },
+    { action: "duplicate", label: "Duplicate preset", icon: "copy" },
+    { action: "edit", label: "Edit preset", icon: "pencil" },
+    { action: "rename", label: "Rename preset", icon: "rename" },
+    { action: "delete", label: "Delete preset", icon: "trash", danger: true },
+];
 
 function isPromptEnhancerNode(node) {
     return node?.comfyClass === PROMPT_ENHANCER_NODE_CLASS || node?.constructor?.comfyClass === PROMPT_ENHANCER_NODE_CLASS;
@@ -860,14 +870,146 @@ function promptKindLabel(kind) {
     return kind === "image" ? "image" : "video";
 }
 
-async function openSystemPromptEditor(kind) {
+function promptPresetSettingName(kind) {
+    return kind === "image" ? "imageSystemPromptPreset" : "videoSystemPromptPreset";
+}
+
+function promptPresetSelectId(kind) {
+    return `helto-pe-${kind}-system-prompt-preset`;
+}
+
+function systemPromptPresetActionButtons(kind) {
+    return SYSTEM_PROMPT_PRESET_ACTIONS.map(({ action, label, icon, danger }) => `
+        <button
+            type="button"
+            class="helto-btn-icon helto-pe-system-preset-action${danger ? " is-danger" : ""}"
+            title="${escapeHtml(label)}"
+            aria-label="${escapeHtml(label)}"
+            data-preset-action="${escapeHtml(action)}"
+            data-kind="${escapeHtml(kind)}"
+        >${ICONS[icon]}</button>
+    `).join("");
+}
+
+function systemPromptPresetRows(settings) {
+    return ["image", "video"].map((kind) => {
+        const label = promptKindLabel(kind);
+        const selectedId = settings[promptPresetSettingName(kind)] || "default";
+        return `
+            <div class="settings-modal-row helto-prompt-enhancer-field-row helto-pe-system-preset-row" data-system-prompt-kind="${kind}">
+                <label class="settings-modal-text" for="${promptPresetSelectId(kind)}">
+                    <div class="settings-title">${label} system prompt</div>
+                    <div class="settings-desc">Selected preset for this node.</div>
+                </label>
+                <div class="helto-pe-system-preset-controls">
+                    <select class="helto-select helto-pe-system-preset-select" id="${promptPresetSelectId(kind)}">
+                        <option value="${escapeHtml(selectedId)}">${escapeHtml(selectedId)}</option>
+                    </select>
+                    <div class="helto-pe-system-preset-actions" aria-label="${escapeHtml(label)} system prompt actions">
+                        ${systemPromptPresetActionButtons(kind)}
+                    </div>
+                </div>
+            </div>
+        `;
+    }).join("");
+}
+
+function selectedSystemPromptPreset(kind, state) {
+    const entry = state[kind] ?? {};
+    const selectedId = String(entry.selectedId || "default");
+    return entry.presets?.find((preset) => preset.id === selectedId)
+        ?? entry.presets?.find((preset) => preset.id === "default")
+        ?? { id: "default", name: "Default", prompt: "", is_builtin: true };
+}
+
+function uniqueSystemPromptPresetCopyName(kind, state, baseName) {
+    const entry = state[kind] ?? {};
+    const usedNames = new Set((entry.presets || []).map((preset) => String(preset.name || preset.id || "").trim().toLowerCase()));
+    const rootName = `Copy of ${baseName || "Default"}`;
+    let candidate = rootName;
+    let index = 2;
+    while (usedNames.has(candidate.toLowerCase())) {
+        candidate = `${rootName} ${index}`;
+        index += 1;
+    }
+    return candidate;
+}
+
+function renderSystemPromptPresetSelect(modal, kind, state, selectedId = null) {
+    const select = modal.body.querySelector(`#${promptPresetSelectId(kind)}`);
+    if (!select) return;
+    const entry = state[kind] ??= { presets: [], selectedId: "default" };
+    const nextId = selectedId || entry.selectedId || "default";
+    const presets = Array.isArray(entry.presets) ? entry.presets : [];
+    const hasNext = presets.some((preset) => preset.id === nextId);
+    entry.selectedId = hasNext ? nextId : "default";
+    select.innerHTML = presets.map((preset) => (
+        `<option value="${escapeHtml(preset.id)}">${escapeHtml(preset.name || preset.id)}</option>`
+    )).join("");
+    if (!select.innerHTML) {
+        select.innerHTML = '<option value="default">Default</option>';
+        entry.selectedId = "default";
+    }
+    select.value = entry.selectedId;
+}
+
+async function refreshSystemPromptPresets(modal, kind, state, selectedId = null) {
+    const entry = state[kind] ??= {};
+    const refreshSequence = (entry.refreshSequence || 0) + 1;
+    entry.refreshSequence = refreshSequence;
+    const data = await fetchSystemPromptPresets(kind);
+    if (entry.refreshSequence !== refreshSequence) {
+        return entry.presets || [];
+    }
+    entry.presets = Array.isArray(data.presets) ? data.presets : [];
+    if (selectedId) {
+        entry.selectedId = selectedId;
+    }
+    renderSystemPromptPresetSelect(modal, kind, state, selectedId);
+    return entry.presets;
+}
+
+async function ensureSystemPromptPresetsLoaded(modal, kind, state, selectedId = null) {
+    const entry = state[kind] ??= {};
+    const nextId = selectedId || entry.selectedId || "default";
+    if (!Array.isArray(entry.presets) || entry.presets.length === 0) {
+        await refreshSystemPromptPresets(modal, kind, state, nextId);
+    } else {
+        entry.selectedId = nextId;
+        renderSystemPromptPresetSelect(modal, kind, state, nextId);
+    }
+    return selectedSystemPromptPreset(kind, state);
+}
+
+async function openSystemPromptPresetEditor(kind, preset, state, settingsModal) {
     const label = promptKindLabel(kind);
-    const data = await fetchSystemPrompt(kind);
+    const activePreset = preset ?? selectedSystemPromptPreset(kind, state);
+    const isDefault = activePreset.id === "default";
+    const nameInput = isDefault
+        ? ""
+        : `
+            <label class="settings-modal-text" for="helto-pe-system-preset-name">
+                <div class="settings-title">Name</div>
+            </label>
+            <input class="helto-prompt-enhancer-input" id="helto-pe-system-preset-name" type="text" value="${escapeHtml(activePreset.name || "")}">
+        `;
     const content = `
-        <textarea class="helto-prompt-enhancer-textarea" id="helto-pe-system-prompt-editor">${escapeHtml(data.prompt || "")}</textarea>
+        ${nameInput}
+        <textarea class="helto-prompt-enhancer-textarea" id="helto-pe-system-prompt-editor">${escapeHtml(activePreset.prompt || "")}</textarea>
     `;
     const modal = createModal(`Edit ${label} system prompt`, content, async (body) => {
-        await saveSystemPrompt(kind, body.querySelector("#helto-pe-system-prompt-editor").value);
+        const prompt = body.querySelector("#helto-pe-system-prompt-editor").value;
+        const saved = isDefault
+            ? await saveDefaultSystemPrompt(kind, prompt)
+            : await saveSystemPromptPreset(kind, {
+                id: activePreset.id,
+                name: body.querySelector("#helto-pe-system-preset-name").value,
+                prompt,
+            });
+        if (settingsModal && state) {
+            state[kind].selectedId = saved.id || activePreset.id || "default";
+            await refreshSystemPromptPresets(settingsModal, kind, state, state[kind].selectedId);
+        }
         return true;
     }, {
         actionText: "Save",
@@ -875,24 +1017,106 @@ async function openSystemPromptEditor(kind) {
         bodyClass: "helto-prompt-enhancer-editor-body",
     });
 
-    const resetButton = document.createElement("button");
-    resetButton.className = "helto-modal-btn btn-secondary";
-    resetButton.innerText = "Reset to default";
-    resetButton.onclick = async (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        resetButton.disabled = true;
-        try {
-            const resetData = await resetSystemPrompt(kind);
-            modal.body.querySelector("#helto-pe-system-prompt-editor").value = resetData.prompt || resetData.default_prompt || "";
-        } catch (err) {
-            console.error("Prompt enhancer system prompt reset failed:", err);
-            alert(err.message || "Reset failed.");
-        } finally {
-            resetButton.disabled = false;
-        }
-    };
-    modal.footer.insertBefore(resetButton, modal.actionBtn);
+    if (isDefault) {
+        const resetButton = document.createElement("button");
+        resetButton.className = "helto-modal-btn btn-secondary";
+        resetButton.innerText = "Reset to packaged";
+        resetButton.onclick = async (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            resetButton.disabled = true;
+            try {
+                const resetData = await resetDefaultSystemPrompt(kind);
+                modal.body.querySelector("#helto-pe-system-prompt-editor").value = resetData.prompt || resetData.default_prompt || "";
+                if (settingsModal && state) {
+                    await refreshSystemPromptPresets(settingsModal, kind, state, "default");
+                }
+            } catch (err) {
+                console.error("Prompt enhancer system prompt reset failed:", err);
+                alert(err.message || "Reset failed.");
+            } finally {
+                resetButton.disabled = false;
+            }
+        };
+        modal.footer.insertBefore(resetButton, modal.actionBtn);
+    }
+}
+
+function selectedPresetId(modal, kind) {
+    return modal.body.querySelector(`#${promptPresetSelectId(kind)}`)?.value || "default";
+}
+
+function setupSystemPromptPresetControls(modal, state) {
+    for (const kind of ["image", "video"]) {
+        const select = modal.body.querySelector(`#${promptPresetSelectId(kind)}`);
+        if (!select) continue;
+        select.onchange = () => {
+            state[kind].selectedId = select.value || "default";
+        };
+        refreshSystemPromptPresets(modal, kind, state, state[kind].selectedId).catch((err) => {
+            console.error(`Prompt enhancer ${kind} prompt preset refresh failed:`, err);
+        });
+    }
+
+    for (const button of modal.body.querySelectorAll("[data-preset-action]")) {
+        button.onclick = async (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const kind = button.dataset.kind;
+            const action = button.dataset.presetAction;
+            const selectedId = selectedPresetId(modal, kind);
+            state[kind].selectedId = selectedId;
+            button.disabled = true;
+            try {
+                const preset = await ensureSystemPromptPresetsLoaded(modal, kind, state, selectedId);
+                if (action === "new") {
+                    const name = window.prompt(`New ${promptKindLabel(kind)} system prompt name`, "");
+                    if (!name?.trim()) return;
+                    await openSystemPromptPresetEditor(kind, { id: "", name: name.trim(), prompt: "", is_builtin: false }, state, modal);
+                    return;
+                }
+                if (action === "duplicate") {
+                    const name = window.prompt("Duplicate preset name", uniqueSystemPromptPresetCopyName(kind, state, preset.name || selectedId));
+                    if (!name?.trim()) return;
+                    const saved = await saveSystemPromptPreset(kind, { name: name.trim(), prompt: preset.prompt || "" });
+                    state[kind].selectedId = saved.id || "default";
+                    await refreshSystemPromptPresets(modal, kind, state, state[kind].selectedId);
+                    return;
+                }
+                if (action === "edit") {
+                    await openSystemPromptPresetEditor(kind, preset, state, modal);
+                    return;
+                }
+                if (action === "rename") {
+                    if (preset.id === "default") {
+                        alert("The default preset name cannot be changed.");
+                        return;
+                    }
+                    const name = window.prompt("Preset name", preset.name || "");
+                    if (!name?.trim()) return;
+                    const saved = await saveSystemPromptPreset(kind, { id: preset.id, name: name.trim(), prompt: preset.prompt || "" });
+                    state[kind].selectedId = saved.id || preset.id;
+                    await refreshSystemPromptPresets(modal, kind, state, state[kind].selectedId);
+                    return;
+                }
+                if (action === "delete") {
+                    if (preset.id === "default") {
+                        alert("The default preset cannot be deleted.");
+                        return;
+                    }
+                    if (!window.confirm(`Delete "${preset.name || preset.id}"?`)) return;
+                    await deleteSystemPromptPreset(kind, preset.id);
+                    state[kind].selectedId = "default";
+                    await refreshSystemPromptPresets(modal, kind, state, "default");
+                }
+            } catch (err) {
+                console.error("Prompt enhancer system prompt preset action failed:", err);
+                alert(err.message || "System prompt preset action failed.");
+            } finally {
+                button.disabled = false;
+            }
+        };
+    }
 }
 
 async function openScriptEditor(node) {
@@ -1216,10 +1440,7 @@ function openSettingsModal(node) {
             </div>
         `)}
         ${settingsSection("System prompts", `
-            <div class="settings-modal-row helto-prompt-enhancer-prompt-actions">
-                <button type="button" class="helto-modal-btn btn-secondary" id="helto-pe-edit-image-prompt">edit image system prompt</button>
-                <button type="button" class="helto-modal-btn btn-secondary" id="helto-pe-edit-video-prompt">edit video system prompt</button>
-            </div>
+            ${systemPromptPresetRows(settings)}
         `)}
         ${settingsSection("Ollama settings", `
             <div class="settings-modal-row helto-prompt-enhancer-field-row">
@@ -1247,6 +1468,13 @@ function openSettingsModal(node) {
                     <div class="settings-desc">Request timeout in seconds.</div>
                 </label>
                 <input class="helto-prompt-enhancer-number" id="helto-pe-timeout" type="number" min="1" max="3600" value="${settings.timeout}">
+            </div>
+            <div class="settings-modal-row helto-prompt-enhancer-field-row">
+                <label class="settings-modal-text" for="helto-pe-max-tokens">
+                    <div class="settings-title">Max tokens</div>
+                    <div class="settings-desc">Maximum writer generation tokens. 0 keeps provider defaults.</div>
+                </label>
+                <input class="helto-prompt-enhancer-number" id="helto-pe-max-tokens" type="number" min="0" max="4096" value="${settings.maxTokens}">
             </div>
         `)}
         ${settingsSection("Local model settings", `
@@ -1282,6 +1510,9 @@ function openSettingsModal(node) {
             keepAlive: body.querySelector("#helto-pe-keep-alive").value,
             keepAliveUnit: body.querySelector("#helto-pe-keep-alive-unit").value,
             timeout: body.querySelector("#helto-pe-timeout").value,
+            maxTokens: body.querySelector("#helto-pe-max-tokens").value,
+            imageSystemPromptPreset: body.querySelector(`#${promptPresetSelectId("image")}`)?.value || "default",
+            videoSystemPromptPreset: body.querySelector(`#${promptPresetSelectId("video")}`)?.value || "default",
         });
         const hfToken = body.querySelector("#helto-pe-hf-token")?.value || "";
         const clearToken = Boolean(body.querySelector("#helto-pe-hf-clear")?.checked);
@@ -1301,24 +1532,14 @@ function openSettingsModal(node) {
         applyPromptDomHideMode(node);
         setCanvasDirty(node);
         return true;
+    }, {
+        cardClass: "helto-prompt-enhancer-settings-card",
     });
 
-    modal.body.querySelector("#helto-pe-edit-image-prompt").onclick = (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        openSystemPromptEditor("image").catch((err) => {
-            console.error("Prompt enhancer image prompt editor failed:", err);
-            alert(err.message || "Failed to open system prompt editor.");
-        });
-    };
-    modal.body.querySelector("#helto-pe-edit-video-prompt").onclick = (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        openSystemPromptEditor("video").catch((err) => {
-            console.error("Prompt enhancer video prompt editor failed:", err);
-            alert(err.message || "Failed to open system prompt editor.");
-        });
-    };
+    setupSystemPromptPresetControls(modal, {
+        image: { presets: [], selectedId: settings.imageSystemPromptPreset || "default" },
+        video: { presets: [], selectedId: settings.videoSystemPromptPreset || "default" },
+    });
     fetchProviderSettings().then((status) => {
         const statusEl = modal.body.querySelector("#helto-pe-hf-status");
         if (statusEl) {

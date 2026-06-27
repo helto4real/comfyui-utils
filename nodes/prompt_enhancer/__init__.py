@@ -6,10 +6,12 @@ from typing import Any
 from comfy_api.latest import io
 
 from ...shared.prompt_enhancer import (
+    DEFAULT_GENERATION_MAX_TOKENS,
     DEFAULT_OLLAMA_KEEP_ALIVE,
     DEFAULT_OLLAMA_MODEL,
     DEFAULT_OLLAMA_TIMEOUT,
     DEFAULT_OLLAMA_URL,
+    MAX_GENERATION_MAX_TOKENS,
     MAX_PROMPT_IMAGES,
     PromptEnhancerRequest,
     PromptEnhancerSettings,
@@ -92,13 +94,30 @@ class PromptEnhancer(io.ComfyNode):
                     placeholder="Describe the result you want, or write a segmented video script.",
                     dynamic_prompts=False,
                 ),
+                io.String.Input(
+                    "external_prompt",
+                    optional=True,
+                    force_input=True,
+                    default="",
+                    dynamic_prompts=False,
+                ),
                 io.String.Input("variables", default="[]", dynamic_prompts=False),
+                io.String.Input("image_system_prompt_preset", default="default", dynamic_prompts=False),
+                io.String.Input("video_system_prompt_preset", default="default", dynamic_prompts=False),
                 io.Boolean.Input("hide_mode", default=False),
                 io.Boolean.Input("privacy_mode", default=True),
                 io.String.Input("ollama_url", default=DEFAULT_OLLAMA_URL),
                 io.Int.Input("ollama_keep_alive", default=DEFAULT_OLLAMA_KEEP_ALIVE, min=-1, max=120, step=1),
                 io.Combo.Input("ollama_keep_alive_unit", options=["seconds", "minutes", "hours"], default="minutes"),
                 io.Int.Input("ollama_timeout", default=DEFAULT_OLLAMA_TIMEOUT, min=1, max=3600, step=1),
+                io.Int.Input(
+                    "generation_max_tokens",
+                    default=DEFAULT_GENERATION_MAX_TOKENS,
+                    min=0,
+                    max=MAX_GENERATION_MAX_TOKENS,
+                    step=1,
+                    display_mode=io.NumberDisplay.number,
+                ),
                 io.String.Input("provider", default="ollama"),
                 io.String.Input("model_id", default=""),
                 io.String.Input("model_backend", default="ollama"),
@@ -144,13 +163,17 @@ class PromptEnhancer(io.ComfyNode):
         segment_generation_mode: str = ALL_SEGMENTS_MODE,
         vision_context_mode: str = VISION_AUTO_MODE,
         script: str = "",
+        external_prompt: str = "",
         variables: str = "[]",
+        image_system_prompt_preset: str = "default",
+        video_system_prompt_preset: str = "default",
         hide_mode: bool = False,
         privacy_mode: bool = True,
         ollama_url: str = DEFAULT_OLLAMA_URL,
         ollama_keep_alive: int = DEFAULT_OLLAMA_KEEP_ALIVE,
         ollama_keep_alive_unit: str = "minutes",
         ollama_timeout: int = DEFAULT_OLLAMA_TIMEOUT,
+        generation_max_tokens: int = DEFAULT_GENERATION_MAX_TOKENS,
         vision_provider: str = DEFAULT_VISION_PROVIDER,
         vision_model_id: str = DEFAULT_VISION_MODEL,
         vision_model_backend: str = DEFAULT_VISION_BACKEND,
@@ -165,9 +188,16 @@ class PromptEnhancer(io.ComfyNode):
             keep_alive_unit=ollama_keep_alive_unit or "minutes",
             timeout=max(1, _as_int(ollama_timeout, DEFAULT_OLLAMA_TIMEOUT)),
         )
+        writer_max_tokens = _bounded_int(
+            generation_max_tokens,
+            DEFAULT_GENERATION_MAX_TOKENS,
+            0,
+            MAX_GENERATION_MAX_TOKENS,
+        )
         prompt_kind = prompt_type if prompt_type in VIDEO_PROMPT_TYPES else "image"
         plain_script = decrypt_prompt_text(script)
-        resolved_script = substitute_prompt_variables(plain_script.strip(), variables, resolved_seed)
+        prompt_source = str(external_prompt or "").strip() or plain_script.strip()
+        resolved_script = substitute_prompt_variables(prompt_source, variables, resolved_seed)
         progress.phase_start("media")
         registry = PromptProviderRegistry()
         model_name = (model or DEFAULT_OLLAMA_MODEL).strip() or DEFAULT_OLLAMA_MODEL
@@ -244,6 +274,7 @@ class PromptEnhancer(io.ComfyNode):
                     has_video=video is not None,
                     has_audio=audio is not None,
                     prompt_values=segment_variables,
+                    system_prompt_preset=video_system_prompt_preset,
                 )
                 resolved_prompt_for_segment = build_resolved_segment_prompt(segment_variables)
                 system_prompts.append(system_prompt_for_segment)
@@ -259,6 +290,7 @@ class PromptEnhancer(io.ComfyNode):
                     provider=writer_provider,
                     model_id=model_identifier,
                     model_backend=writer_backend,
+                    max_tokens=writer_max_tokens,
                 )
                 with progress.model_call() as call_progress:
                     generated_prompts.append(registry.generate(request, call_progress))
@@ -304,7 +336,12 @@ class PromptEnhancer(io.ComfyNode):
             else:
                 progress.begin_model_calls(1)
             direct_images = encoded_images if selected_mode == VISION_DIRECT_MODE else []
-            system_prompt = build_system_prompt(prompt_kind, has_video=video is not None, has_audio=audio is not None)
+            system_prompt = build_system_prompt(
+                prompt_kind,
+                has_video=video is not None,
+                has_audio=audio is not None,
+                system_prompt_preset=image_system_prompt_preset,
+            )
             resolved_prompt = _resolved_prompt_with_visual_context(resolved_script, visual_context)
             parsed_direction = ""
             parsed_continuity = ""
@@ -323,6 +360,7 @@ class PromptEnhancer(io.ComfyNode):
                 provider=writer_provider,
                 model_id=model_identifier,
                 model_backend=writer_backend,
+                max_tokens=writer_max_tokens,
             )
             with progress.model_call() as call_progress:
                 generated_prompt = registry.generate(request, call_progress)
@@ -347,6 +385,10 @@ def _as_int(value: Any, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _bounded_int(value: Any, default: int, minimum: int, maximum: int) -> int:
+    return min(maximum, max(minimum, _as_int(value, default)))
 
 
 def _prompt_image_count(images: Any) -> int:

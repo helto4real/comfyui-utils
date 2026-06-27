@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -7,10 +8,17 @@ from typing import Any
 PACKAGE_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_PROMPT_DIR = Path(__file__).resolve().parent / "defaults"
 USER_PROMPT_DIR = PACKAGE_DIR / "config" / "prompt enhancer"
+PRESET_STORE_FILENAME = "system_prompt_presets.json"
+DEFAULT_PROMPT_ID = "default"
 
 PROMPT_FILES = {
     "image": "image_system_prompt.txt",
     "video": "video_system_prompt.txt",
+}
+
+DEFAULT_PROMPT_NAMES = {
+    "image": "Default image",
+    "video": "Default video",
 }
 
 VIDEO_FOCUS = {
@@ -146,7 +154,11 @@ def user_prompt_path(kind: str) -> Path:
     return USER_PROMPT_DIR / PROMPT_FILES[normalize_prompt_kind(kind)]
 
 
-def load_default_system_prompt(kind: str) -> str:
+def preset_store_path() -> Path:
+    return USER_PROMPT_DIR / PRESET_STORE_FILENAME
+
+
+def load_packaged_system_prompt(kind: str) -> str:
     return default_prompt_path(kind).read_text(encoding="utf-8")
 
 
@@ -163,9 +175,230 @@ def load_user_system_prompt(kind: str) -> str | None:
     return None
 
 
-def load_system_prompt(kind: str) -> str:
+def load_default_system_prompt(kind: str) -> str:
     prompt_kind = normalize_prompt_kind(kind)
-    return load_user_system_prompt(prompt_kind) or load_default_system_prompt(prompt_kind)
+    return load_user_system_prompt(prompt_kind) or load_packaged_system_prompt(prompt_kind)
+
+
+def load_system_prompt(kind: str, preset_id: str | None = DEFAULT_PROMPT_ID) -> str:
+    return system_prompt_preset_payload(kind, preset_id)["prompt"]
+
+
+def _normalize_preset_id(preset_id: str | None) -> str:
+    value = str(preset_id or DEFAULT_PROMPT_ID).strip()
+    return value or DEFAULT_PROMPT_ID
+
+
+def _normalize_preset_name(name: str | None) -> str:
+    value = str(name or "").strip()
+    if not value:
+        raise ValueError("System prompt preset name cannot be blank.")
+    return value
+
+
+def _validate_prompt_text(prompt: str | None) -> str:
+    text = str(prompt or "")
+    if not text.strip():
+        raise ValueError("System prompt cannot be blank.")
+    return text
+
+
+def _preset_slug(name: str) -> str:
+    slug = []
+    previous_dash = False
+    for char in name.lower():
+        if char.isalnum():
+            slug.append(char)
+            previous_dash = False
+        elif not previous_dash:
+            slug.append("-")
+            previous_dash = True
+    value = "".join(slug).strip("-")
+    return value or "preset"
+
+
+def _read_preset_store() -> dict[str, list[dict[str, str]]]:
+    store: dict[str, list[dict[str, str]]] = {kind: [] for kind in PROMPT_FILES}
+    path = preset_store_path()
+    if not path.exists():
+        return store
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return store
+    if not isinstance(raw, dict):
+        return store
+    for kind in PROMPT_FILES:
+        entries = raw.get(kind, [])
+        if not isinstance(entries, list):
+            continue
+        seen_ids: set[str] = set()
+        seen_names: set[str] = set()
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            preset_id = _normalize_preset_id(entry.get("id"))
+            name = str(entry.get("name") or "").strip()
+            prompt = str(entry.get("prompt") or "")
+            name_key = name.casefold()
+            if (
+                not name
+                or not prompt.strip()
+                or preset_id == DEFAULT_PROMPT_ID
+                or preset_id in seen_ids
+                or name_key in seen_names
+            ):
+                continue
+            seen_ids.add(preset_id)
+            seen_names.add(name_key)
+            store[kind].append({"id": preset_id, "name": name, "prompt": prompt})
+    return store
+
+
+def _write_preset_store(store: dict[str, list[dict[str, str]]]) -> None:
+    USER_PROMPT_DIR.mkdir(parents=True, exist_ok=True)
+    payload = {kind: store.get(kind, []) for kind in PROMPT_FILES}
+    preset_store_path().write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _custom_presets(kind: str) -> list[dict[str, str]]:
+    return _read_preset_store()[normalize_prompt_kind(kind)]
+
+
+def _find_custom_preset(kind: str, preset_id: str) -> dict[str, str] | None:
+    normalized_id = _normalize_preset_id(preset_id)
+    for preset in _custom_presets(kind):
+        if preset["id"] == normalized_id:
+            return preset
+    return None
+
+
+def _default_system_prompt_payload(kind: str) -> dict[str, object]:
+    prompt_kind = normalize_prompt_kind(kind)
+    user_prompt = load_user_system_prompt(prompt_kind)
+    packaged_prompt = load_packaged_system_prompt(prompt_kind)
+    return {
+        "kind": prompt_kind,
+        "id": DEFAULT_PROMPT_ID,
+        "name": DEFAULT_PROMPT_NAMES[prompt_kind],
+        "prompt": user_prompt or packaged_prompt,
+        "default_prompt": packaged_prompt,
+        "is_builtin": True,
+        "is_default": user_prompt is None,
+    }
+
+
+def _custom_system_prompt_payload(kind: str, preset: dict[str, str]) -> dict[str, object]:
+    prompt_kind = normalize_prompt_kind(kind)
+    return {
+        "kind": prompt_kind,
+        "id": preset["id"],
+        "name": preset["name"],
+        "prompt": preset["prompt"],
+        "default_prompt": load_default_system_prompt(prompt_kind),
+        "is_builtin": False,
+        "is_default": False,
+    }
+
+
+def list_system_prompt_presets(kind: str) -> dict[str, object]:
+    prompt_kind = normalize_prompt_kind(kind)
+    presets = [_default_system_prompt_payload(prompt_kind)]
+    presets.extend(_custom_system_prompt_payload(prompt_kind, preset) for preset in _custom_presets(prompt_kind))
+    return {"kind": prompt_kind, "presets": presets}
+
+
+def system_prompt_preset_payload(kind: str, preset_id: str | None = DEFAULT_PROMPT_ID) -> dict[str, object]:
+    prompt_kind = normalize_prompt_kind(kind)
+    normalized_id = _normalize_preset_id(preset_id)
+    if normalized_id == DEFAULT_PROMPT_ID:
+        return _default_system_prompt_payload(prompt_kind)
+    preset = _find_custom_preset(prompt_kind, normalized_id)
+    if preset is None:
+        return _default_system_prompt_payload(prompt_kind)
+    return _custom_system_prompt_payload(prompt_kind, preset)
+
+
+def _unique_preset_id(kind: str, name: str) -> str:
+    used = {preset["id"] for preset in _custom_presets(kind)}
+    base = _preset_slug(name)
+    candidate = base
+    suffix = 2
+    while candidate in used or candidate == DEFAULT_PROMPT_ID:
+        candidate = f"{base}-{suffix}"
+        suffix += 1
+    return candidate
+
+
+def _assert_unique_name(kind: str, name: str, preset_id: str | None = None) -> None:
+    prompt_kind = normalize_prompt_kind(kind)
+    name_key = name.casefold()
+    normalized_id = str(preset_id).strip() if preset_id is not None else ""
+    if DEFAULT_PROMPT_NAMES[prompt_kind].casefold() == name_key and normalized_id != DEFAULT_PROMPT_ID:
+        raise ValueError("System prompt preset name must be unique.")
+    for preset in _custom_presets(prompt_kind):
+        if preset["id"] != normalized_id and preset["name"].casefold() == name_key:
+            raise ValueError("System prompt preset name must be unique.")
+
+
+def save_default_system_prompt(kind: str, prompt: str | None) -> dict[str, object]:
+    prompt_kind = normalize_prompt_kind(kind)
+    text = _validate_prompt_text(prompt)
+    USER_PROMPT_DIR.mkdir(parents=True, exist_ok=True)
+    user_prompt_path(prompt_kind).write_text(text, encoding="utf-8")
+    return system_prompt_preset_payload(prompt_kind, DEFAULT_PROMPT_ID)
+
+
+def reset_default_system_prompt(kind: str) -> dict[str, object]:
+    prompt_kind = normalize_prompt_kind(kind)
+    override_path = user_prompt_path(prompt_kind)
+    if override_path.exists():
+        override_path.unlink()
+    return system_prompt_preset_payload(prompt_kind, DEFAULT_PROMPT_ID)
+
+
+def save_system_prompt_preset(
+    kind: str,
+    name: str | None,
+    prompt: str | None,
+    preset_id: str | None = None,
+) -> dict[str, object]:
+    prompt_kind = normalize_prompt_kind(kind)
+    raw_id = str(preset_id).strip() if preset_id is not None else ""
+    if raw_id == DEFAULT_PROMPT_ID:
+        return save_default_system_prompt(prompt_kind, prompt)
+    normalized_id = raw_id
+    preset_name = _normalize_preset_name(name)
+    prompt_text = _validate_prompt_text(prompt)
+    _assert_unique_name(prompt_kind, preset_name, normalized_id)
+
+    store = _read_preset_store()
+    presets = store[prompt_kind]
+    for preset in presets:
+        if preset["id"] == normalized_id:
+            preset.update({"name": preset_name, "prompt": prompt_text})
+            _write_preset_store(store)
+            return _custom_system_prompt_payload(prompt_kind, preset)
+
+    new_id = _unique_preset_id(prompt_kind, preset_name)
+    new_preset = {"id": new_id, "name": preset_name, "prompt": prompt_text}
+    presets.append(new_preset)
+    _write_preset_store(store)
+    return _custom_system_prompt_payload(prompt_kind, new_preset)
+
+
+def delete_system_prompt_preset(kind: str, preset_id: str | None) -> dict[str, object]:
+    prompt_kind = normalize_prompt_kind(kind)
+    normalized_id = _normalize_preset_id(preset_id)
+    if normalized_id == DEFAULT_PROMPT_ID:
+        raise ValueError("Default system prompt preset cannot be deleted.")
+    store = _read_preset_store()
+    before = len(store[prompt_kind])
+    store[prompt_kind] = [preset for preset in store[prompt_kind] if preset["id"] != normalized_id]
+    if len(store[prompt_kind]) == before:
+        raise ValueError("Unknown system prompt preset.")
+    _write_preset_store(store)
+    return list_system_prompt_presets(prompt_kind)
 
 
 def build_video_prompt_blocks(prompt_values: dict[str, object] | None = None) -> dict[str, str]:
@@ -191,15 +424,7 @@ def build_video_prompt_blocks(prompt_values: dict[str, object] | None = None) ->
 
 
 def system_prompt_payload(kind: str) -> dict[str, object]:
-    prompt_kind = normalize_prompt_kind(kind)
-    user_prompt = load_user_system_prompt(prompt_kind)
-    default_prompt = load_default_system_prompt(prompt_kind)
-    return {
-        "kind": prompt_kind,
-        "prompt": user_prompt or default_prompt,
-        "default_prompt": default_prompt,
-        "is_default": user_prompt is None,
-    }
+    return system_prompt_preset_payload(kind, DEFAULT_PROMPT_ID)
 
 
 def _coerce_image_references(raw_references: object) -> list[dict[str, object]]:
@@ -293,21 +518,11 @@ def _description_policy(has_described: bool) -> str:
 
 
 def save_system_prompt(kind: str, prompt: str | None) -> dict[str, object]:
-    prompt_kind = normalize_prompt_kind(kind)
-    text = str(prompt or "")
-    if not text.strip():
-        raise ValueError("System prompt cannot be blank.")
-    USER_PROMPT_DIR.mkdir(parents=True, exist_ok=True)
-    user_prompt_path(prompt_kind).write_text(text, encoding="utf-8")
-    return system_prompt_payload(prompt_kind)
+    return save_default_system_prompt(kind, prompt)
 
 
 def reset_system_prompt(kind: str) -> dict[str, object]:
-    prompt_kind = normalize_prompt_kind(kind)
-    override_path = user_prompt_path(prompt_kind)
-    if override_path.exists():
-        override_path.unlink()
-    return system_prompt_payload(prompt_kind)
+    return reset_default_system_prompt(kind)
 
 
 def render_video_system_prompt(
@@ -315,6 +530,7 @@ def render_video_system_prompt(
     has_video: bool = False,
     has_audio: bool = False,
     prompt_values: dict[str, object] | None = None,
+    system_prompt_preset: str | None = DEFAULT_PROMPT_ID,
 ) -> str:
     prompt_kind = prompt_type if prompt_type in VIDEO_FOCUS else "video"
     notes = []
@@ -331,8 +547,8 @@ def render_video_system_prompt(
     values.update(prompt_values or {})
     values.update(build_video_prompt_blocks(values))
 
-    template = load_system_prompt("video")
+    template = load_system_prompt("video", system_prompt_preset)
     try:
         return template.format(**values)
     except (KeyError, ValueError):
-        return load_default_system_prompt("video").format(**values)
+        return load_packaged_system_prompt("video").format(**values)

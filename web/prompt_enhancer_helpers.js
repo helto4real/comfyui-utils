@@ -11,10 +11,13 @@ export const VARIABLE_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 export const SETTINGS_WIDGET_NAMES = Object.freeze([
     "hide_mode",
     "privacy_mode",
+    "image_system_prompt_preset",
+    "video_system_prompt_preset",
     "ollama_url",
     "ollama_keep_alive",
     "ollama_keep_alive_unit",
     "ollama_timeout",
+    "generation_max_tokens",
 ]);
 
 export const HIDDEN_WIDGET_NAMES = Object.freeze([
@@ -138,16 +141,22 @@ export function readPromptEnhancerSettings(node) {
         keepAlive: Number(getWidget(node, "ollama_keep_alive")?.value ?? 5),
         keepAliveUnit: String(getWidget(node, "ollama_keep_alive_unit")?.value || "minutes"),
         timeout: Number(getWidget(node, "ollama_timeout")?.value ?? 120),
+        maxTokens: Number(getWidget(node, "generation_max_tokens")?.value ?? 0),
+        imageSystemPromptPreset: String(getWidget(node, "image_system_prompt_preset")?.value || "default"),
+        videoSystemPromptPreset: String(getWidget(node, "video_system_prompt_preset")?.value || "default"),
     };
 }
 
 export function writePromptEnhancerSettings(node, settings) {
     setWidgetValue(getWidget(node, "hide_mode"), Boolean(settings.hideMode));
     setWidgetValue(getWidget(node, "privacy_mode"), Boolean(settings.privacyMode));
+    setWidgetValue(getWidget(node, "image_system_prompt_preset"), String(settings.imageSystemPromptPreset || "default"));
+    setWidgetValue(getWidget(node, "video_system_prompt_preset"), String(settings.videoSystemPromptPreset || "default"));
     setWidgetValue(getWidget(node, "ollama_url"), String(settings.ollamaUrl || "http://127.0.0.1:11434"));
     setWidgetValue(getWidget(node, "ollama_keep_alive"), Number(settings.keepAlive ?? 5));
     setWidgetValue(getWidget(node, "ollama_keep_alive_unit"), String(settings.keepAliveUnit || "minutes"));
     setWidgetValue(getWidget(node, "ollama_timeout"), Number(settings.timeout ?? 120));
+    setWidgetValue(getWidget(node, "generation_max_tokens"), Number(settings.maxTokens ?? 0));
 }
 
 export function readPromptEnhancerModelConfig(node) {
@@ -1041,6 +1050,12 @@ export async function fetchSystemPrompt(kind, fetchImpl = fetch) {
     return parsePromptEnhancerResponse(response, "Failed to load system prompt.");
 }
 
+export async function fetchSystemPromptPresets(kind, fetchImpl = fetch) {
+    const query = new URLSearchParams({ kind: String(kind || "") });
+    const response = await fetchImpl(`/helto_prompt_enhancer/system_prompts?${query.toString()}`);
+    return parsePromptEnhancerResponse(response, "Failed to load system prompt presets.");
+}
+
 export async function saveSystemPrompt(kind, prompt, fetchImpl = fetch) {
     const response = await fetchImpl("/helto_prompt_enhancer/system_prompt", {
         method: "POST",
@@ -1053,6 +1068,29 @@ export async function saveSystemPrompt(kind, prompt, fetchImpl = fetch) {
     return parsePromptEnhancerResponse(response, "Failed to save system prompt.");
 }
 
+export async function saveSystemPromptPreset(kind, preset, fetchImpl = fetch) {
+    const response = await fetchImpl("/helto_prompt_enhancer/system_prompts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            kind,
+            id: preset?.id,
+            name: preset?.name,
+            prompt: preset?.prompt,
+        }),
+    });
+    return parsePromptEnhancerResponse(response, "Failed to save system prompt preset.");
+}
+
+export async function saveDefaultSystemPrompt(kind, prompt, fetchImpl = fetch) {
+    const response = await fetchImpl("/helto_prompt_enhancer/system_prompts/default", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind, prompt }),
+    });
+    return parsePromptEnhancerResponse(response, "Failed to save default system prompt.");
+}
+
 export async function resetSystemPrompt(kind, fetchImpl = fetch) {
     const response = await fetchImpl("/helto_prompt_enhancer/system_prompt/reset", {
         method: "POST",
@@ -1060,6 +1098,24 @@ export async function resetSystemPrompt(kind, fetchImpl = fetch) {
         body: JSON.stringify({ kind }),
     });
     return parsePromptEnhancerResponse(response, "Failed to reset system prompt.");
+}
+
+export async function resetDefaultSystemPrompt(kind, fetchImpl = fetch) {
+    const response = await fetchImpl("/helto_prompt_enhancer/system_prompts/reset_default", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind }),
+    });
+    return parsePromptEnhancerResponse(response, "Failed to reset default system prompt.");
+}
+
+export async function deleteSystemPromptPreset(kind, id, fetchImpl = fetch) {
+    const response = await fetchImpl("/helto_prompt_enhancer/system_prompts/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind, id }),
+    });
+    return parsePromptEnhancerResponse(response, "Failed to delete system prompt preset.");
 }
 
 export function hideSerializedSettingsWidgets(node, collapseWidgetLayout) {

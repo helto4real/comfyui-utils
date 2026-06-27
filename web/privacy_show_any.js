@@ -275,6 +275,7 @@ function createCopyButton(display) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "helto-btn-icon helto-show-any-native-copy";
+    button.dataset.heltoAction = "copy-text";
     button.innerHTML = ICONS.copy;
     setCopyButtonState(button, "Copy text");
 
@@ -307,6 +308,35 @@ function createCopyButton(display) {
     return button;
 }
 
+function attachCopyButton(display) {
+    if (!display?.inputEl) return false;
+
+    const container = display.container ?? display.inputEl.parentElement ?? null;
+    if (!container) return false;
+
+    display.container = container;
+    container.classList?.add("helto-show-any-native-wrap");
+
+    if (!display.copyButton) {
+        display.copyButton = createCopyButton(display);
+    }
+    if (display.copyButton.parentElement !== container) {
+        container.appendChild(display.copyButton);
+    }
+    return true;
+}
+
+function ensureCopyButtonAttached(display) {
+    if (attachCopyButton(display)) return;
+
+    const retry = () => attachCopyButton(display);
+    if (typeof window.requestAnimationFrame === "function") {
+        window.requestAnimationFrame(retry);
+    } else {
+        window.setTimeout?.(retry, 0);
+    }
+}
+
 function createNativeTextDisplay(node) {
     const created = ComfyWidgets?.STRING?.(
         node,
@@ -334,7 +364,6 @@ function createNativeTextDisplay(node) {
         inputEl.style.opacity = 0.6;
         inputEl.classList?.add("helto-show-any-native-text");
     }
-    container?.classList?.add("helto-show-any-native-wrap");
 
     const display = {
         node,
@@ -359,10 +388,7 @@ function createNativeTextDisplay(node) {
     hoverElement?.addEventListener("mouseenter", revealText);
     hoverElement?.addEventListener("mouseleave", hideText);
 
-    if (container) {
-        display.copyButton = createCopyButton(display);
-        container.appendChild(display.copyButton);
-    }
+    ensureCopyButtonAttached(display);
     syncDisplayTextVisibility(display);
     return display;
 }
@@ -376,6 +402,7 @@ function ensurePrivacyShowAnyUi(node) {
     if (!node[DISPLAY_WIDGET_KEY]) {
         node[DISPLAY_WIDGET_KEY] = createNativeTextDisplay(node);
     }
+    ensureCopyButtonAttached(node[DISPLAY_WIDGET_KEY]);
     if (Array.isArray(node.size)) {
         node.setSize?.([
             Math.max(node.size[0], PRIVACY_SHOW_ANY_LAYOUT.minWidth),

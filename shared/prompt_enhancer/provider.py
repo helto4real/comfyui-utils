@@ -13,7 +13,7 @@ from typing import Any, Iterator, Protocol
 from PIL import Image
 
 from .progress import PromptEnhancerProgress
-from .prompts import build_video_prompt_blocks, load_default_system_prompt, load_system_prompt, render_video_system_prompt
+from .prompts import build_video_prompt_blocks, load_packaged_system_prompt, load_system_prompt, render_video_system_prompt
 
 
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
@@ -21,6 +21,8 @@ DEFAULT_OLLAMA_MODEL = "llava:latest"
 DEFAULT_OLLAMA_KEEP_ALIVE = 5
 DEFAULT_OLLAMA_KEEP_ALIVE_UNIT = "minutes"
 DEFAULT_OLLAMA_TIMEOUT = 120
+DEFAULT_GENERATION_MAX_TOKENS = 0
+MAX_GENERATION_MAX_TOKENS = 4096
 MAX_PROMPT_IMAGES = 8
 MAX_SEED = 2_147_483_647
 PROVIDER_OLLAMA = "ollama"
@@ -42,7 +44,7 @@ KNOWN_OLLAMA_VISION_MODEL_MARKERS = (
 )
 
 PROMPT_TYPES = ("image", "video", "multi scene video")
-IMAGE_SYSTEM_PROMPT = load_default_system_prompt("image")
+IMAGE_SYSTEM_PROMPT = load_packaged_system_prompt("image")
 VISUAL_CONTEXT_SYSTEM_PROMPT = (
     "You are a concise visual context analyzer for a prompt enhancement node. "
     "Analyze only the provided reference images in relation to the user's requested prompt. "
@@ -71,6 +73,7 @@ class PromptEnhancerRequest:
     provider: str = PROVIDER_OLLAMA
     model_id: str = ""
     model_backend: str = ""
+    max_tokens: int = DEFAULT_GENERATION_MAX_TOKENS
 
 
 class PromptProvider(Protocol):
@@ -168,6 +171,18 @@ def ollama_keep_alive(value: int | str | None, unit: str | None) -> str:
     return f"{keep_alive}{suffix}"
 
 
+def requested_generation_max_tokens(value: Any) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return DEFAULT_GENERATION_MAX_TOKENS
+
+
+def effective_generation_token_budget(value: Any, default: int) -> int:
+    requested = requested_generation_max_tokens(value)
+    return requested if requested > 0 else default
+
+
 def resolve_seed(seed: int | str | None, rng: random.Random | None = None) -> int:
     try:
         value = int(seed if seed is not None else -1)
@@ -184,15 +199,17 @@ def build_system_prompt(
     has_video: bool = False,
     has_audio: bool = False,
     prompt_values: dict[str, object] | None = None,
+    system_prompt_preset: str | None = "default",
 ) -> str:
     prompt_kind = prompt_type if prompt_type in PROMPT_TYPES else "image"
     if prompt_kind == "image":
-        return load_system_prompt("image")
+        return load_system_prompt("image", system_prompt_preset)
     return render_video_system_prompt(
         prompt_kind,
         has_video=has_video,
         has_audio=has_audio,
         prompt_values=prompt_values,
+        system_prompt_preset=system_prompt_preset,
     )
 
 
@@ -335,6 +352,9 @@ class OllamaPromptProvider:
             "keep_alive": keep_alive,
             "options": {"seed": request.seed},
         }
+        max_tokens = requested_generation_max_tokens(request.max_tokens)
+        if max_tokens > 0:
+            payload["options"]["num_predict"] = max_tokens
         if request.images:
             payload["images"] = request.images
 
@@ -370,6 +390,10 @@ class OllamaPromptProvider:
     ) -> str:
         streaming_payload = dict(payload)
         streaming_payload["stream"] = True
+        token_budget = effective_generation_token_budget(
+            request.max_tokens,
+            OLLAMA_ESTIMATED_GENERATION_TOKENS,
+        )
         progress.phase_start("generate")
         chunks: list[str] = []
         chunk_count = 0
@@ -381,7 +405,7 @@ class OllamaPromptProvider:
                 if text:
                     chunks.append(str(text))
                     chunk_count += 1
-                    progress.generation_step(OLLAMA_ESTIMATED_GENERATION_TOKENS)
+                    progress.generation_step(token_budget)
                 if item.get("done"):
                     break
         except Exception:
@@ -393,7 +417,7 @@ class OllamaPromptProvider:
             if not isinstance(response, dict) or "response" not in response:
                 raise RuntimeError("Ollama response did not include generated text.")
             chunks = [str(response.get("response") or "")]
-            chunk_count = OLLAMA_ESTIMATED_GENERATION_TOKENS
+            chunk_count = token_budget
         except BaseException:
             raised = True
             raise
@@ -408,7 +432,7 @@ class OllamaPromptProvider:
                         raise
 
         if chunk_count:
-            progress.generation_tokens(chunk_count, max(chunk_count, OLLAMA_ESTIMATED_GENERATION_TOKENS))
+            progress.generation_tokens(chunk_count, max(chunk_count, token_budget))
         progress.phase_done("generate")
         generated_prompt = "".join(chunks).strip()
         return generated_prompt

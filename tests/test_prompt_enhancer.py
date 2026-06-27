@@ -126,7 +126,26 @@ class PromptEnhancerProviderTests(unittest.TestCase):
         self.assertIn("multi-scene video prompt", multi_prompt)
         self.assertIn("not sent as audio bytes", multi_prompt)
 
-    def test_system_prompt_override_and_reset_uses_user_config(self):
+    def test_system_prompt_default_uses_config_before_packaged_prompt(self):
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(prompts, "USER_PROMPT_DIR", Path(tmpdir)):
+            prompts.user_prompt_path("image").write_text("configured image prompt", encoding="utf-8")
+
+            default_payload = prompts.system_prompt_payload("image")
+            catalog = prompts.list_system_prompt_presets("image")
+
+            self.assertEqual(default_payload["prompt"], "configured image prompt")
+            self.assertEqual(default_payload["default_prompt"], IMAGE_SYSTEM_PROMPT)
+            self.assertFalse(default_payload["is_default"])
+            self.assertEqual(catalog["presets"][0]["id"], "default")
+            self.assertEqual(catalog["presets"][0]["prompt"], "configured image prompt")
+            self.assertEqual(build_system_prompt("image"), "configured image prompt")
+
+            reset_payload = prompts.reset_default_system_prompt("image")
+
+            self.assertEqual(reset_payload["prompt"], IMAGE_SYSTEM_PROMPT)
+            self.assertTrue(reset_payload["is_default"])
+
+    def test_system_prompt_override_and_reset_uses_default_config(self):
         with tempfile.TemporaryDirectory() as tmpdir, patch.object(prompts, "USER_PROMPT_DIR", Path(tmpdir)):
             self.assertEqual(prompts.load_system_prompt("image"), IMAGE_SYSTEM_PROMPT)
             default_payload = prompts.system_prompt_payload("image")
@@ -145,6 +164,32 @@ class PromptEnhancerProviderTests(unittest.TestCase):
             self.assertEqual(reset_payload["prompt"], IMAGE_SYSTEM_PROMPT)
             self.assertTrue(reset_payload["is_default"])
             self.assertFalse(prompts.user_prompt_path("image").exists())
+
+    def test_custom_system_prompt_presets_are_named_per_kind(self):
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(prompts, "USER_PROMPT_DIR", Path(tmpdir)):
+            image_preset = prompts.save_system_prompt_preset("image", "Flux Dev", "flux image prompt")
+            video_preset = prompts.save_system_prompt_preset("video", "Flux Dev", "Video {focus}")
+
+            self.assertEqual(image_preset["name"], "Flux Dev")
+            self.assertEqual(build_system_prompt("image", system_prompt_preset=image_preset["id"]), "flux image prompt")
+            self.assertIn(
+                "Video a concise video generation prompt",
+                build_system_prompt("video", system_prompt_preset=video_preset["id"]),
+            )
+
+            with self.assertRaisesRegex(ValueError, "unique"):
+                prompts.save_system_prompt_preset("image", "flux dev", "duplicate")
+
+            renamed = prompts.save_system_prompt_preset("image", "Flux Schnell", "fast prompt", image_preset["id"])
+
+            self.assertEqual(renamed["id"], image_preset["id"])
+            self.assertEqual(renamed["name"], "Flux Schnell")
+            self.assertEqual(build_system_prompt("image", system_prompt_preset=image_preset["id"]), "fast prompt")
+
+            deleted = prompts.delete_system_prompt_preset("image", image_preset["id"])
+
+            self.assertEqual([preset["id"] for preset in deleted["presets"]], ["default"])
+            self.assertEqual(build_system_prompt("image", system_prompt_preset=image_preset["id"]), IMAGE_SYSTEM_PROMPT)
 
     def test_video_system_prompt_template_is_editable_and_falls_back_on_invalid_placeholders(self):
         with tempfile.TemporaryDirectory() as tmpdir, patch.object(prompts, "USER_PROMPT_DIR", Path(tmpdir)):
@@ -165,10 +210,18 @@ class PromptEnhancerProviderTests(unittest.TestCase):
             self.assertIn("a concise video generation prompt", fallback_prompt)
             self.assertNotIn("Broken", fallback_prompt)
 
+            custom = prompts.save_system_prompt_preset("video", "Broken custom", "Custom broken {missing}")
+            custom_fallback = build_system_prompt("video", system_prompt_preset=custom["id"])
+
+            self.assertIn("a concise video generation prompt", custom_fallback)
+            self.assertNotIn("Custom broken", custom_fallback)
+
     def test_system_prompt_save_rejects_blank_or_unknown_kind(self):
         with tempfile.TemporaryDirectory() as tmpdir, patch.object(prompts, "USER_PROMPT_DIR", Path(tmpdir)):
             with self.assertRaisesRegex(ValueError, "blank"):
                 prompts.save_system_prompt("image", "   ")
+            with self.assertRaisesRegex(ValueError, "blank"):
+                prompts.save_system_prompt_preset("image", "Named", "   ")
             with self.assertRaisesRegex(ValueError, "Unknown"):
                 prompts.system_prompt_payload("audio")
 
@@ -278,6 +331,7 @@ class PromptEnhancerProviderTests(unittest.TestCase):
             seed=123,
             images=[],
             settings=settings,
+            max_tokens=64,
         )
         progress_events = []
 
@@ -308,7 +362,10 @@ class PromptEnhancerProviderTests(unittest.TestCase):
         self.assertEqual(result, "enhanced prompt")
         payload = stream_request.call_args.args[1]
         self.assertTrue(payload["stream"])
+        self.assertEqual(payload["options"], {"seed": 123, "num_predict": 64})
         self.assertEqual(request.call_args.args[1], {"model": "llava:latest", "keep_alive": 0, "stream": False})
+        self.assertIn(("generate", 64), progress_events)
+        self.assertIn(("tokens", 2, 64), progress_events)
         self.assertIn(("release", "done"), progress_events)
 
     def test_ollama_stop_unloads_zero_keep_alive_model(self):
@@ -705,6 +762,46 @@ A character turns around. @image3:character
         self.assertEqual(result, "generated prompt")
         unload.assert_not_called()
 
+    def test_local_provider_writer_max_tokens_reaches_generation_helpers(self):
+        cases = [
+            ("qwen3_vl_4b_fast", "qwen", "_generate_qwen", [], 0, 180),
+            ("qwen3_vl_4b_fast", "qwen", "_generate_qwen", [], 96, 96),
+            ("florence2_fast_caption", "florence", "_generate_florence", [object()], 97, 97),
+            (
+                "gemma4_e4b_uncensored_gguf_q8",
+                "llama_cpp_vision",
+                "_generate_llama_cpp_vision",
+                [object()],
+                98,
+                98,
+            ),
+        ]
+        for alias, backend, helper_name, decoded_images, configured_tokens, expected_tokens in cases:
+            with self.subTest(alias=alias, configured_tokens=configured_tokens):
+                request = PromptEnhancerRequest(
+                    model=alias,
+                    prompt_type="image",
+                    prompt="A quiet forest",
+                    system_prompt="system",
+                    seed=1,
+                    images=["encoded"],
+                    settings=PromptEnhancerSettings(),
+                    provider=local_provider.MODEL_REGISTRY[alias].provider,
+                    model_id=alias,
+                    model_backend=backend,
+                    max_tokens=configured_tokens,
+                )
+
+                with patch.object(local_provider, "_LOADED_MODELS", {alias: {"torch": None}}), \
+                        patch.object(local_provider, "ensure_model_downloaded", return_value=Path("/tmp/model")), \
+                        patch.object(local_provider, "local_vram_preflight"), \
+                        patch.object(local_provider, "decode_request_images", return_value=decoded_images), \
+                        patch.object(local_provider, helper_name, return_value=" generated prompt ") as generate:
+                    result = local_provider.LocalPromptProvider().generate(request)
+
+                self.assertEqual(result, "generated prompt")
+                self.assertEqual(generate.call_args.kwargs["max_tokens"], expected_tokens)
+
     def test_local_provider_exception_unloads_model_even_with_nonzero_keep_alive(self):
         alias = "qwen3_vl_4b_fast"
         request = PromptEnhancerRequest(
@@ -1010,16 +1107,45 @@ class PromptEnhancerRouteTests(unittest.TestCase):
         self.assertEqual(reset_response.status, 200)
         self.assertIn('"is_default": true', reset_response.text)
 
+    def test_system_prompt_preset_routes_manage_catalog(self):
+        routes = importlib.import_module("shared.prompt_enhancer.routes")
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(prompts, "USER_PROMPT_DIR", Path(tmpdir)):
+            list_response = asyncio.run(routes._request_system_prompt_presets("image"))
+            save_response = asyncio.run(routes._save_system_prompt_preset(
+                {"kind": "image", "name": "Route preset", "prompt": "route prompt"}
+            ))
+            saved_id = save_response.text.split('"id": "')[1].split('"')[0]
+            update_default_response = asyncio.run(routes._save_default_system_prompt(
+                {"kind": "image", "prompt": "route default prompt"}
+            ))
+            reset_default_response = asyncio.run(routes._reset_default_system_prompt({"kind": "image"}))
+            delete_response = asyncio.run(routes._delete_system_prompt_preset({"kind": "image", "id": saved_id}))
+
+        self.assertEqual(list_response.status, 200)
+        self.assertIn('"id": "default"', list_response.text)
+        self.assertEqual(save_response.status, 200)
+        self.assertIn('"name": "Route preset"', save_response.text)
+        self.assertEqual(update_default_response.status, 200)
+        self.assertIn('"prompt": "route default prompt"', update_default_response.text)
+        self.assertEqual(reset_default_response.status, 200)
+        self.assertIn('"is_default": true', reset_default_response.text)
+        self.assertEqual(delete_response.status, 200)
+        self.assertNotIn("Route preset", delete_response.text)
+
     def test_system_prompt_routes_return_errors(self):
         routes = importlib.import_module("shared.prompt_enhancer.routes")
 
         blank_response = asyncio.run(routes._save_system_prompt({"kind": "image", "prompt": " "}))
         unknown_response = asyncio.run(routes._request_system_prompt("audio"))
+        delete_default_response = asyncio.run(routes._delete_system_prompt_preset({"kind": "image", "id": "default"}))
 
         self.assertEqual(blank_response.status, 400)
         self.assertIn("System prompt cannot be blank", blank_response.text)
         self.assertEqual(unknown_response.status, 400)
         self.assertIn("Unknown system prompt kind", unknown_response.text)
+        self.assertEqual(delete_default_response.status, 400)
+        self.assertIn("Default system prompt preset cannot be deleted", delete_default_response.text)
 
 
 def json_dumps(payload):

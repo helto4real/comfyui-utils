@@ -14,7 +14,13 @@ from urllib.parse import unquote, urlparse
 from PIL import Image
 
 from .progress import PromptEnhancerProgress
-from .provider import DEFAULT_OLLAMA_KEEP_ALIVE, DEFAULT_OLLAMA_KEEP_ALIVE_UNIT, ollama_keep_alive, ollama_model_supports_images
+from .provider import (
+    DEFAULT_OLLAMA_KEEP_ALIVE,
+    DEFAULT_OLLAMA_KEEP_ALIVE_UNIT,
+    effective_generation_token_budget,
+    ollama_keep_alive,
+    ollama_model_supports_images,
+)
 
 try:
     import folder_paths
@@ -581,8 +587,9 @@ class LocalPromptProvider:
             _check_interrupted(progress)
             instruction = _instruction(getattr(request, "system_prompt", ""), getattr(request, "prompt", ""))
             images = decode_request_images(getattr(request, "images", []) or [])
+            max_tokens = effective_generation_token_budget(getattr(request, "max_tokens", 0), LOCAL_GENERATION_TOKENS)
             if spec.backend == "qwen":
-                result = clean_prompt_text(_generate_qwen(spec, path, images, instruction, progress))
+                result = clean_prompt_text(_generate_qwen(spec, path, images, instruction, progress, max_tokens=max_tokens))
                 _release_local_model_if_needed(spec, request, progress)
                 return result
             if spec.backend == "florence":
@@ -595,11 +602,15 @@ class LocalPromptProvider:
                     result = fallback_enhance_prompt(getattr(request, "prompt", ""), getattr(request, "prompt_type", "image"))
                     _release_local_model_if_needed(spec, request, progress)
                     return result
-                result = clean_prompt_text(_generate_florence(spec, path, images[0], instruction, progress))
+                result = clean_prompt_text(
+                    _generate_florence(spec, path, images[0], instruction, progress, max_tokens=max_tokens)
+                )
                 _release_local_model_if_needed(spec, request, progress)
                 return result
             if spec.backend == "llama_cpp_vision":
-                result = clean_prompt_text(_generate_llama_cpp_vision(spec, path, images, instruction, progress))
+                result = clean_prompt_text(
+                    _generate_llama_cpp_vision(spec, path, images, instruction, progress, max_tokens=max_tokens)
+                )
                 _release_local_model_if_needed(spec, request, progress)
                 return result
             raise LocalProviderError(f"Unsupported local Prompt Enhancer backend: {spec.backend}")
@@ -634,6 +645,14 @@ def _check_interrupted(progress: PromptEnhancerProgress | None = None) -> None:
         checker()
         return
     PromptEnhancerProgress.check_interrupted()
+
+
+def _local_generation_token_budget(max_tokens: int | str | None) -> int:
+    try:
+        token_budget = int(max_tokens)
+    except (TypeError, ValueError):
+        token_budget = LOCAL_GENERATION_TOKENS
+    return token_budget if token_budget > 0 else LOCAL_GENERATION_TOKENS
 
 
 def _cleanup_local_model_after_exception(spec: LocalModelSpec) -> None:
@@ -690,6 +709,7 @@ def _generate_qwen(
     images: list[Image.Image],
     instruction: str,
     progress: PromptEnhancerProgress | None = None,
+    max_tokens: int = LOCAL_GENERATION_TOKENS,
 ) -> str:
     loaded = _load_qwen_model(spec, path)
     if progress is not None:
@@ -709,10 +729,11 @@ def _generate_qwen(
     device = next(model.parameters()).device
     model_inputs = {key: value.to(device) if torch.is_tensor(value) else value for key, value in inputs.items()}
     input_len = model_inputs["input_ids"].shape[-1]
-    stopping_criteria = _generation_progress_criteria(progress, input_len, LOCAL_GENERATION_TOKENS)
+    token_budget = _local_generation_token_budget(max_tokens)
+    stopping_criteria = _generation_progress_criteria(progress, input_len, token_budget)
     generate_kwargs = {
         **model_inputs,
-        "max_new_tokens": LOCAL_GENERATION_TOKENS,
+        "max_new_tokens": token_budget,
         "do_sample": False,
         "repetition_penalty": 1.05,
     }
@@ -746,6 +767,7 @@ def _generate_florence(
     image: Image.Image,
     instruction: str,
     progress: PromptEnhancerProgress | None = None,
+    max_tokens: int = LOCAL_GENERATION_TOKENS,
 ) -> str:
     loaded = _load_florence_model(spec, path)
     if progress is not None:
@@ -760,8 +782,9 @@ def _generate_florence(
     inputs = {key: value.to(device) if torch.is_tensor(value) else value for key, value in inputs.items()}
     input_ids = inputs.get("input_ids")
     input_len = int(input_ids.shape[-1]) if input_ids is not None and hasattr(input_ids, "shape") else 0
-    stopping_criteria = _generation_progress_criteria(progress, input_len, LOCAL_GENERATION_TOKENS)
-    generate_kwargs = {**inputs, "max_new_tokens": LOCAL_GENERATION_TOKENS, "do_sample": False}
+    token_budget = _local_generation_token_budget(max_tokens)
+    stopping_criteria = _generation_progress_criteria(progress, input_len, token_budget)
+    generate_kwargs = {**inputs, "max_new_tokens": token_budget, "do_sample": False}
     if stopping_criteria is not None:
         generate_kwargs["stopping_criteria"] = stopping_criteria
     outputs = model.generate(**generate_kwargs)
@@ -828,6 +851,7 @@ def _generate_llama_cpp_vision(
     images: list[Image.Image],
     instruction: str,
     progress: PromptEnhancerProgress | None = None,
+    max_tokens: int = LOCAL_GENERATION_TOKENS,
 ) -> str:
     loaded = _load_llama_cpp_vision_model(spec, path)
     if progress is not None:
@@ -840,9 +864,10 @@ def _generate_llama_cpp_vision(
         content.append({"type": "text", "text": f"Reference image {index}:"})
         content.append({"type": "image_url", "image_url": {"url": _image_data_url(image)}})
     content.append({"type": "text", "text": instruction})
+    token_budget = _local_generation_token_budget(max_tokens)
     payload = {
         "messages": [{"role": "user", "content": content}],
-        "max_tokens": LOCAL_GENERATION_TOKENS,
+        "max_tokens": token_budget,
         "temperature": 0.2,
         "top_p": 0.95,
     }
@@ -854,7 +879,7 @@ def _generate_llama_cpp_vision(
                 text = _llama_cpp_chunk_text(item)
                 if text:
                     chunks.append(text)
-                    progress.generation_step(LOCAL_GENERATION_TOKENS)
+                    progress.generation_step(token_budget)
             progress.phase_done("generate")
             return "".join(chunks)
         except Exception:

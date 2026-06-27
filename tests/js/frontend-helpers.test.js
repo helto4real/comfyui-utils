@@ -79,7 +79,9 @@ import {
     dismissPromptAutocompleteUntilInput,
     emptyAutocompleteState,
     insertVariableSuggestion,
+    deleteSystemPromptPreset,
     fetchSystemPrompt,
+    fetchSystemPromptPresets,
     hideSerializedSettingsWidgets,
     isEncryptedText,
     isEncryptedVariables,
@@ -103,8 +105,11 @@ import {
     readPromptText,
     readPromptVariables,
     readPromptEnhancerSettings,
+    resetDefaultSystemPrompt,
     resetSystemPrompt,
+    saveDefaultSystemPrompt,
     saveSystemPrompt,
+    saveSystemPromptPreset,
     serializedPromptVariablesValue,
     serializePromptVariables,
     setGenerateNewEachPrompt,
@@ -1157,10 +1162,13 @@ test("prompt enhancer settings read and write serialized widgets", () => {
         widgets: [
             { name: "hide_mode", value: false },
             { name: "privacy_mode", value: true },
+            { name: "image_system_prompt_preset", value: "default" },
+            { name: "video_system_prompt_preset", value: "default" },
             { name: "ollama_url", value: "http://127.0.0.1:11434" },
             { name: "ollama_keep_alive", value: 5 },
             { name: "ollama_keep_alive_unit", value: "minutes" },
             { name: "ollama_timeout", value: 120 },
+            { name: "generation_max_tokens", value: 0 },
         ],
     };
 
@@ -1171,6 +1179,9 @@ test("prompt enhancer settings read and write serialized widgets", () => {
         keepAlive: 2,
         keepAliveUnit: "seconds",
         timeout: 45,
+        maxTokens: 256,
+        imageSystemPromptPreset: "flux image",
+        videoSystemPromptPreset: "wan video",
     });
 
     assert.deepEqual(readPromptEnhancerSettings(node), {
@@ -1180,6 +1191,9 @@ test("prompt enhancer settings read and write serialized widgets", () => {
         keepAlive: 2,
         keepAliveUnit: "seconds",
         timeout: 45,
+        maxTokens: 256,
+        imageSystemPromptPreset: "flux image",
+        videoSystemPromptPreset: "wan video",
     });
 });
 
@@ -1676,6 +1690,49 @@ test("prompt enhancer system prompt helpers fetch save and reset prompts", async
                 is_default: true,
             });
         }
+        if (url.startsWith("/helto_prompt_enhancer/system_prompts?")) {
+            return jsonResponse({
+                kind: "image",
+                presets: [
+                    { kind: "image", id: "default", name: "Default image", prompt: "default", is_builtin: true },
+                    { kind: "image", id: "flux", name: "Flux", prompt: "flux prompt", is_builtin: false },
+                ],
+            });
+        }
+        if (url === "/helto_prompt_enhancer/system_prompts") {
+            const body = JSON.parse(options.body);
+            return jsonResponse({
+                kind: body.kind,
+                id: body.id || "new-preset",
+                name: body.name,
+                prompt: body.prompt,
+                is_builtin: false,
+            });
+        }
+        if (url === "/helto_prompt_enhancer/system_prompts/default") {
+            const body = JSON.parse(options.body);
+            return jsonResponse({
+                kind: body.kind,
+                id: "default",
+                name: "Default image",
+                prompt: body.prompt,
+                is_builtin: true,
+                is_default: false,
+            });
+        }
+        if (url === "/helto_prompt_enhancer/system_prompts/reset_default") {
+            return jsonResponse({
+                kind: "image",
+                id: "default",
+                name: "Default image",
+                prompt: "packaged",
+                is_builtin: true,
+                is_default: true,
+            });
+        }
+        if (url === "/helto_prompt_enhancer/system_prompts/delete") {
+            return jsonResponse({ kind: "image", presets: [] });
+        }
         return jsonResponse({ error: "unexpected" }, false);
     };
 
@@ -1697,6 +1754,40 @@ test("prompt enhancer system prompt helpers fetch save and reset prompts", async
         default_prompt: "default",
         is_default: true,
     });
+    assert.deepEqual(await fetchSystemPromptPresets("image", fetchImpl), {
+        kind: "image",
+        presets: [
+            { kind: "image", id: "default", name: "Default image", prompt: "default", is_builtin: true },
+            { kind: "image", id: "flux", name: "Flux", prompt: "flux prompt", is_builtin: false },
+        ],
+    });
+    assert.deepEqual(await saveSystemPromptPreset("image", { name: "New", prompt: "new prompt" }, fetchImpl), {
+        kind: "image",
+        id: "new-preset",
+        name: "New",
+        prompt: "new prompt",
+        is_builtin: false,
+    });
+    assert.deepEqual(await saveDefaultSystemPrompt("image", "configured", fetchImpl), {
+        kind: "image",
+        id: "default",
+        name: "Default image",
+        prompt: "configured",
+        is_builtin: true,
+        is_default: false,
+    });
+    assert.deepEqual(await resetDefaultSystemPrompt("image", fetchImpl), {
+        kind: "image",
+        id: "default",
+        name: "Default image",
+        prompt: "packaged",
+        is_builtin: true,
+        is_default: true,
+    });
+    assert.deepEqual(await deleteSystemPromptPreset("image", "flux", fetchImpl), {
+        kind: "image",
+        presets: [],
+    });
 
     assert.equal(calls[0].url, "/helto_prompt_enhancer/system_prompt?kind=image");
     assert.equal(calls[1].url, "/helto_prompt_enhancer/system_prompt");
@@ -1704,6 +1795,19 @@ test("prompt enhancer system prompt helpers fetch save and reset prompts", async
     assert.deepEqual(JSON.parse(calls[1].options.body), { kind: "image", prompt: "edited" });
     assert.equal(calls[2].url, "/helto_prompt_enhancer/system_prompt/reset");
     assert.deepEqual(JSON.parse(calls[2].options.body), { kind: "image" });
+    assert.equal(calls[3].url, "/helto_prompt_enhancer/system_prompts?kind=image");
+    assert.equal(calls[4].url, "/helto_prompt_enhancer/system_prompts");
+    assert.deepEqual(JSON.parse(calls[4].options.body), {
+        kind: "image",
+        name: "New",
+        prompt: "new prompt",
+    });
+    assert.equal(calls[5].url, "/helto_prompt_enhancer/system_prompts/default");
+    assert.deepEqual(JSON.parse(calls[5].options.body), { kind: "image", prompt: "configured" });
+    assert.equal(calls[6].url, "/helto_prompt_enhancer/system_prompts/reset_default");
+    assert.deepEqual(JSON.parse(calls[6].options.body), { kind: "image" });
+    assert.equal(calls[7].url, "/helto_prompt_enhancer/system_prompts/delete");
+    assert.deepEqual(JSON.parse(calls[7].options.body), { kind: "image", id: "flux" });
 });
 
 test("prompt enhancer hides serialized model and settings widgets", () => {
@@ -1716,8 +1820,12 @@ test("prompt enhancer hides serialized model and settings widgets", () => {
             { name: "model" },
             { name: "hide_mode" },
             { name: "privacy_mode" },
+            { name: "image_system_prompt_preset" },
+            { name: "video_system_prompt_preset" },
             { name: "script" },
+            { name: "external_prompt" },
             { name: "variables" },
+            { name: "generation_max_tokens" },
         ],
     };
     const collapsed = [];
@@ -1734,6 +1842,11 @@ test("prompt enhancer hides serialized model and settings widgets", () => {
     assert.equal(node.widgets[6].hidden, true);
     assert.equal(node.widgets[7].hidden, true);
     assert.equal(node.widgets[8].hidden, true);
+    assert.equal(node.widgets[9].hidden, true);
+    assert.equal(Boolean(node.widgets[10].hidden), false);
+    assert.notEqual(node.widgets[10].type, "hidden");
+    assert.equal(node.widgets[11].hidden, true);
+    assert.equal(node.widgets[12].hidden, true);
     assert.deepEqual(collapsed, [
         "provider",
         "model_id",
@@ -1744,6 +1857,9 @@ test("prompt enhancer hides serialized model and settings widgets", () => {
         "variables",
         "hide_mode",
         "privacy_mode",
+        "image_system_prompt_preset",
+        "video_system_prompt_preset",
+        "generation_max_tokens",
     ]);
 });
 
