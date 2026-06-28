@@ -21,6 +21,15 @@ function selectorPrivacyQueryValue(privacyMode) {
     return privacyMode === true || String(privacyMode).toLowerCase() === "true" ? "true" : "false";
 }
 
+function selectorFoldersQueryValue(folders, image = null) {
+    let roots = Array.isArray(folders) ? folders : [];
+    if (roots.length === 0 && image?.folder) {
+        roots = [image.folder];
+    }
+    roots = roots.filter((folder) => typeof folder === "string" && folder.trim());
+    return roots.length ? JSON.stringify(roots) : undefined;
+}
+
 export const selectorApi = {
     async getInputDir() {
         const response = await fetch("/helto_selector/input_dir");
@@ -116,28 +125,34 @@ export const selectorApi = {
         return response.json();
     },
 
-    thumbnailUrl(path, privacyMode, image = null) {
+    thumbnailUrl(path, privacyMode, image = null, folders = []) {
         const version = selectorImageVersionToken(image);
         return `/helto_selector/thumbnail${selectorImageUrl(path, {
             privacy: selectorPrivacyQueryValue(privacyMode),
             v: version,
+            folders: selectorFoldersQueryValue(folders, image),
         })}`;
     },
 
-    viewImageUrl(path, image = null) {
+    viewImageUrl(path, image = null, folders = []) {
         const version = selectorImageVersionToken(image);
-        return `/helto_selector/view_image${selectorImageUrl(path, { v: version })}`;
+        return `/helto_selector/view_image${selectorImageUrl(path, {
+            v: version,
+            folders: selectorFoldersQueryValue(folders, image),
+        })}`;
     },
 
-    maskUrl(path) {
-        return `/helto_selector/mask?path=${encodeURIComponent(path)}`;
+    maskUrl(path, folders = []) {
+        return `/helto_selector/mask${selectorImageUrl(path, {
+            folders: selectorFoldersQueryValue(folders),
+        })}`;
     },
 
-    async saveMask(path, maskData, privacyMode) {
+    async saveMask(path, maskData, privacyMode, folders = []) {
         const response = await fetch("/helto_selector/save_mask", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ path, mask_data: maskData, privacy: privacyMode })
+            body: JSON.stringify({ path, mask_data: maskData, privacy: privacyMode, folders })
         });
         if (!response.ok) {
             let message = "Failed to save edited mask.";
@@ -152,11 +167,11 @@ export const selectorApi = {
         return response.json();
     },
 
-    async deleteMask(path) {
+    async deleteMask(path, folders = []) {
         const response = await fetch("/helto_selector/delete_mask", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ path })
+            body: JSON.stringify({ path, folders })
         });
         if (!response.ok) {
             let message = "Failed to clear edited mask.";
@@ -171,11 +186,11 @@ export const selectorApi = {
         return response.json();
     },
 
-    async migrateMasks(paths, privacyMode) {
+    async migrateMasks(paths, privacyMode, folders = []) {
         const response = await fetch("/helto_selector/migrate_masks", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ paths, privacy: privacyMode })
+            body: JSON.stringify({ paths, privacy: privacyMode, folders })
         });
         if (!response.ok) {
             let message = "Failed to migrate edited masks.";

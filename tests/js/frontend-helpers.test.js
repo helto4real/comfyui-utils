@@ -6,6 +6,9 @@ import {
     selectorImageVersionToken,
 } from "../../web/api.js";
 import {
+    renderSelectorEmptyState,
+} from "../../web/dom.js";
+import {
     createSelectorLayoutController,
     getCanvasRendererLayoutMode,
     getSelectorWidgetHeight,
@@ -183,6 +186,49 @@ function jsonResponse(payload, ok = true) {
     };
 }
 
+function fakeDomElement(document, tagName = "div") {
+    let ownText = "";
+    let rawHtml = "";
+    return {
+        ownerDocument: document,
+        tagName: tagName.toUpperCase(),
+        children: [],
+        style: {},
+        appendChild(child) {
+            this.children.push(child);
+            return child;
+        },
+        set textContent(value) {
+            ownText = String(value);
+            rawHtml = "";
+            this.children = [];
+        },
+        get textContent() {
+            return ownText + this.children.map((child) => child.textContent ?? "").join("");
+        },
+        set innerHTML(value) {
+            rawHtml = String(value);
+            ownText = "";
+            this.children = [];
+        },
+        get innerHTML() {
+            return rawHtml;
+        },
+    };
+}
+
+function fakeDomDocument() {
+    const document = {
+        createElement(tagName) {
+            return fakeDomElement(document, tagName);
+        },
+        createTextNode(text) {
+            return { textContent: String(text) };
+        },
+    };
+    return document;
+}
+
 test("selector image urls include metadata version tokens and keep legacy calls working", () => {
     const image = { date_modified: 1712345678.123, size_bytes: 4096 };
     assert.equal(selectorImageVersionToken(image), "m1712345678.123-s4096");
@@ -210,6 +256,43 @@ test("selector image urls include metadata version tokens and keep legacy calls 
     const legacyViewUrl = new URL(selectorApi.viewImageUrl("/tmp/a.png"), "http://localhost");
     assert.equal(legacyViewUrl.searchParams.get("path"), "/tmp/a.png");
     assert.equal(legacyViewUrl.searchParams.has("v"), false);
+
+    const configuredThumbUrl = new URL(
+        selectorApi.thumbnailUrl("/external/a.png", true, { ...image, folder: "/external" }, ["/external"]),
+        "http://localhost",
+    );
+    assert.deepEqual(JSON.parse(configuredThumbUrl.searchParams.get("folders")), ["/external"]);
+
+    const configuredViewUrl = new URL(
+        selectorApi.viewImageUrl("/external/a.png", { ...image, folder: "/fallback" }, ["/external"]),
+        "http://localhost",
+    );
+    assert.deepEqual(JSON.parse(configuredViewUrl.searchParams.get("folders")), ["/external"]);
+
+    const inferredViewUrl = new URL(
+        selectorApi.viewImageUrl("/external/a.png", { ...image, folder: "/fallback" }),
+        "http://localhost",
+    );
+    assert.deepEqual(JSON.parse(inferredViewUrl.searchParams.get("folders")), ["/fallback"]);
+
+    const configuredMaskUrl = new URL(selectorApi.maskUrl("/external/a.png", ["/external"]), "http://localhost");
+    assert.deepEqual(JSON.parse(configuredMaskUrl.searchParams.get("folders")), ["/external"]);
+});
+
+test("selector empty state renders folder paths as text nodes", () => {
+    const document = fakeDomDocument();
+    const empty = document.createElement("div");
+    const maliciousFolder = "/tmp/<img src=x onerror=alert(1)>";
+
+    empty.innerHTML = "<span>stale</span>";
+    renderSelectorEmptyState(empty, [maliciousFolder, "/tmp/next"]);
+
+    const pathContainer = empty.children[2];
+    assert.equal(empty.innerHTML, "");
+    assert.equal(pathContainer.children[0].textContent, maliciousFolder);
+    assert.equal(pathContainer.children[1].tagName, "BR");
+    assert.equal(pathContainer.children[2].textContent, "/tmp/next");
+    assert.ok(empty.textContent.includes(maliciousFolder));
 });
 
 test("mask editor overlay treats unaffected masks as transparent", () => {

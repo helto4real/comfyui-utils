@@ -34,8 +34,13 @@ from helto_selector_backend.scanning import delete_image_files, discover_image_f
 from helto_selector_backend.services import (
     DeleteImagesPayload,
     DeleteMaskPayload,
+    MigrateMasksPayload,
     ScanFoldersPayload,
     PasteImagePayload,
+    SaveMaskPayload,
+    SelectorPathError,
+    authorize_selector_folders,
+    authorize_selector_image_path,
     clear_cache_payload,
     decrypt_payload,
     delete_images_payload,
@@ -44,6 +49,8 @@ from helto_selector_backend.services import (
     get_input_dir_payload,
     paste_image_payload,
     scan_folders_payload,
+    save_mask_payload,
+    migrate_masks_payload,
 )
 from helto_selector_backend.thumbnail_cache import (
     clear_thumbnail_cache,
@@ -229,7 +236,7 @@ class ImageProcessingTests(unittest.TestCase):
             image_path = os.path.join(tmpdir, "image.png")
             write_image(image_path, (4, 4), (255, 0, 0))
 
-            result = delete_mask_payload(DeleteMaskPayload(path=image_path))
+            result = delete_mask_payload(DeleteMaskPayload(path=image_path, folders=[]), authorized_roots=[tmpdir])
 
             self.assertEqual(result["status"], "success")
             self.assertEqual(result["path"], image_path)
@@ -660,6 +667,7 @@ class ServiceLayerTests(unittest.TestCase):
             result = scan_folders_payload(
                 payload,
                 delete_cache_func=lambda paths: removed_paths.append(paths) or 5,
+                authorized_roots=[tmpdir],
             )
 
             self.assertEqual([image["path"] for image in result["images"]], [image_path])
@@ -669,24 +677,25 @@ class ServiceLayerTests(unittest.TestCase):
             self.assertEqual(len(result["folders"]), 1)
 
     def test_delete_payload_counts_and_prunes_deleted_and_missing_cache(self):
-        payload = DeleteImagesPayload(paths=["a.png"], folders=["/tmp/images"], recursive=True)
+        payload = DeleteImagesPayload(paths=["/tmp/images/a.png"], folders=["/tmp/images"], recursive=True)
         cache_paths_seen: list[list[str]] = []
 
         result = delete_images_payload(
             payload,
             delete_func=lambda paths, folders, recursive: {
-                "deleted": ["a.png"],
-                "missing": ["b.png"],
+                "deleted": [paths[0]],
+                "missing": ["/tmp/images/b.png"],
                 "skipped": ["c.txt"],
             },
             delete_cache_func=lambda paths: cache_paths_seen.append(paths) or 2,
+            authorized_roots=["/tmp"],
         )
 
         self.assertEqual(result["deleted_count"], 1)
         self.assertEqual(result["missing_count"], 1)
         self.assertEqual(result["skipped_count"], 1)
         self.assertEqual(result["removed_cache_count"], 2)
-        self.assertEqual(cache_paths_seen, [["a.png", "b.png"]])
+        self.assertEqual(cache_paths_seen, [["/tmp/images/a.png", "/tmp/images/b.png"]])
 
     def test_request_payload_helpers_coerce_invalid_lists_without_string_iteration(self):
         scan_payload = ScanFoldersPayload.from_request_data({
@@ -740,6 +749,117 @@ class ServiceLayerTests(unittest.TestCase):
     def test_get_input_dir_payload_uses_injected_comfy_provider(self):
         self.assertEqual(get_input_dir_payload(lambda: "/tmp/input"), {"input_dir": "/tmp/input"})
 
+    def test_selector_image_authorization_requires_supported_file_inside_server_roots(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root_dir = os.path.join(tmpdir, "root")
+            outside_dir = os.path.join(tmpdir, "outside")
+            os.makedirs(root_dir)
+            os.makedirs(outside_dir)
+            image_path = os.path.join(root_dir, "image.png")
+            missing_path = os.path.join(root_dir, "missing.png")
+            notes_path = os.path.join(root_dir, "notes.txt")
+            outside_path = os.path.join(outside_dir, "image.png")
+            write_image(image_path, (4, 4), (0, 0, 255))
+            write_image(outside_path, (4, 4), (255, 0, 0))
+            Path(notes_path).write_text("not an image", encoding="utf-8")
+
+            self.assertEqual(authorize_selector_image_path(image_path, authorized_roots=[root_dir]), image_path)
+            self.assertEqual(authorize_selector_folders([root_dir], authorized_roots=[root_dir]), [root_dir])
+
+            with self.assertRaises(SelectorPathError) as unsupported:
+                authorize_selector_image_path(notes_path, authorized_roots=[root_dir])
+            self.assertEqual(unsupported.exception.status_code, 400)
+
+            with self.assertRaises(SelectorPathError) as forbidden:
+                authorize_selector_image_path(outside_path, authorized_roots=[root_dir])
+            self.assertEqual(forbidden.exception.status_code, 403)
+            self.assertEqual(
+                authorize_selector_image_path(outside_path, configured_folders=[outside_dir], authorized_roots=[root_dir]),
+                outside_path,
+            )
+            self.assertEqual(authorize_selector_folders([outside_dir]), [outside_dir])
+
+            with self.assertRaises(SelectorPathError) as missing:
+                authorize_selector_image_path(missing_path, authorized_roots=[root_dir])
+            self.assertEqual(missing.exception.status_code, 404)
+
+    def test_selector_payloads_authorize_configured_folders(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            configured_dir = os.path.join(tmpdir, "configured")
+            os.makedirs(configured_dir)
+            image_path = os.path.join(configured_dir, "image.png")
+            write_image(image_path, (4, 4), (255, 0, 0))
+
+            scan_result = scan_folders_payload(
+                ScanFoldersPayload(folders=[configured_dir], recursive=False, previous_paths=[]),
+            )
+            self.assertEqual([image["path"] for image in scan_result["images"]], [image_path])
+
+            delete_result = delete_images_payload(
+                DeleteImagesPayload(paths=[image_path], folders=[configured_dir], recursive=False),
+                delete_func=lambda paths, folders, recursive: {
+                    "deleted": paths,
+                    "missing": [],
+                    "skipped": [],
+                },
+                delete_cache_func=lambda _paths: 0,
+            )
+            self.assertEqual(delete_result["deleted"], [image_path])
+
+            paste_result = paste_image_payload(PasteImagePayload(
+                destination=configured_dir,
+                folders=[configured_dir],
+                filename="paste.png",
+                content=image_bytes(),
+                content_type="image/png",
+            ))
+            self.assertEqual(paste_result["path"], os.path.join(configured_dir, "paste.png"))
+
+    def test_selector_payloads_reject_unconfigured_folders_outside_server_roots(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root_dir = os.path.join(tmpdir, "root")
+            outside_dir = os.path.join(tmpdir, "outside")
+            os.makedirs(root_dir)
+            os.makedirs(outside_dir)
+            outside_path = os.path.join(outside_dir, "image.png")
+            write_image(outside_path, (4, 4), (255, 0, 0))
+
+            cases = [
+                lambda: scan_folders_payload(
+                    ScanFoldersPayload(folders=[outside_dir], recursive=False, previous_paths=[]),
+                    authorized_roots=[root_dir],
+                ),
+                lambda: delete_images_payload(
+                    DeleteImagesPayload(paths=[outside_path], folders=[outside_dir], recursive=False),
+                    authorized_roots=[root_dir],
+                ),
+                lambda: paste_image_payload(
+                    PasteImagePayload(
+                        destination=outside_dir,
+                        folders=[outside_dir],
+                        filename="paste.png",
+                        content=image_bytes(),
+                        content_type="image/png",
+                    ),
+                    authorized_roots=[root_dir],
+                ),
+                lambda: save_mask_payload(
+                    SaveMaskPayload(path=outside_path, mask_data="data:image/png;base64,", privacy=False, folders=[]),
+                    authorized_roots=[root_dir],
+                ),
+                lambda: delete_mask_payload(DeleteMaskPayload(path=outside_path, folders=[]), authorized_roots=[root_dir]),
+                lambda: migrate_masks_payload(
+                    MigrateMasksPayload(paths=[outside_path], privacy=True, folders=[]),
+                    authorized_roots=[root_dir],
+                ),
+            ]
+
+            for call in cases:
+                with self.subTest(call=call):
+                    with self.assertRaises(SelectorPathError) as caught:
+                        call()
+                    self.assertEqual(caught.exception.status_code, 403)
+
     def test_paste_image_payload_saves_into_configured_root(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             payload = PasteImagePayload(
@@ -750,7 +870,7 @@ class ServiceLayerTests(unittest.TestCase):
                 content_type="image/png",
             )
 
-            result = paste_image_payload(payload)
+            result = paste_image_payload(payload, authorized_roots=[tmpdir])
 
             self.assertEqual(result["status"], "success")
             self.assertEqual(result["name"], "paste.png")
@@ -769,7 +889,7 @@ class ServiceLayerTests(unittest.TestCase):
                 content_type="image/png",
             )
 
-            result = paste_image_payload(payload)
+            result = paste_image_payload(payload, authorized_roots=[tmpdir])
 
             self.assertEqual(result["image"]["folder"], tmpdir)
             self.assertEqual(result["image"]["image_folder"], child_dir)
@@ -788,7 +908,7 @@ class ServiceLayerTests(unittest.TestCase):
                     filename="paste.png",
                     content=image_bytes(),
                     content_type="image/png",
-                ))
+                ), authorized_roots=[tmpdir])
 
             self.assertFalse(os.path.exists(outside_dir))
 
@@ -805,7 +925,7 @@ class ServiceLayerTests(unittest.TestCase):
                     filename="paste.png",
                     content=image_bytes(),
                     content_type="image/png",
-                ))
+                ), authorized_roots=[tmpdir])
 
             self.assertFalse(os.path.exists(os.path.join(tmpdir, "outside")))
 
@@ -818,7 +938,7 @@ class ServiceLayerTests(unittest.TestCase):
                     filename="paste.txt",
                     content=image_bytes(),
                     content_type="image/png",
-                ))
+                ), authorized_roots=[tmpdir])
 
     def test_paste_image_payload_dedupes_conflicting_filenames(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -831,7 +951,7 @@ class ServiceLayerTests(unittest.TestCase):
                 filename="paste.png",
                 content=image_bytes(color=(255, 0, 0)),
                 content_type="image/png",
-            ))
+            ), authorized_roots=[tmpdir])
 
             self.assertEqual(result["name"], "paste (1).png")
             self.assertTrue(os.path.exists(os.path.join(tmpdir, "paste (1).png")))
@@ -850,10 +970,125 @@ class ServiceLayerTests(unittest.TestCase):
                 filename="paste.png",
                 content=content,
                 content_type="image/png",
-            ))
+            ), authorized_roots=[tmpdir])
 
             self.assertEqual(result["name"], "paste.png")
             self.assertTrue(result["duplicate"])
+
+
+class SelectorRouteTests(unittest.TestCase):
+    def setUp(self):
+        self._server_module = sys.modules.get("server")
+        self._aiohttp_module = sys.modules.get("aiohttp")
+        self._aiohttp_web_module = sys.modules.get("aiohttp.web")
+        fake_routes = types.SimpleNamespace(
+            get=lambda _path: (lambda fn: fn),
+            post=lambda _path: (lambda fn: fn),
+        )
+        fake_web = types.SimpleNamespace(
+            Response=self._response,
+            FileResponse=self._file_response,
+            json_response=self._json_response,
+        )
+        sys.modules["server"] = types.SimpleNamespace(PromptServer=types.SimpleNamespace(instance=types.SimpleNamespace(routes=fake_routes)))
+        sys.modules["aiohttp"] = types.SimpleNamespace(web=fake_web)
+        sys.modules["aiohttp.web"] = fake_web
+        sys.modules.pop("helto_selector_backend.routes", None)
+        self.routes = importlib.import_module("helto_selector_backend.routes")
+
+    def tearDown(self):
+        sys.modules.pop("helto_selector_backend.routes", None)
+        if self._server_module is None:
+            sys.modules.pop("server", None)
+        else:
+            sys.modules["server"] = self._server_module
+        if self._aiohttp_module is None:
+            sys.modules.pop("aiohttp", None)
+        else:
+            sys.modules["aiohttp"] = self._aiohttp_module
+        if self._aiohttp_web_module is None:
+            sys.modules.pop("aiohttp.web", None)
+        else:
+            sys.modules["aiohttp.web"] = self._aiohttp_web_module
+
+    @staticmethod
+    def _response(text=None, status=200, body=None, content_type=None, headers=None):
+        return types.SimpleNamespace(text=text, status=status, body=body, content_type=content_type, headers=headers or {})
+
+    @staticmethod
+    def _file_response(path, headers=None):
+        return types.SimpleNamespace(status=200, path=path, headers=headers or {})
+
+    @staticmethod
+    def _json_response(payload, status=200):
+        return types.SimpleNamespace(status=status, payload=payload, text=json.dumps(payload))
+
+    @staticmethod
+    def _request(path: str, privacy: str = "false", folders: list[str] | None = None):
+        query = {"path": path, "privacy": privacy}
+        if folders is not None:
+            query["folders"] = json.dumps(folders)
+        return types.SimpleNamespace(query=query)
+
+    def _patch_authorized_roots(self, roots):
+        original = self.routes.authorize_selector_image_path
+
+        def authorize_with_test_roots(path, **kwargs):
+            return original(path, authorized_roots=roots, **kwargs)
+
+        self.routes.authorize_selector_image_path = authorize_with_test_roots
+        return original
+
+    def test_selector_file_routes_enforce_authorized_image_paths(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root_dir = os.path.join(tmpdir, "root")
+            outside_dir = os.path.join(tmpdir, "outside")
+            os.makedirs(root_dir)
+            os.makedirs(outside_dir)
+            image_path = os.path.join(root_dir, "image.png")
+            missing_path = os.path.join(root_dir, "missing.png")
+            notes_path = os.path.join(root_dir, "notes.txt")
+            outside_path = os.path.join(outside_dir, "secret.png")
+            write_image(image_path, (8, 8), (0, 0, 255))
+            write_image(outside_path, (8, 8), (255, 0, 0))
+            Path(notes_path).write_text("not an image", encoding="utf-8")
+
+            original_authorize = self._patch_authorized_roots([root_dir])
+            original_thumbnail_payload = self.routes.thumbnail_payload
+            thumbnail_cache_dir = os.path.join(tmpdir, "thumbs")
+            self.routes.thumbnail_payload = lambda path, privacy: get_thumbnail_bytes(path, privacy, cache_dir=thumbnail_cache_dir)
+            try:
+                for handler_name in ("view_image", "get_thumbnail", "get_mask"):
+                    response = asyncio.run(getattr(self.routes, handler_name)(self._request(outside_path)))
+                    self.assertEqual(response.status, 403)
+
+                self.assertEqual(asyncio.run(self.routes.view_image(self._request(notes_path))).status, 400)
+                self.assertEqual(asyncio.run(self.routes.view_image(self._request(missing_path))).status, 404)
+
+                view_response = asyncio.run(self.routes.view_image(self._request(image_path)))
+                thumbnail_response = asyncio.run(self.routes.get_thumbnail(self._request(image_path)))
+                mask_response = asyncio.run(self.routes.get_mask(self._request(image_path)))
+
+                self.assertEqual(view_response.status, 200)
+                self.assertEqual(view_response.path, image_path)
+                self.assertEqual(thumbnail_response.status, 200)
+                self.assertEqual(thumbnail_response.content_type, "image/webp")
+                self.assertEqual(mask_response.status, 200)
+                self.assertEqual(mask_response.content_type, "image/png")
+
+                configured_view = asyncio.run(self.routes.view_image(self._request(outside_path, folders=[outside_dir])))
+                configured_thumbnail = asyncio.run(self.routes.get_thumbnail(self._request(outside_path, folders=[outside_dir])))
+                configured_mask = asyncio.run(self.routes.get_mask(self._request(outside_path, folders=[outside_dir])))
+
+                self.assertEqual(configured_view.status, 200)
+                self.assertEqual(configured_view.path, outside_path)
+                self.assertEqual(configured_thumbnail.status, 200)
+                self.assertEqual(configured_thumbnail.content_type, "image/webp")
+                self.assertEqual(configured_mask.status, 200)
+                self.assertEqual(configured_mask.content_type, "image/png")
+            finally:
+                self.routes.authorize_selector_image_path = original_authorize
+                self.routes.thumbnail_payload = original_thumbnail_payload
 
 
 class NodeSchemaContractTests(unittest.TestCase):

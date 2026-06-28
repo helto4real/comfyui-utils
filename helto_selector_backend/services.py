@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import folder_paths
 from PIL import Image, ImageOps
 
 from .constants import SUPPORTED_EXTENSIONS
@@ -26,6 +27,13 @@ _FALLBACK_IMAGE_EXTENSIONS = {
     "image/tiff": ".tiff",
     "image/webp": ".webp",
 }
+
+
+class SelectorPathError(ValueError):
+    def __init__(self, message: str, status_code: int) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.public_message = message
 
 
 def _string_list(value: Any) -> list[str]:
@@ -61,11 +69,113 @@ def _absolute_path(path: str) -> str:
     return os.path.abspath(os.path.normpath(path))
 
 
+def _real_path(path: str) -> str:
+    return os.path.realpath(_absolute_path(path))
+
+
 def _is_same_or_child_path(path: str, parent_path: str) -> bool:
     try:
         return os.path.commonpath([path, parent_path]) == parent_path
     except ValueError:
         return False
+
+
+def _is_supported_image_path(path: str) -> bool:
+    return os.path.splitext(path)[1].lower() in SUPPORTED_EXTENSIONS
+
+
+def _default_authorized_root_paths() -> list[str]:
+    return [
+        folder_paths.get_input_directory(),
+        folder_paths.get_output_directory(),
+        folder_paths.get_temp_directory(),
+    ]
+
+
+def _configured_root_paths(configured_folders: list[str] | tuple[str, ...] | None = None) -> list[str]:
+    return _folder_list(list(configured_folders or []))
+
+
+def _authorized_root_pairs(
+    authorized_roots: list[str] | tuple[str, ...] | None = None,
+    configured_folders: list[str] | tuple[str, ...] | None = None,
+) -> list[tuple[str, str]]:
+    roots = list(authorized_roots if authorized_roots is not None else _default_authorized_root_paths())
+    roots.extend(_configured_root_paths(configured_folders))
+    pairs: list[tuple[str, str]] = []
+    seen_real_paths: set[str] = set()
+
+    for root in roots:
+        if not isinstance(root, str) or not root.strip():
+            continue
+        absolute = _absolute_path(root)
+        real = _real_path(absolute)
+        if real in seen_real_paths:
+            continue
+        pairs.append((absolute, real))
+        seen_real_paths.add(real)
+
+    return pairs
+
+
+def selector_authorized_roots(
+    authorized_roots: list[str] | tuple[str, ...] | None = None,
+    configured_folders: list[str] | tuple[str, ...] | None = None,
+) -> list[str]:
+    return [absolute for absolute, _real in _authorized_root_pairs(authorized_roots, configured_folders)]
+
+
+def _is_under_authorized_root(path: str, root_pairs: list[tuple[str, str]]) -> bool:
+    real_path = _real_path(path)
+    return any(_is_same_or_child_path(real_path, root_real) for _root, root_real in root_pairs)
+
+
+def authorize_selector_image_path(
+    image_path: str | None,
+    *,
+    must_exist: bool = True,
+    configured_folders: list[str] | tuple[str, ...] | None = None,
+    authorized_roots: list[str] | tuple[str, ...] | None = None,
+) -> str:
+    if not image_path:
+        raise SelectorPathError("Image path is required", 400)
+
+    normalized_path = _absolute_path(str(image_path))
+    if not _is_supported_image_path(normalized_path):
+        raise SelectorPathError("Unsupported image extension", 400)
+
+    root_pairs = _authorized_root_pairs(authorized_roots, configured_folders)
+    if not root_pairs or not _is_under_authorized_root(normalized_path, root_pairs):
+        raise SelectorPathError("Image path is outside authorized selector folders", 403)
+
+    if must_exist and not os.path.isfile(normalized_path):
+        raise SelectorPathError("Image path not found", 404)
+
+    return normalized_path
+
+
+def authorize_selector_folders(
+    folders: list[str],
+    *,
+    authorized_roots: list[str] | tuple[str, ...] | None = None,
+) -> list[str]:
+    configured_folders = folders if authorized_roots is None else []
+    root_pairs = _authorized_root_pairs(authorized_roots, configured_folders)
+    authorized_folders: list[str] = []
+    seen_paths: set[str] = set()
+
+    for folder in folders:
+        if not isinstance(folder, str) or not folder:
+            continue
+        normalized = _absolute_path(folder)
+        if not root_pairs or not _is_under_authorized_root(normalized, root_pairs):
+            raise SelectorPathError("Selector folder is outside authorized roots", 403)
+        if normalized in seen_paths:
+            continue
+        authorized_folders.append(normalized)
+        seen_paths.add(normalized)
+
+    return authorized_folders
 
 
 def _sanitize_pasted_filename(filename: str, content_type: str = "") -> str:
@@ -95,7 +205,7 @@ def _resolve_allowed_destination_root(destination: str, folders: list[str]) -> t
     matching_roots = [
         root
         for root in allowed_roots
-        if root and _is_same_or_child_path(destination_path, root)
+        if root and _is_same_or_child_path(_real_path(destination_path), _real_path(root))
     ]
     if not matching_roots:
         raise ValueError("Destination is outside the configured selector folders")
@@ -176,6 +286,7 @@ class SaveMaskPayload:
     path: str
     mask_data: str
     privacy: bool
+    folders: list[str]
 
     @classmethod
     def from_request_data(cls, data: Mapping[str, Any]) -> "SaveMaskPayload":
@@ -183,28 +294,35 @@ class SaveMaskPayload:
             path=str(data.get("path") or ""),
             mask_data=str(data.get("mask_data") or ""),
             privacy=_truthy(data.get("privacy", False)),
+            folders=_folder_list(data.get("folders") or []),
         )
 
 
 @dataclass(frozen=True)
 class DeleteMaskPayload:
     path: str
+    folders: list[str]
 
     @classmethod
     def from_request_data(cls, data: Mapping[str, Any]) -> "DeleteMaskPayload":
-        return cls(path=str(data.get("path") or ""))
+        return cls(
+            path=str(data.get("path") or ""),
+            folders=_folder_list(data.get("folders") or []),
+        )
 
 
 @dataclass(frozen=True)
 class MigrateMasksPayload:
     paths: list[str]
     privacy: bool
+    folders: list[str]
 
     @classmethod
     def from_request_data(cls, data: Mapping[str, Any]) -> "MigrateMasksPayload":
         return cls(
             paths=_string_list(data.get("paths") or []),
             privacy=_truthy(data.get("privacy", False)),
+            folders=_folder_list(data.get("folders") or []),
         )
 
 
@@ -224,9 +342,12 @@ def get_input_dir_payload(get_input_directory: Callable[[], str]) -> dict[str, s
 def scan_folders_payload(
     payload: ScanFoldersPayload,
     delete_cache_func: Callable[[list[str]], int] = delete_thumbnail_cache_for_paths,
+    *,
+    authorized_roots: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
-    images = scan_image_folders(payload.folders, payload.recursive)
-    folder_options = discover_image_folders(payload.folders)
+    authorized_folders = authorize_selector_folders(payload.folders, authorized_roots=authorized_roots)
+    images = scan_image_folders(authorized_folders, payload.recursive)
+    folder_options = discover_image_folders(authorized_folders)
     current_paths = {image["path"] for image in images}
     previous_paths = {
         os.path.normpath(path)
@@ -268,8 +389,20 @@ def delete_images_payload(
     payload: DeleteImagesPayload,
     delete_func: Callable[[list[str], list[str], bool], dict[str, list[str]]] = delete_image_files,
     delete_cache_func: Callable[[list[str]], int] = delete_thumbnail_cache_for_paths,
+    *,
+    authorized_roots: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
-    delete_result = delete_func(payload.paths, payload.folders, payload.recursive)
+    authorized_folders = authorize_selector_folders(payload.folders, authorized_roots=authorized_roots)
+    authorized_paths = [
+        authorize_selector_image_path(
+            path,
+            must_exist=False,
+            configured_folders=authorized_folders,
+            authorized_roots=authorized_roots,
+        )
+        for path in payload.paths
+    ]
+    delete_result = delete_func(authorized_paths, authorized_folders, payload.recursive)
     cache_paths = delete_result["deleted"] + delete_result["missing"]
     removed_cache_count = delete_cache_func(cache_paths) if cache_paths else 0
 
@@ -282,11 +415,16 @@ def delete_images_payload(
     }
 
 
-def paste_image_payload(payload: PasteImagePayload) -> dict[str, Any]:
+def paste_image_payload(
+    payload: PasteImagePayload,
+    *,
+    authorized_roots: list[str] | tuple[str, ...] | None = None,
+) -> dict[str, Any]:
     if not payload.content:
         raise ValueError("Image data is required")
 
-    destination, root_folder = _resolve_allowed_destination_root(payload.destination, payload.folders)
+    authorized_folders = authorize_selector_folders(payload.folders, authorized_roots=authorized_roots)
+    destination, root_folder = _resolve_allowed_destination_root(payload.destination, authorized_folders)
     filename = _sanitize_pasted_filename(payload.filename, payload.content_type)
 
     os.makedirs(destination, exist_ok=True)
@@ -313,31 +451,61 @@ def decrypt_payload(data: Mapping[str, Any]) -> dict[str, str]:
     return {"data": decrypt_selection(data.get("encrypted", ""))}
 
 
-def save_mask_payload(payload: SaveMaskPayload) -> dict[str, Any]:
-    if not image_path_exists(payload.path):
-        raise FileNotFoundError("Image path not found")
+def save_mask_payload(
+    payload: SaveMaskPayload,
+    *,
+    authorized_roots: list[str] | tuple[str, ...] | None = None,
+) -> dict[str, Any]:
+    configured_folders = authorize_selector_folders(payload.folders, authorized_roots=authorized_roots) if payload.folders else []
+    image_path = authorize_selector_image_path(
+        payload.path,
+        configured_folders=configured_folders,
+        authorized_roots=authorized_roots,
+    )
     if not payload.mask_data:
         raise ValueError("Mask data is required")
     return {
         "status": "success",
-        "path": payload.path,
-        "ref": save_mask_data_url(payload.path, payload.mask_data, payload.privacy),
+        "path": image_path,
+        "ref": save_mask_data_url(image_path, payload.mask_data, payload.privacy),
     }
 
 
-def delete_mask_payload(payload: DeleteMaskPayload) -> dict[str, Any]:
-    if not image_path_exists(payload.path):
-        raise FileNotFoundError("Image path not found")
+def delete_mask_payload(
+    payload: DeleteMaskPayload,
+    *,
+    authorized_roots: list[str] | tuple[str, ...] | None = None,
+) -> dict[str, Any]:
+    configured_folders = authorize_selector_folders(payload.folders, authorized_roots=authorized_roots) if payload.folders else []
+    image_path = authorize_selector_image_path(
+        payload.path,
+        configured_folders=configured_folders,
+        authorized_roots=authorized_roots,
+    )
     return {
         "status": "success",
-        "path": payload.path,
+        "path": image_path,
         "cleared": True,
-        "deleted_count": delete_mask(payload.path),
+        "deleted_count": delete_mask(image_path),
     }
 
 
-def migrate_masks_payload(payload: MigrateMasksPayload) -> dict[str, Any]:
-    existing_paths = [path for path in payload.paths if image_path_exists(path)]
+def migrate_masks_payload(
+    payload: MigrateMasksPayload,
+    *,
+    authorized_roots: list[str] | tuple[str, ...] | None = None,
+) -> dict[str, Any]:
+    configured_folders = authorize_selector_folders(payload.folders, authorized_roots=authorized_roots) if payload.folders else []
+    authorized_paths = [
+        authorize_selector_image_path(
+            path,
+            must_exist=False,
+            configured_folders=configured_folders,
+            authorized_roots=authorized_roots,
+        )
+        for path in payload.paths
+    ]
+    existing_paths = [path for path in authorized_paths if image_path_exists(path)]
     return {
         "status": "success",
         "migrated_count": migrate_mask_privacy(existing_paths, payload.privacy),

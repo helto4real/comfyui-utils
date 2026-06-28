@@ -14,13 +14,14 @@ from .services import (
     PasteImagePayload,
     SaveMaskPayload,
     ScanFoldersPayload,
+    SelectorPathError,
+    authorize_selector_image_path,
     clear_cache_payload,
     decrypt_payload,
     delete_images_payload,
     delete_mask_payload,
     encrypt_payload,
     get_input_dir_payload,
-    image_path_exists,
     mask_image_payload,
     migrate_masks_payload,
     paste_image_payload,
@@ -43,6 +44,18 @@ def _parse_folders_field(value):
     return [item for item in value if isinstance(item, str) and item]
 
 
+def _request_folders(request):
+    return _parse_folders_field(request.query.get("folders"))
+
+
+def _selector_text_error(error: SelectorPathError):
+    return web.Response(text=error.public_message, status=error.status_code)
+
+
+def _selector_json_error(error: SelectorPathError):
+    return web.json_response({"error": error.public_message}, status=error.status_code)
+
+
 @routes.get("/helto_selector/input_dir")
 async def get_input_dir(request):
     try:
@@ -57,6 +70,8 @@ async def scan_folders(request):
         data = await request.json()
         payload = ScanFoldersPayload.from_request_data(data)
         return web.json_response(scan_folders_payload(payload))
+    except SelectorPathError as e:
+        return _selector_json_error(e)
     except Exception as e:
         return web.json_response({"error": str(e)}, status=500)
 
@@ -64,43 +79,47 @@ async def scan_folders(request):
 @routes.get("/helto_selector/thumbnail")
 async def get_thumbnail(request):
     try:
-        image_path = request.query.get("path")
+        image_path = authorize_selector_image_path(
+            request.query.get("path"),
+            configured_folders=_request_folders(request),
+        )
         privacy_mode = request.query.get("privacy", "false").lower() == "true"
-
-        if not image_path_exists(image_path):
-            return web.Response(text="Image path not found", status=404)
 
         webp_bytes = thumbnail_payload(image_path, privacy_mode)
         return web.Response(body=webp_bytes, content_type="image/webp")
-    except Exception as e:
-        return web.Response(text=str(e), status=500)
+    except SelectorPathError as e:
+        return _selector_text_error(e)
+    except Exception:
+        return web.Response(text="Failed to load thumbnail", status=500)
 
 
 @routes.get("/helto_selector/view_image")
 async def view_image(request):
     try:
-        image_path = request.query.get("path")
-
-        if not image_path_exists(image_path):
-            return web.Response(text="Image path not found", status=404)
-
+        image_path = authorize_selector_image_path(
+            request.query.get("path"),
+            configured_folders=_request_folders(request),
+        )
         return web.FileResponse(image_path)
-    except Exception as e:
-        return web.Response(text=str(e), status=500)
+    except SelectorPathError as e:
+        return _selector_text_error(e)
+    except Exception:
+        return web.Response(text="Failed to load image", status=500)
 
 
 @routes.get("/helto_selector/mask")
 async def get_mask(request):
     try:
-        image_path = request.query.get("path")
-
-        if not image_path_exists(image_path):
-            return web.Response(text="Image path not found", status=404)
-
+        image_path = authorize_selector_image_path(
+            request.query.get("path"),
+            configured_folders=_request_folders(request),
+        )
         png_bytes = mask_image_payload(image_path)
         return web.Response(body=png_bytes, content_type="image/png")
-    except Exception as e:
-        return web.Response(text=str(e), status=500)
+    except SelectorPathError as e:
+        return _selector_text_error(e)
+    except Exception:
+        return web.Response(text="Failed to load mask", status=500)
 
 
 @routes.post("/helto_selector/delete_images")
@@ -109,6 +128,8 @@ async def api_delete_images(request):
         data = await request.json()
         payload = DeleteImagesPayload.from_request_data(data)
         return web.json_response(delete_images_payload(payload))
+    except SelectorPathError as e:
+        return _selector_json_error(e)
     except Exception as e:
         return web.json_response({"error": str(e)}, status=500)
 
@@ -129,6 +150,8 @@ async def api_paste_image(request):
             content_type=str(getattr(image, "content_type", "") or ""),
         )
         return web.json_response(paste_image_payload(payload))
+    except SelectorPathError as e:
+        return _selector_json_error(e)
     except ValueError as e:
         return web.json_response({"error": str(e)}, status=400)
     except Exception as e:
@@ -159,6 +182,8 @@ async def api_save_mask(request):
         data = await request.json()
         payload = SaveMaskPayload.from_request_data(data)
         return web.json_response(save_mask_payload(payload))
+    except SelectorPathError as e:
+        return _selector_json_error(e)
     except FileNotFoundError as e:
         return web.json_response({"error": str(e)}, status=404)
     except ValueError as e:
@@ -173,6 +198,8 @@ async def api_delete_mask(request):
         data = await request.json()
         payload = DeleteMaskPayload.from_request_data(data)
         return web.json_response(delete_mask_payload(payload))
+    except SelectorPathError as e:
+        return _selector_json_error(e)
     except FileNotFoundError as e:
         return web.json_response({"error": str(e)}, status=404)
     except Exception as e:
@@ -185,6 +212,8 @@ async def api_migrate_masks(request):
         data = await request.json()
         payload = MigrateMasksPayload.from_request_data(data)
         return web.json_response(migrate_masks_payload(payload))
+    except SelectorPathError as e:
+        return _selector_json_error(e)
     except Exception as e:
         return web.json_response({"error": str(e)}, status=500)
 

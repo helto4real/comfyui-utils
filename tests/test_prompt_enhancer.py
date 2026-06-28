@@ -321,6 +321,26 @@ class PromptEnhancerProviderTests(unittest.TestCase):
         self.assertEqual(unload_payload, {"model": "llava:latest", "keep_alive": 0, "stream": False})
         self.assertEqual(request.call_args_list[1].args[2], 9)
 
+    def test_generate_ignores_zero_keep_alive_release_failure_after_success(self):
+        settings = PromptEnhancerSettings(ollama_url=DEFAULT_OLLAMA_URL, keep_alive=0, keep_alive_unit="minutes", timeout=9)
+        prompt_request = PromptEnhancerRequest(
+            model="llava:latest",
+            prompt_type="image",
+            prompt="make it cinematic",
+            system_prompt="system text",
+            seed=123,
+            images=[],
+            settings=settings,
+        )
+
+        with patch("shared.prompt_enhancer.provider._json_request") as request:
+            request.side_effect = [{"response": " enhanced prompt "}, RuntimeError("release failed")]
+
+            result = OllamaPromptProvider().generate(prompt_request)
+
+        self.assertEqual(result, "enhanced prompt")
+        self.assertEqual(request.call_count, 2)
+
     def test_generate_streams_ollama_when_progress_is_available_and_waits_for_unload(self):
         settings = PromptEnhancerSettings(ollama_url=DEFAULT_OLLAMA_URL, keep_alive=0, keep_alive_unit="seconds", timeout=9)
         prompt_request = PromptEnhancerRequest(

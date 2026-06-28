@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { selectorApi } from "./api.js";
 import { ICONS, STOP_EVENTS } from "./constants.js";
-import { createSelectorDom, getSelectorElements } from "./dom.js";
+import { createSelectorDom, getSelectorElements, renderSelectorEmptyState } from "./dom.js";
 import {
     createSelectorLayoutController,
     isLegacyCanvasRenderer,
@@ -630,7 +630,7 @@ app.registerExtension({
         function showPreviewPopup(img) {
             openHeltoMediaPreview({
                 kind: "image",
-                url: selectorApi.viewImageUrl(img.path, img),
+                url: selectorApi.viewImageUrl(img.path, img, node.properties.folders || []),
                 title: img.name,
                 label: img.name,
             });
@@ -638,7 +638,7 @@ app.registerExtension({
 
         function saveOriginalImage(img) {
             const link = document.createElement("a");
-            link.href = selectorApi.viewImageUrl(img.path, img);
+            link.href = selectorApi.viewImageUrl(img.path, img, node.properties.folders || []);
             link.download = img.name || "image";
             document.body.appendChild(link);
             link.click();
@@ -650,14 +650,14 @@ app.registerExtension({
                 document,
                 window,
                 img,
-                imageUrl: selectorApi.viewImageUrl(img.path, img),
-                maskUrl: selectorApi.maskUrl(img.path),
+                imageUrl: selectorApi.viewImageUrl(img.path, img, node.properties.folders || []),
+                maskUrl: selectorApi.maskUrl(img.path, node.properties.folders || []),
                 privacyMode: node.properties.privacyMode,
                 hideMode: node.properties.hideMode,
                 hasEditedMask: Boolean(node.editedMasks?.[img.path]),
                 containPointerEvents,
-                saveMask: (path, maskData, privacyMode) => selectorApi.saveMask(path, maskData, privacyMode),
-                deleteMask: (path) => selectorApi.deleteMask(path),
+                saveMask: (path, maskData, privacyMode) => selectorApi.saveMask(path, maskData, privacyMode, node.properties.folders || []),
+                deleteMask: (path) => selectorApi.deleteMask(path, node.properties.folders || []),
                 onSaved: async (savedImg, ref, result) => {
                     node.editedMasks = applyEditedMaskSaveResult(node.editedMasks, savedImg.path, ref, result);
                     await updateMaskWidgetValue();
@@ -672,7 +672,7 @@ app.registerExtension({
                 document,
                 window,
                 img,
-                imageUrl: selectorApi.viewImageUrl(img.path, img),
+                imageUrl: selectorApi.viewImageUrl(img.path, img, node.properties.folders || []),
                 bboxes: node.editedBboxes?.[img.path] || [],
                 hideMode: node.properties.hideMode,
                 containPointerEvents,
@@ -844,7 +844,7 @@ app.registerExtension({
 
                 const thumb = document.createElement("img");
                 thumb.className = `helto-selected-preview-thumb ${aspectClass}`;
-                thumb.src = selectorApi.thumbnailUrl(img.path, isPrivacy, img);
+                thumb.src = selectorApi.thumbnailUrl(img.path, isPrivacy, img, node.properties.folders || []);
                 thumb.alt = img.name;
                 thumbWrap.appendChild(thumb);
 
@@ -932,15 +932,15 @@ app.registerExtension({
                     return;
                 }
 
-                let folderPathsStr = "None";
+                let folderPaths = ["None"];
                 if (selectedSubfolder !== "all") {
-                    folderPathsStr = selectedSubfolder;
+                    folderPaths = [selectedSubfolder];
                 } else if (selectedFolder !== "all") {
-                    folderPathsStr = selectedFolder;
+                    folderPaths = [selectedFolder];
                 } else if (node.properties.folders && node.properties.folders.length > 0) {
-                    folderPathsStr = node.properties.folders.join("<br>");
+                    folderPaths = node.properties.folders;
                 }
-                empty.innerHTML = `No images found in:<br><span style="font-family: monospace; font-size: 11px; opacity: 0.8; word-break: break-all;">${folderPathsStr}</span>`;
+                renderSelectorEmptyState(empty, folderPaths);
                 gridEl.appendChild(empty);
                 return;
             }
@@ -967,7 +967,7 @@ app.registerExtension({
                 
                 // Thumb url targeting our backend endpoint
                 const isPrivacy = node.properties.privacyMode;
-                thumb.dataset.src = selectorApi.thumbnailUrl(img.path, isPrivacy, img);
+                thumb.dataset.src = selectorApi.thumbnailUrl(img.path, isPrivacy, img, node.properties.folders || []);
                 
                 const checkmark = document.createElement("div");
                 checkmark.className = "helto-item-checkmark";
@@ -1564,7 +1564,7 @@ app.registerExtension({
                     await clearThumbnailCache();
                 }
                 if (privacyChanged) {
-                    await selectorApi.migrateMasks(Object.keys(node.editedMasks || {}), newPrivacyMode);
+                    await selectorApi.migrateMasks(Object.keys(node.editedMasks || {}), newPrivacyMode, node.properties.folders || []);
                 }
                 
                 node.properties.hideMode = newHideMode;

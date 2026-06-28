@@ -92,3 +92,24 @@ export function getSelectorElements(container) {
         clearBtn: container.querySelector(".helto-clear-btn"),
     };
 }
+
+export function renderSelectorEmptyState(empty, folderPaths) {
+    const document = empty.ownerDocument;
+    const paths = Array.isArray(folderPaths) && folderPaths.length > 0 ? folderPaths : ["None"];
+
+    empty.textContent = "";
+    empty.appendChild(document.createTextNode("No images found in:"));
+    empty.appendChild(document.createElement("br"));
+
+    const pathContainer = document.createElement("span");
+    pathContainer.style.cssText = "font-family: monospace; font-size: 11px; opacity: 0.8; word-break: break-all;";
+
+    paths.forEach((path, index) => {
+        if (index > 0) {
+            pathContainer.appendChild(document.createElement("br"));
+        }
+        pathContainer.appendChild(document.createTextNode(String(path || "None")));
+    });
+
+    empty.appendChild(pathContainer);
+}
