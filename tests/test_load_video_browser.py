@@ -15,6 +15,8 @@ def load_video_modules(tmp_path: Path, input_dir: Path):
     folder_paths.get_input_directory = lambda: str(input_dir)
     folder_paths.get_temp_directory = lambda: str(tmp_path / "temp")
     sys.modules["folder_paths"] = folder_paths
+    if "shared.temp_cache" in sys.modules:
+        sys.modules["shared.temp_cache"].folder_paths = folder_paths
 
     config_path = ROOT / "nodes" / "load_video" / "video_config.py"
     config_spec = importlib.util.spec_from_file_location("video_config", config_path)
@@ -24,7 +26,6 @@ def load_video_modules(tmp_path: Path, input_dir: Path):
     config_spec.loader.exec_module(config)
     config.CONFIG_DIR = tmp_path / "config"
     config.FOLDERS_FILE = config.CONFIG_DIR / "video_folders.json"
-    config.THUMB_CACHE_DIR = tmp_path / "thumbnail_cache"
 
     io_path = ROOT / "nodes" / "load_video" / "video_io.py"
     io_spec = importlib.util.spec_from_file_location("video_io", io_path)
@@ -45,6 +46,10 @@ class LoadVideoBrowserTests(unittest.TestCase):
             config, _video_io = load_video_modules(tmp_path, tmp_path / "input")
 
             self.assertEqual(config.safe_alias("input clips"), "input clips")
+            self.assertEqual(
+                config.thumbnail_cache_dir(),
+                tmp_path / "temp" / "helto_cache" / "HeltoLoadVideo" / "thumbnails",
+            )
             with self.assertRaises(ValueError):
                 config.safe_alias("../clips")
             with self.assertRaises(ValueError):
@@ -111,6 +116,10 @@ class LoadVideoBrowserTests(unittest.TestCase):
             encrypted_cache = video_io.encrypted_thumbnail_path(video_path)
 
             self.assertEqual(data, b"webp-bytes")
+            self.assertEqual(
+                encrypted_cache.parent,
+                tmp_path / "temp" / "helto_cache" / "HeltoLoadVideo" / "thumbnails",
+            )
             self.assertFalse(plain_cache.exists())
             self.assertTrue(encrypted_cache.exists())
             self.assertEqual(video_io.decrypt_bytes(encrypted_cache.read_bytes()), b"webp-bytes")

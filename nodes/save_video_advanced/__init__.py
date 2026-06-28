@@ -31,9 +31,9 @@ from ...shared.privacy import (
     decrypt_bytes,
     encrypt_bytes,
     private_media_record,
-    private_temp_dir,
     write_encrypted_temp_file,
 )
+from ...shared.temp_cache import private_temp_cache_dir, public_temp_cache_dir
 
 
 _COUNTER_RE_TEMPLATE = r"^{prefix}_(?P<counter>\d+)(?:-audio)?\.[^.]+$"
@@ -602,12 +602,11 @@ class SaveVideoAdvanced(io.ComfyNode):
         buffer = BytesIO()
         torch.save(payload, buffer)
         if encrypted:
-            output_path = private_temp_dir("save_video_advanced_replay") / f"{uuid.uuid4().hex}.pt.enc"
+            output_path = private_temp_cache_dir("HeltoSaveVideoAdvanced", "replay") / f"{uuid.uuid4().hex}.pt.enc"
             output_path.write_bytes(encrypt_bytes(buffer.getvalue()))
             return output_path
 
-        output_dir = Path(folder_paths.get_temp_directory()) / "helto_save_video_advanced_replay"
-        output_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = public_temp_cache_dir("HeltoSaveVideoAdvanced", "replay")
         output_path = output_dir / f"{uuid.uuid4().hex}.pt"
         output_path.write_bytes(buffer.getvalue())
         return output_path

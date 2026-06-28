@@ -46,10 +46,12 @@ from helto_selector_backend.services import (
     scan_folders_payload,
 )
 from helto_selector_backend.thumbnail_cache import (
+    clear_thumbnail_cache,
     delete_thumbnail_cache_for_paths,
     get_thumbnail_bytes,
     thumbnail_cache_paths,
 )
+import shared.temp_cache as temp_cache
 
 
 def write_image(path: str, size: tuple[int, int], color: tuple[int, int, int]) -> None:
@@ -407,6 +409,43 @@ class ScanningAndThumbnailTests(unittest.TestCase):
             self.assertEqual(plain_bytes, plain_again_bytes)
             self.assertTrue(os.path.exists(plain_cache))
             self.assertFalse(os.path.exists(encrypted_cache))
+
+    def test_selector_thumbnail_cache_defaults_to_comfy_temp_node_subfolder(self):
+        original_folder_paths = temp_cache.folder_paths
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_cache.folder_paths = types.SimpleNamespace(get_temp_directory=lambda: tmpdir)
+            try:
+                image_path = os.path.join(tmpdir, "image.png")
+                plain_cache, encrypted_cache = thumbnail_cache_paths(image_path)
+            finally:
+                temp_cache.folder_paths = original_folder_paths
+
+            expected_dir = os.path.join(tmpdir, "helto_cache", "HeltoImageSelector", "thumbnails")
+            self.assertEqual(os.path.dirname(plain_cache), expected_dir)
+            self.assertEqual(os.path.dirname(encrypted_cache), expected_dir)
+
+    def test_clear_thumbnail_cache_keeps_edited_mask_files(self):
+        original_folder_paths = temp_cache.folder_paths
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_cache.folder_paths = types.SimpleNamespace(get_temp_directory=lambda: tmpdir)
+            try:
+                image_path = os.path.join(tmpdir, "image.png")
+                thumbnail_plain, thumbnail_encrypted = thumbnail_cache_paths(image_path)
+                mask_dir = os.path.join(tmpdir, "helto_cache", "HeltoImageSelector", "masks")
+                os.makedirs(os.path.dirname(thumbnail_plain), exist_ok=True)
+                os.makedirs(mask_dir, exist_ok=True)
+                Path(thumbnail_plain).write_bytes(b"plain thumbnail")
+                Path(thumbnail_encrypted).write_bytes(b"encrypted thumbnail")
+                mask_path = os.path.join(mask_dir, "edited-mask.png.enc")
+                Path(mask_path).write_bytes(b"encrypted mask")
+
+                clear_thumbnail_cache()
+            finally:
+                temp_cache.folder_paths = original_folder_paths
+
+            self.assertFalse(os.path.exists(thumbnail_plain))
+            self.assertFalse(os.path.exists(thumbnail_encrypted))
+            self.assertTrue(os.path.exists(mask_path))
 
     def test_thumbnail_cache_regenerates_when_source_file_changes(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2023,6 +2062,10 @@ Second beat moves toward the doorway. @image1:end
             self.assertTrue(stored["paused"])
             self.assertTrue(bundle_path.is_file())
             self.assertEqual(bundle_path.suffix, ".enc")
+            self.assertEqual(
+                bundle_path.parent,
+                Path(tmpdir) / "helto_private" / "HeltoSaveVideoAdvanced" / "replay",
+            )
 
             plaintext = privacy_globals["decrypt_bytes"](bundle_path.read_bytes())
             bundle = torch.load(BytesIO(plaintext), map_location="cpu")
@@ -2099,6 +2142,10 @@ Second beat moves toward the doorway. @image1:end
             self.assertFalse(stored["encrypted"])
             self.assertFalse(stored["paused"])
             self.assertTrue(Path(stored["path"]).is_file())
+            self.assertEqual(
+                Path(stored["path"]).parent,
+                Path(tmpdir) / "helto_cache" / "HeltoSaveVideoAdvanced" / "replay",
+            )
             self.assertNotIn("video-release-node", node_cls.state["releases"])
 
             control = second.kwargs["ui"]["helto_pause_control"][0]
@@ -2497,6 +2544,8 @@ Second beat moves toward the doorway. @image1:end
         module_globals = node_cls.execute.__func__.__globals__
         module_globals["folder_paths"].get_temp_directory = lambda: tmpdir
         module_globals["folder_paths"].get_output_directory = lambda: os.path.join(tmpdir, "output")
+        temp_cache_globals = module_globals["private_temp_cache_dir"].__globals__
+        temp_cache_globals["folder_paths"].get_temp_directory = lambda: tmpdir
 
         privacy_globals = module_globals["write_encrypted_temp_file"].__globals__
         privacy_globals["folder_paths"].get_temp_directory = lambda: tmpdir

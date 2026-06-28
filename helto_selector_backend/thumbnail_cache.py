@@ -7,14 +7,27 @@ from io import BytesIO
 
 from PIL import Image, ImageOps
 
-from .constants import CACHE_DIR, ensure_runtime_dirs
+try:
+    from ..shared.temp_cache import public_temp_cache_dir
+except ImportError:
+    from shared.temp_cache import public_temp_cache_dir
+
 from .crypto import ENCRYPTION_KEY, decrypt_bytes, encrypt_bytes
 
 THUMBNAIL_MAX_SIZE = 512
 THUMBNAIL_CACHE_VERSION = "v2"
 
 
-def thumbnail_cache_paths(image_path: str, cache_dir: str = CACHE_DIR) -> tuple[str, str]:
+def selector_thumbnail_cache_dir() -> str:
+    return str(public_temp_cache_dir("HeltoImageSelector", "thumbnails"))
+
+
+def _resolve_cache_dir(cache_dir: str | os.PathLike[str] | None) -> str:
+    return os.fspath(cache_dir) if cache_dir is not None else selector_thumbnail_cache_dir()
+
+
+def thumbnail_cache_paths(image_path: str, cache_dir: str | os.PathLike[str] | None = None) -> tuple[str, str]:
+    cache_dir = _resolve_cache_dir(cache_dir)
     cache_key = f"{THUMBNAIL_CACHE_VERSION}:{image_path}"
     path_hash = hashlib.sha256(cache_key.encode("utf-8")).hexdigest()
     return (
@@ -50,10 +63,11 @@ def _read_fresh_cache(cache_path: str, image_path: str) -> bytes | None:
 def get_thumbnail_bytes(
     image_path: str,
     privacy_mode: bool,
-    cache_dir: str = CACHE_DIR,
+    cache_dir: str | os.PathLike[str] | None = None,
     key: bytes = ENCRYPTION_KEY,
 ) -> bytes:
-    ensure_runtime_dirs()
+    cache_dir = _resolve_cache_dir(cache_dir)
+    os.makedirs(cache_dir, exist_ok=True)
     plain_cache_path, enc_cache_path = thumbnail_cache_paths(image_path, cache_dir)
 
     if privacy_mode:
@@ -92,8 +106,9 @@ def get_thumbnail_bytes(
     return webp_bytes
 
 
-def delete_thumbnail_cache_for_paths(paths: list[str], cache_dir: str = CACHE_DIR) -> int:
-    ensure_runtime_dirs()
+def delete_thumbnail_cache_for_paths(paths: list[str], cache_dir: str | os.PathLike[str] | None = None) -> int:
+    cache_dir = _resolve_cache_dir(cache_dir)
+    os.makedirs(cache_dir, exist_ok=True)
     deleted_count = 0
 
     for image_path in paths:
@@ -112,8 +127,9 @@ def delete_thumbnail_cache_for_paths(paths: list[str], cache_dir: str = CACHE_DI
     return deleted_count
 
 
-def clear_thumbnail_cache(cache_dir: str = CACHE_DIR) -> None:
-    ensure_runtime_dirs()
+def clear_thumbnail_cache(cache_dir: str | os.PathLike[str] | None = None) -> None:
+    cache_dir = _resolve_cache_dir(cache_dir)
+    os.makedirs(cache_dir, exist_ok=True)
     for filename in os.listdir(cache_dir):
         file_path = os.path.join(cache_dir, filename)
         try:

@@ -8,11 +8,16 @@ from pathlib import Path
 
 import folder_paths
 
+try:
+    from ...shared.temp_cache import public_temp_cache_dir
+except ImportError:
+    from shared.temp_cache import public_temp_cache_dir
+
 
 NODE_DIR = Path(__file__).resolve().parent
 CONFIG_DIR = NODE_DIR / "config"
 FOLDERS_FILE = CONFIG_DIR / "video_folders.json"
-THUMB_CACHE_DIR = NODE_DIR / "thumbnail_cache"
+THUMB_CACHE_DIR: Path | None = None
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
 
 
@@ -25,7 +30,13 @@ class VideoFolder:
 
 def ensure_dirs() -> None:
     CONFIG_DIR.mkdir(exist_ok=True)
-    THUMB_CACHE_DIR.mkdir(exist_ok=True)
+    thumbnail_cache_dir().mkdir(parents=True, exist_ok=True)
+
+
+def thumbnail_cache_dir() -> Path:
+    if THUMB_CACHE_DIR is not None:
+        return Path(THUMB_CACHE_DIR)
+    return public_temp_cache_dir("HeltoLoadVideo", "thumbnails")
 
 
 def default_folder() -> VideoFolder:

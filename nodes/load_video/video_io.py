@@ -18,10 +18,10 @@ except ImportError:
     ui = None
 
 try:
-    from .video_config import THUMB_CACHE_DIR, VIDEO_EXTENSIONS
+    from .video_config import VIDEO_EXTENSIONS, thumbnail_cache_dir
     from ...shared.privacy import decrypt_bytes, encrypt_bytes, private_media_record, remove_plain_file_silent
 except ImportError:
-    from video_config import THUMB_CACHE_DIR, VIDEO_EXTENSIONS
+    from video_config import VIDEO_EXTENSIONS, thumbnail_cache_dir
     from shared.privacy import decrypt_bytes, encrypt_bytes, private_media_record, remove_plain_file_silent
 
 
@@ -67,7 +67,7 @@ def thumbnail_path(video_path: Path, max_size: int = 360) -> Path:
     video_path = Path(video_path)
     stat = video_path.stat()
     key = hashlib.sha256(f"{video_path.resolve()}:{stat.st_mtime_ns}:{stat.st_size}:{max_size}".encode("utf-8")).hexdigest()
-    return THUMB_CACHE_DIR / f"{key}.webp"
+    return thumbnail_cache_dir() / f"{key}.webp"
 
 
 def encrypted_thumbnail_path(video_path: Path, max_size: int = 360) -> Path:
@@ -98,7 +98,7 @@ def generate_thumbnail_bytes(video_path: Path, max_size: int = 360) -> bytes:
 
 def make_thumbnail(video_path: Path, max_size: int = 360) -> Path:
     video_path = Path(video_path)
-    THUMB_CACHE_DIR.mkdir(exist_ok=True)
+    thumbnail_cache_dir().mkdir(parents=True, exist_ok=True)
     output_path = thumbnail_path(video_path, max_size=max_size)
     if output_path.exists():
         return output_path
@@ -110,7 +110,7 @@ def make_thumbnail(video_path: Path, max_size: int = 360) -> Path:
 
 def thumbnail_bytes(video_path: Path, privacy_mode: bool, max_size: int = 360) -> bytes:
     video_path = Path(video_path)
-    THUMB_CACHE_DIR.mkdir(exist_ok=True)
+    thumbnail_cache_dir().mkdir(parents=True, exist_ok=True)
     plain_path = thumbnail_path(video_path, max_size=max_size)
     encrypted_path = encrypted_thumbnail_path(video_path, max_size=max_size)
 
