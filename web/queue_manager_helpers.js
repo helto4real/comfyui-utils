@@ -4,6 +4,8 @@ export const QUEUE_STATUS_RUNNING = "running";
 export const QUEUE_STATUS_COMPLETED = "completed";
 export const QUEUE_STATUS_ERROR = "error";
 export const QUEUE_STATUS_ABORTED = "aborted";
+export const QUEUE_MAX_AUTO_RETRIES = 3;
+export const QUEUE_RETRY_ERROR = "ComfyUI stopped before this run completed after 3 retries.";
 
 const RUNTIME_QUEUE_STATUSES = new Set([QUEUE_STATUS_SUBMITTING, QUEUE_STATUS_RUNNING]);
 const DEFAULT_RUN_TITLE = "Untitled run";
@@ -30,6 +32,31 @@ function coerceQueueNumber(value) {
     return null;
 }
 
+function coerceBatchCount(value) {
+    const count = Number(value);
+    if (!Number.isFinite(count) || count < 1) {
+        return 1;
+    }
+    return Math.max(1, Math.floor(count));
+}
+
+function coerceRetryCount(value) {
+    const count = Number(value);
+    if (!Number.isFinite(count) || count < 0) {
+        return 0;
+    }
+    return Math.floor(count);
+}
+
+export function queueBatchCountFromArgs(args) {
+    return coerceBatchCount(Array.isArray(args) ? args[1] : null);
+}
+
+export function queuePartialExecutionTargetsFromArgs(args) {
+    const targets = Array.isArray(args) ? args[2] : null;
+    return Array.isArray(targets) && targets.length > 0 ? [...targets] : null;
+}
+
 export function createDefaultQueueState() {
     return {
         version: 1,
@@ -48,6 +75,10 @@ export function cloneJson(value) {
         return structuredClone(value);
     }
     return JSON.parse(JSON.stringify(value));
+}
+
+function normalizePartialExecutionTargets(value) {
+    return Array.isArray(value) && value.length > 0 ? cloneJson(value) : null;
 }
 
 function isSeedWidgetName(value) {
@@ -211,6 +242,65 @@ function graphSubgraphs(graph) {
     return [];
 }
 
+export function collectQueueCallbackNodes(graph, visited = new WeakSet()) {
+    if (!graph || typeof graph !== "object" || visited.has(graph)) {
+        return [];
+    }
+    visited.add(graph);
+
+    const nodes = [];
+    for (const node of graphNodes(graph)) {
+        nodes.push(node);
+        if (node?.subgraph && (node.isSubgraphNode?.() || typeof node.subgraph === "object")) {
+            nodes.push(...collectQueueCallbackNodes(node.subgraph, visited));
+        }
+    }
+    for (const subgraph of graphSubgraphs(graph)) {
+        nodes.push(...collectQueueCallbackNodes(subgraph, visited));
+    }
+    return nodes;
+}
+
+export function runQueueWidgetCallbacks(nodes, callbackName, options = {}) {
+    if (!Array.isArray(nodes) || typeof callbackName !== "string") {
+        return;
+    }
+    for (const node of nodes) {
+        for (const widget of node?.widgets ?? []) {
+            widget?.[callbackName]?.(options);
+        }
+    }
+}
+
+export async function captureQueuedPromptBatches(options = {}) {
+    const graphToPrompt = options.graphToPrompt;
+    const enqueuePromptData = options.enqueuePromptData;
+    if (typeof graphToPrompt !== "function" || typeof enqueuePromptData !== "function") {
+        throw new TypeError("Queue capture requires graphToPrompt and enqueuePromptData callbacks.");
+    }
+
+    const graph = options.graph;
+    const batchCount = coerceBatchCount(options.batchCount);
+    const partialExecutionTargets = normalizePartialExecutionTargets(options.partialExecutionTargets);
+    const isPartialExecution = !!partialExecutionTargets;
+    const responses = [];
+
+    for (let index = 0; index < batchCount; index += 1) {
+        runQueueWidgetCallbacks(collectQueueCallbackNodes(graph), "beforeQueued", { isPartialExecution });
+        const promptData = await graphToPrompt(graph);
+        const queuedNodes = collectQueueCallbackNodes(graph);
+        const response = await enqueuePromptData(promptData, {
+            number: options.number,
+            front: !!options.front,
+            partialExecutionTargets,
+        });
+        responses.push(response);
+        runQueueWidgetCallbacks(queuedNodes, "afterQueued", { isPartialExecution });
+    }
+
+    return responses;
+}
+
 export function fixLiveSeedControls(graph, visited = new WeakSet()) {
     if (!graph || typeof graph !== "object" || visited.has(graph)) {
         return 0;
@@ -341,6 +431,11 @@ export function createQueueRun(promptData, options = {}) {
         completed_at: null,
         number: coerceQueueNumber(options.number),
         front: !!options.front,
+        partial_execution_targets: normalizePartialExecutionTargets(options.partialExecutionTargets),
+        preview_method: typeof options.previewMethod === "string" && options.previewMethod
+            ? options.previewMethod
+            : null,
+        retry_count: coerceRetryCount(options.retryCount),
         node_errors: null,
         error: null,
         prompt: cloneJson(promptData),
@@ -358,6 +453,9 @@ export function normalizeQueueRun(run) {
         completed_at: null,
         number: null,
         front: false,
+        partial_execution_targets: null,
+        preview_method: null,
+        retry_count: 0,
         node_errors: null,
         error: null,
         prompt: null,
@@ -369,11 +467,61 @@ export function normalizeQueueRun(run) {
     normalized.status = typeof normalized.status === "string" && normalized.status ? normalized.status : QUEUE_STATUS_PENDING;
     normalized.front = !!normalized.front;
     normalized.number = coerceQueueNumber(normalized.number);
+    normalized.partial_execution_targets = normalizePartialExecutionTargets(normalized.partial_execution_targets);
+    normalized.preview_method = typeof normalized.preview_method === "string" && normalized.preview_method
+        ? normalized.preview_method
+        : null;
+    normalized.retry_count = coerceRetryCount(normalized.retry_count);
     return normalized;
 }
 
+function resetRuntimeRunForRetry(run) {
+    return {
+        ...run,
+        status: QUEUE_STATUS_PENDING,
+        prompt_id: null,
+        started_at: null,
+        completed_at: null,
+        node_errors: null,
+        error: null,
+    };
+}
+
+function retryRuntimeRun(run) {
+    return {
+        ...resetRuntimeRunForRetry(run),
+        retry_count: coerceRetryCount(run.retry_count) + 1,
+    };
+}
+
+export function retryOrFailQueueRun(state, runId, options = {}) {
+    const maxRetries = Number.isFinite(Number(options.maxRetries))
+        ? Math.max(0, Math.floor(Number(options.maxRetries)))
+        : QUEUE_MAX_AUTO_RETRIES;
+    const error = typeof options.error === "string" && options.error ? options.error : QUEUE_RETRY_ERROR;
+    const run = (state.queue || []).find((item) => item.id === runId);
+    if (!run) {
+        return state;
+    }
+    if (coerceRetryCount(run.retry_count) >= maxRetries) {
+        return moveRunToHistory(state, runId, {
+            status: QUEUE_STATUS_ERROR,
+            error,
+        }, options.now);
+    }
+    return {
+        ...state,
+        active_run_id: null,
+        paused: false,
+        resume_required: false,
+        queue: (state.queue || []).map((item) => (
+            item.id === runId ? retryRuntimeRun(item) : item
+        )),
+    };
+}
+
 export function normalizeQueueState(rawState, options = {}) {
-    const state = {
+    let state = {
         ...createDefaultQueueState(),
         ...(rawState && typeof rawState === "object" ? rawState : {}),
     };
@@ -389,22 +537,28 @@ export function normalizeQueueState(rawState, options = {}) {
     state.history = Array.isArray(state.history) ? state.history.map(normalizeQueueRun) : [];
 
     if (sessionChanged && state.queue.length > 0) {
-        state.queue = state.queue.map((run) => {
-            if (!RUNTIME_QUEUE_STATUSES.has(run.status)) {
-                return run;
-            }
-            return {
-                ...run,
-                status: QUEUE_STATUS_PENDING,
-                prompt_id: null,
-                started_at: null,
-                error: null,
+        const activeRuntimeRun = state.queue.find((run) => (
+            run.id === state.active_run_id && RUNTIME_QUEUE_STATUSES.has(run.status)
+        )) || state.queue.find((run) => RUNTIME_QUEUE_STATUSES.has(run.status));
+
+        if (activeRuntimeRun) {
+            const retryState = retryOrFailQueueRun(state, activeRuntimeRun.id);
+            state = {
+                ...retryState,
+                queue: (retryState.queue || []).map((run) => (
+                    RUNTIME_QUEUE_STATUSES.has(run.status) ? resetRuntimeRunForRetry(run) : run
+                )),
             };
-        });
-        state.active_run_id = null;
-        state.paused = true;
-        state.resume_required = true;
-    } else if (!state.queue.some((run) => run.id === state.active_run_id)) {
+        } else {
+            state.queue = state.queue.map((run) => (
+                RUNTIME_QUEUE_STATUSES.has(run.status) ? resetRuntimeRunForRetry(run) : run
+            ));
+            state.active_run_id = null;
+            state.paused = true;
+            state.resume_required = true;
+        }
+    }
+    if (!state.queue.some((run) => run.id === state.active_run_id)) {
         state.active_run_id = null;
     }
     if (!state.active_run_id) {

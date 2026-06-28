@@ -5,9 +5,12 @@ import test from "node:test";
 import {
     QUEUE_STATUS_ABORTED,
     QUEUE_STATUS_COMPLETED,
+    QUEUE_STATUS_ERROR,
     QUEUE_STATUS_PENDING,
     QUEUE_STATUS_RUNNING,
+    QUEUE_RETRY_ERROR,
     applyQueueStateSaveResponse,
+    captureQueuedPromptBatches,
     comfyQueueHasPromptId,
     createDefaultQueueState,
     createQueueRun,
@@ -19,7 +22,10 @@ import {
     moveRunToHistory,
     normalizeQueueState,
     promptWorkflowTitle,
+    queueBatchCountFromArgs,
+    queuePartialExecutionTargetsFromArgs,
     queueSummary,
+    retryOrFailQueueRun,
     resolveQueueRunTitle,
     runCanBeRerun,
     workflowWithFixedSeedControls,
@@ -46,6 +52,7 @@ test("createQueueRun leaves queue number empty when not supplied", () => {
 
     assert.equal(run.number, null);
     assert.equal(run.title, "Untitled run");
+    assert.equal(run.retry_count, 0);
     assert.equal(normalizeQueueState({ queue: [run] }).queue[0].number, null);
 });
 
@@ -54,7 +61,7 @@ test("queue privacy defaults on for new persisted state", () => {
     assert.equal(normalizeQueueState(null).privacy_enabled, true);
 });
 
-test("normalizeQueueState demotes runtime jobs after server restart", () => {
+test("normalizeQueueState retries active runtime jobs after server restart", () => {
     const state = createDefaultQueueState();
     state.paused = false;
     state.active_run_id = "run-a";
@@ -63,6 +70,31 @@ test("normalizeQueueState demotes runtime jobs after server restart", () => {
         title: "Interrupted render",
         status: QUEUE_STATUS_RUNNING,
         prompt_id: "11111111-1111-4111-8111-111111111111",
+        started_at: 1200,
+        prompt: { workflow: {} },
+    }];
+
+    const normalized = normalizeQueueState(state, {
+        serverSessionId: "new-session",
+        storedServerSessionId: "old-session",
+    });
+
+    assert.equal(normalized.paused, false);
+    assert.equal(normalized.resume_required, false);
+    assert.equal(normalized.active_run_id, null);
+    assert.equal(normalized.queue[0].status, QUEUE_STATUS_PENDING);
+    assert.equal(normalized.queue[0].prompt_id, null);
+    assert.equal(normalized.queue[0].started_at, null);
+    assert.equal(normalized.queue[0].retry_count, 1);
+});
+
+test("normalizeQueueState keeps restart pause when no active runtime job can retry", () => {
+    const state = createDefaultQueueState();
+    state.paused = false;
+    state.queue = [{
+        id: "run-pending",
+        title: "Waiting render",
+        status: QUEUE_STATUS_PENDING,
         prompt: { workflow: {} },
     }];
 
@@ -75,7 +107,70 @@ test("normalizeQueueState demotes runtime jobs after server restart", () => {
     assert.equal(normalized.resume_required, true);
     assert.equal(normalized.active_run_id, null);
     assert.equal(normalized.queue[0].status, QUEUE_STATUS_PENDING);
-    assert.equal(normalized.queue[0].prompt_id, null);
+    assert.equal(normalized.queue[0].retry_count, 0);
+});
+
+test("retryOrFailQueueRun requeues three crash retries then fails to history", () => {
+    const prompt = { workflow: { name: "Retry me" }, output: { 1: { inputs: { seed: 44 } } } };
+    const run = {
+        ...createQueueRun(prompt, {
+            id: "run-retry",
+            now: 1000,
+            partialExecutionTargets: ["1:2"],
+            previewMethod: "auto",
+        }),
+        status: QUEUE_STATUS_RUNNING,
+        prompt_id: "11111111-1111-4111-8111-111111111111",
+        started_at: 1200,
+        node_errors: { 1: { error: "old" } },
+        error: "old failure",
+    };
+    const state = {
+        ...createDefaultQueueState(),
+        paused: true,
+        resume_required: true,
+        active_run_id: "run-retry",
+        queue: [run],
+        history: [],
+    };
+
+    const first = retryOrFailQueueRun(state, "run-retry");
+
+    assert.equal(first.paused, false);
+    assert.equal(first.resume_required, false);
+    assert.equal(first.active_run_id, null);
+    assert.equal(first.queue[0].status, QUEUE_STATUS_PENDING);
+    assert.equal(first.queue[0].prompt_id, null);
+    assert.equal(first.queue[0].started_at, null);
+    assert.equal(first.queue[0].completed_at, null);
+    assert.equal(first.queue[0].node_errors, null);
+    assert.equal(first.queue[0].error, null);
+    assert.equal(first.queue[0].retry_count, 1);
+    assert.deepEqual(first.queue[0].prompt, prompt);
+    assert.deepEqual(first.queue[0].partial_execution_targets, ["1:2"]);
+    assert.equal(first.queue[0].preview_method, "auto");
+
+    const third = retryOrFailQueueRun({
+        ...state,
+        queue: [{ ...run, retry_count: 2 }],
+    }, "run-retry");
+
+    assert.equal(third.queue.length, 1);
+    assert.equal(third.queue[0].status, QUEUE_STATUS_PENDING);
+    assert.equal(third.queue[0].retry_count, 3);
+
+    const fourth = retryOrFailQueueRun({
+        ...state,
+        queue: [{ ...run, retry_count: 3 }],
+    }, "run-retry", { now: 4000 });
+
+    assert.equal(fourth.active_run_id, null);
+    assert.equal(fourth.queue.length, 0);
+    assert.equal(fourth.history.length, 1);
+    assert.equal(fourth.history[0].status, QUEUE_STATUS_ERROR);
+    assert.equal(fourth.history[0].error, QUEUE_RETRY_ERROR);
+    assert.equal(fourth.history[0].retry_count, 3);
+    assert.equal(fourth.history[0].completed_at, 4000);
 });
 
 test("moveRunToHistory removes current run and prepends completed history", () => {
@@ -194,6 +289,102 @@ test("runCanBeRerun requires stored workflow and executable prompt data", () => 
     assert.equal(runCanBeRerun({ prompt: { workflow: {}, prompt: { 1: {} } } }), true);
     assert.equal(runCanBeRerun({ prompt: { workflow: {} } }), false);
     assert.equal(runCanBeRerun({ prompt: { output: { 1: {} } } }), false);
+});
+
+test("queue argument helpers parse batch count and partial execution targets", () => {
+    assert.equal(queueBatchCountFromArgs([0, 3]), 3);
+    assert.equal(queueBatchCountFromArgs([0, "2.9"]), 2);
+    assert.equal(queueBatchCountFromArgs([0, 0]), 1);
+    assert.equal(queueBatchCountFromArgs([0, { output: {}, workflow: {} }]), 1);
+    assert.deepEqual(queuePartialExecutionTargetsFromArgs([0, 1, ["12:34"]]), ["12:34"]);
+    assert.equal(queuePartialExecutionTargetsFromArgs([0, 1, []]), null);
+});
+
+test("captureQueuedPromptBatches runs widget callbacks around serialization", async () => {
+    const calls = [];
+    const graph = {
+        nodes: [{
+            widgets: [{
+                beforeQueued(options) {
+                    calls.push(["before", options.isPartialExecution]);
+                },
+                afterQueued(options) {
+                    calls.push(["after", options.isPartialExecution]);
+                },
+            }],
+        }],
+    };
+
+    const responses = await captureQueuedPromptBatches({
+        graph,
+        number: -1,
+        front: true,
+        partialExecutionTargets: ["7:8"],
+        graphToPrompt: async () => {
+            calls.push(["serialize"]);
+            return { workflow: {}, output: { 1: { inputs: { seed: 10 } } } };
+        },
+        enqueuePromptData: async (promptData, options) => {
+            calls.push(["enqueue", options.number, options.front, options.partialExecutionTargets[0]]);
+            return { prompt_id: "prompt-a", prompt: promptData };
+        },
+    });
+
+    assert.deepEqual(calls, [
+        ["before", true],
+        ["serialize"],
+        ["enqueue", -1, true, "7:8"],
+        ["after", true],
+    ]);
+    assert.equal(responses[0].prompt_id, "prompt-a");
+});
+
+test("captureQueuedPromptBatches captures a fresh serialized seed for each batch item", async () => {
+    const seedWidget = { name: "seed", value: 100 };
+    const graph = {
+        nodes: [{
+            widgets: [
+                seedWidget,
+                {
+                    name: "control_after_generate",
+                    afterQueued() {
+                        seedWidget.value += 1;
+                    },
+                },
+            ],
+        }],
+    };
+    const capturedSeeds = [];
+
+    await captureQueuedPromptBatches({
+        graph,
+        batchCount: 3,
+        graphToPrompt: async () => ({
+            workflow: {},
+            output: { 1: { inputs: { seed: seedWidget.value } } },
+        }),
+        enqueuePromptData: async (promptData) => {
+            capturedSeeds.push(promptData.output[1].inputs.seed);
+            return { prompt_id: `prompt-${capturedSeeds.length}` };
+        },
+    });
+
+    assert.deepEqual(capturedSeeds, [100, 101, 102]);
+    assert.equal(seedWidget.value, 103);
+});
+
+test("createQueueRun stores partial execution targets and preview method", () => {
+    const promptData = { workflow: {}, output: { 1: {} } };
+    const targets = ["1:2"];
+    const run = createQueueRun(promptData, {
+        partialExecutionTargets: targets,
+        previewMethod: "auto",
+    });
+
+    targets.push("3:4");
+    assert.deepEqual(run.partial_execution_targets, ["1:2"]);
+    assert.equal(run.preview_method, "auto");
+    assert.deepEqual(normalizeQueueState({ queue: [run] }).queue[0].partial_execution_targets, ["1:2"]);
 });
 
 test("workflowWithFixedSeedControls fixes flat seed control widgets", () => {
@@ -565,15 +756,20 @@ test("queue manager aborts active runs and maps interrupted prompts to Aborted",
     assert.match(source, /displayStatus/);
 });
 
-test("queue manager reconciles stale active runs after ComfyUI crashes", () => {
+test("queue manager retries stale active runs after ComfyUI crashes", () => {
     const source = readFileSync(new URL("../../web/queue_manager.js", import.meta.url), "utf8");
+    const helperSource = readFileSync(new URL("../../web/queue_manager_helpers.js", import.meta.url), "utf8");
 
     assert.match(source, /STALE_PROMPT_MISS_LIMIT = 2/);
     assert.match(source, /fetchComfyQueue/);
     assert.match(source, /routeUrl\("\/queue"\)/);
     assert.match(source, /reconcileActiveRun/);
     assert.match(source, /comfyQueueHasPromptId\(queueInfo, run\.prompt_id\)/);
-    assert.match(source, /ComfyUI stopped before this run completed\./);
+    assert.match(source, /retryOrFailQueueRun/);
+    assert.match(source, /this\.setState\(retryOrFailQueueRun\(this\.state, currentRun\.id\)\)/);
+    assert.match(helperSource, /QUEUE_MAX_AUTO_RETRIES = 3/);
+    assert.match(helperSource, /QUEUE_RETRY_ERROR = "ComfyUI stopped before this run completed after 3 retries\."/);
+    assert.match(helperSource, /moveRunToHistory\(state, runId/);
     assert.match(source, /setTimeout\(\(\) => this\.drainQueue\(\), 0\)/);
 });
 

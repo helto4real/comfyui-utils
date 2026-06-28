@@ -15,6 +15,7 @@ import {
     QUEUE_STATUS_SUBMITTING,
     activeQueueRun,
     applyQueueStateSaveResponse,
+    captureQueuedPromptBatches,
     clearQueueHistory,
     cloneJson,
     comfyQueueHasPromptId,
@@ -33,7 +34,10 @@ import {
     moveRunToHistory,
     nextPendingRun,
     normalizeQueueState,
+    queueBatchCountFromArgs,
+    queuePartialExecutionTargetsFromArgs,
     queueSummary,
+    retryOrFailQueueRun,
     runCanBeLoaded,
     runCanBeRerun,
     workflowWithFixedSeedControls,
@@ -662,17 +666,23 @@ class HeltoQueueManager {
         this.installQueuePatch();
         this.installEventHandlers();
         this.startHistoryPoll();
+        if (!this.state.paused && !activeQueueRun(this.state)) {
+            await this.drainQueue();
+        }
     }
 
     async loadState() {
         try {
             const payload = await jsonFetch(STATE_ROUTE);
+            const sessionChanged = !!payload.stored_server_session_id
+                && !!payload.server_session_id
+                && payload.stored_server_session_id !== payload.server_session_id;
             this.state = normalizeQueueState(payload.state, {
                 serverSessionId: payload.server_session_id,
                 storedServerSessionId: payload.stored_server_session_id,
             });
             this.loaded = true;
-            if (this.state.resume_required) {
+            if (this.state.resume_required || sessionChanged) {
                 await this.saveNow();
             }
         } catch (err) {
@@ -778,9 +788,12 @@ class HeltoQueueManager {
                 if (!promptData) {
                     return originalApiQueuePrompt.apply(this, args);
                 }
+                const queueOptions = args[2] && typeof args[2] === "object" ? args[2] : {};
                 return manager.enqueuePromptData(promptData, {
                     number: args[0],
                     front: Number(args[0]) < 0,
+                    partialExecutionTargets: queueOptions.partialExecutionTargets,
+                    previewMethod: queueOptions.previewMethod,
                 });
             };
         }
@@ -825,12 +838,32 @@ class HeltoQueueManager {
     }
 
     async captureAppQueuePrompt(args) {
-        const promptData = promptDataFromQueueArgs(args) || await app.graphToPrompt();
         const number = queueNumberFromArgs(args);
-        return this.enqueuePromptData(promptData, {
+        const front = Number(number) < 0;
+        const promptData = promptDataFromQueueArgs(args);
+        if (promptData) {
+            return this.enqueuePromptData(promptData, {
+                number,
+                front,
+            });
+        }
+
+        const graph = app.rootGraph ?? app.graph;
+        const responses = await captureQueuedPromptBatches({
+            graph,
+            batchCount: queueBatchCountFromArgs(args),
+            partialExecutionTargets: queuePartialExecutionTargetsFromArgs(args),
             number,
-            front: Number(number) < 0,
+            front,
+            graphToPrompt: (targetGraph) => app.graphToPrompt(targetGraph),
+            enqueuePromptData: (queuedPromptData, options) => this.enqueuePromptData(queuedPromptData, options),
         });
+        return responses[responses.length - 1] || {
+            prompt_id: null,
+            helto_queue_manager: true,
+            queued_run_id: null,
+            node_errors: {},
+        };
     }
 
     async enqueuePromptData(promptData, options = {}) {
@@ -889,6 +922,9 @@ class HeltoQueueManager {
             ...(extraData.extra_pnginfo || {}),
             workflow: cloneJson(promptData.workflow || {}),
         };
+        if (run.preview_method && run.preview_method !== "default") {
+            extraData.preview_method = run.preview_method;
+        }
 
         const body = {
             client_id: api.clientId,
@@ -896,6 +932,9 @@ class HeltoQueueManager {
             extra_data: extraData,
             prompt_id: run.prompt_id,
         };
+        if (Array.isArray(run.partial_execution_targets) && run.partial_execution_targets.length > 0) {
+            body.partial_execution_targets = cloneJson(run.partial_execution_targets);
+        }
         if (Number.isFinite(Number(run.number))) {
             body.number = Number(run.number);
         }
@@ -994,10 +1033,7 @@ class HeltoQueueManager {
 
             this.stalePromptMisses.delete(run.prompt_id);
             this.promptResults.delete(run.prompt_id);
-            this.setState(moveRunToHistory(this.state, currentRun.id, {
-                status: QUEUE_STATUS_ERROR,
-                error: "ComfyUI stopped before this run completed.",
-            }));
+            this.setState(retryOrFailQueueRun(this.state, currentRun.id));
             setTimeout(() => this.drainQueue(), 0);
         } finally {
             this.reconcilingActiveRun = false;
