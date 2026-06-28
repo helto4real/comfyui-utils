@@ -315,6 +315,18 @@ export function formatQueueTime(timestamp) {
     }
 }
 
+export function formatQueueDuration(startedAt, completedAt) {
+    if (startedAt == null || completedAt == null || startedAt === "" || completedAt === "") {
+        return "";
+    }
+    const started = Number(startedAt);
+    const completed = Number(completedAt);
+    if (!Number.isFinite(started) || !Number.isFinite(completed) || completed < started) {
+        return "";
+    }
+    return `${Math.floor((completed - started) / 1000)}s`;
+}
+
 export function createQueueRun(promptData, options = {}) {
     const now = Number.isFinite(Number(options.now)) ? Number(options.now) : Date.now();
     const id = options.id || globalThis.crypto?.randomUUID?.() || `helto-run-${now}-${Math.random().toString(36).slice(2)}`;

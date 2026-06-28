@@ -13,6 +13,7 @@ import {
     createQueueRun,
     historyHasExecutionEvent,
     fixLiveSeedControls,
+    formatQueueDuration,
     latestMediaPreviewFromHistory,
     mediaRecordToPreviewUrl,
     moveRunToHistory,
@@ -97,6 +98,16 @@ test("moveRunToHistory removes current run and prepends completed history", () =
     assert.equal(next.history[0].status, QUEUE_STATUS_COMPLETED);
     assert.equal(next.history[0].completed_at, 2000);
     assert.deepEqual(queueSummary(next), { pending: 0, running: 0, history: 1 });
+});
+
+test("formatQueueDuration renders whole seconds for completed runs", () => {
+    assert.equal(formatQueueDuration(1000, 13000), "12s");
+    assert.equal(formatQueueDuration(1000, 1999), "0s");
+    assert.equal(formatQueueDuration("1000", "126000"), "125s");
+    assert.equal(formatQueueDuration(null, 2000), "");
+    assert.equal(formatQueueDuration(2000, null), "");
+    assert.equal(formatQueueDuration(3000, 2000), "");
+    assert.equal(formatQueueDuration("not-a-time", 2000), "");
 });
 
 test("stale queue state save responses do not clear a newer active run", () => {
@@ -510,6 +521,8 @@ test("queue manager row markup uses compact one-line container", () => {
     assert.match(source, /data-action="abort-queue"/);
     assert.match(source, /Abort workflow/);
     assert.match(source, /helto-qm-time-pill/);
+    assert.match(source, /helto-qm-duration-pill/);
+    assert.match(source, /formatQueueDuration\(run\.started_at, run\.completed_at\)/);
     assert.doesNotMatch(source, /run\.prompt_id\.slice\(0, 8\)/);
     assert.doesNotMatch(source, /<div class="helto-qm-row-title"[^>]*>\$\{escapeHtml\(run\.title\)\}<\/div>\s*<div class="helto-qm-row-meta">/);
 });

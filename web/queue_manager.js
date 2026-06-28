@@ -23,6 +23,7 @@ import {
     deleteQueueRun,
     enqueueRun,
     fixLiveSeedControls,
+    formatQueueDuration,
     formatQueueTime,
     historyHasExecutionEvent,
     latestMediaPreviewFromHistory,
@@ -598,6 +599,9 @@ function injectStyles() {
         .helto-qm-time-pill {
             max-width: 180px;
         }
+        .helto-qm-duration-pill {
+            max-width: 56px;
+        }
         .helto-qm-error-pill {
             justify-content: center;
             max-width: 24px;
@@ -1152,6 +1156,7 @@ class HeltoQueueManager {
             run.status === QUEUE_STATUS_ABORTED ? "aborted" : (isActiveRunStatus(run.status) ? "running" : "")
         );
         const time = source === "history" ? formatQueueTime(run.completed_at) : formatQueueTime(run.created_at);
+        const duration = source === "history" ? formatQueueDuration(run.started_at, run.completed_at) : "";
         const statusText = displayStatus(run.status === QUEUE_STATUS_SUBMITTING ? "submitting" : run.status);
         const preview = latestMediaPreviewFromHistory(run.comfy_history);
         const previewHref = previewUrl(preview);
@@ -1181,6 +1186,7 @@ class HeltoQueueManager {
                         <span class="helto-qm-pill ${statusClass}" title="${error || escapeHtml(statusText)}">${escapeHtml(statusText)}</span>
                         ${error ? `<span class="helto-qm-pill helto-qm-error-pill error" title="${error}">!</span>` : ""}
                         ${time ? `<span class="helto-qm-pill helto-qm-time-pill" title="${escapeHtml(time)}">${escapeHtml(time)}</span>` : ""}
+                        ${duration ? `<span class="helto-qm-pill helto-qm-duration-pill" title="${escapeHtml(duration)}">${escapeHtml(duration)}</span>` : ""}
                     </div>
                     <div class="helto-qm-actions">
                         ${previewButton}
@@ -1215,6 +1221,7 @@ class HeltoQueueManager {
                 run.status,
                 run.error,
                 formatQueueTime(run.completed_at),
+                formatQueueDuration(run.started_at, run.completed_at),
             ].some((value) => normalizeFilterText(value).includes(query));
         });
     }
