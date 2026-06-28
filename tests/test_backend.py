@@ -926,6 +926,7 @@ class NodeSchemaContractTests(unittest.TestCase):
         self.assertIn("Prompt enhancer", display_names)
         self.assertTrue(all(name.startswith("Helto ") or name == "Prompt enhancer" for name in display_names))
         prompt_enhancer_schema = next(schema for schema in schemas if schema.node_id == "HeltoPromptEnhancer")
+        prompt_enhancer_seed_input = next(input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "seed")
         prompt_enhancer_model_input = next(input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "model")
         prompt_enhancer_provider_input = next(input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "provider")
         prompt_enhancer_model_id_input = next(input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "model_id")
@@ -961,6 +962,10 @@ class NodeSchemaContractTests(unittest.TestCase):
         prompt_enhancer_max_tokens_input = next(
             input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "generation_max_tokens"
         )
+        self.assertEqual(prompt_enhancer_seed_input.kwargs["io_kind"], "Int")
+        self.assertEqual(prompt_enhancer_seed_input.kwargs["default"], -1)
+        self.assertEqual(prompt_enhancer_seed_input.kwargs["min"], -1)
+        self.assertEqual(prompt_enhancer_seed_input.kwargs["control_after_generate"], "randomize")
         self.assertEqual(prompt_enhancer_model_input.kwargs["io_kind"], "String")
         self.assertEqual(prompt_enhancer_provider_input.kwargs["io_kind"], "String")
         self.assertEqual(prompt_enhancer_model_id_input.kwargs["io_kind"], "String")
@@ -2642,6 +2647,12 @@ Second beat moves toward the doorway. @image1:end
             ComfyNode = object
             Schema = FakeSchema
             NodeOutput = FakeNodeOutput
+            ControlAfterGenerate = types.SimpleNamespace(
+                fixed="fixed",
+                increment="increment",
+                decrement="decrement",
+                randomize="randomize",
+            )
             NumberDisplay = types.SimpleNamespace(number="number")
             String = fake_socket("String")
             Image = fake_socket("Image")

@@ -5,8 +5,11 @@ export const PROMPT_EDITOR_HEIGHT = 180;
 export const PROMPT_EDITOR_HORIZONTAL_INSET = 24;
 export const PROMPT_EDITOR_PADDING = 6;
 export const MAX_FIXED_SEED = 2147483647;
+export const SEED_CONTROL_MODES = Object.freeze(["fixed", "increment", "decrement", "randomize"]);
 export const ENCRYPTED_PREFIX = "__HELTO_ENC__:";
 export const VARIABLE_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const QUEUED_SEED_MAX_AGE_MS = 10_000;
+const QUEUED_SEED_STATE = "__heltoPromptEnhancerQueuedSeed";
 
 export const SETTINGS_WIDGET_NAMES = Object.freeze([
     "hide_mode",
@@ -41,7 +44,259 @@ export function getWidget(node, name) {
 export function setWidgetValue(widget, value) {
     if (!widget) return;
     widget.value = value;
-    widget.callback?.(value);
+    if (typeof widget.callback === "function") {
+        widget.callback(value);
+    }
+}
+
+export function isPromptEnhancerNode(node) {
+    return (
+        node?.type === PROMPT_ENHANCER_NODE_CLASS
+        || node?.comfyClass === PROMPT_ENHANCER_NODE_CLASS
+        || node?.constructor?.type === PROMPT_ENHANCER_NODE_CLASS
+        || node?.constructor?.comfyClass === PROMPT_ENHANCER_NODE_CLASS
+        || node?.title === "Prompt enhancer"
+    );
+}
+
+function randomUnit(random = Math.random) {
+    if (random !== Math.random) {
+        return random();
+    }
+    if (globalThis.crypto?.getRandomValues) {
+        const values = new Uint32Array(2);
+        globalThis.crypto.getRandomValues(values);
+        return (((values[0] & 0x1fffff) * 0x100000000) + values[1]) / 0x20000000000000;
+    }
+    return Math.random();
+}
+
+export function randomFixedPromptSeed(random = Math.random) {
+    return Math.max(1, Math.floor(randomUnit(random) * MAX_FIXED_SEED));
+}
+
+export function validPromptSeedControlMode(value) {
+    return SEED_CONTROL_MODES.includes(value) ? value : null;
+}
+
+function controlWidgetValues(widget) {
+    const values = widget?.options?.values;
+    if (Array.isArray(values)) {
+        return values;
+    }
+    if (values && typeof values === "object") {
+        return [...Object.keys(values), ...Object.values(values)];
+    }
+    return [];
+}
+
+export function isPromptSeedControlWidget(widget, seedWidget = null) {
+    const seedName = String(seedWidget?.name || "seed");
+    const name = String(widget?.name || "");
+    const label = String(widget?.label || "");
+    const values = controlWidgetValues(widget);
+    return (
+        name === "control_after_generate"
+        || label.toLocaleLowerCase() === "control after generate"
+        || name === `${seedName}.control_after_generate`
+        || name === `${seedName}_control_after_generate`
+        || SEED_CONTROL_MODES.every((value) => values.includes(value))
+    );
+}
+
+export function promptSeedControlWidget(node, seedWidget = getWidget(node, "seed")) {
+    for (const widget of seedWidget?.linkedWidgets || []) {
+        if (isPromptSeedControlWidget(widget, seedWidget)) {
+            return widget;
+        }
+    }
+    return node?.widgets?.find((widget) => widget !== seedWidget && isPromptSeedControlWidget(widget, seedWidget)) || null;
+}
+
+export function livePromptSeedControlMode(node) {
+    const seedWidget = getWidget(node, "seed");
+    const controlWidget = promptSeedControlWidget(node, seedWidget);
+    return (
+        validPromptSeedControlMode(controlWidget?.value)
+        ?? validPromptSeedControlMode(seedWidget?.control_after_generate)
+        ?? validPromptSeedControlMode(seedWidget?.options?.control_after_generate)
+    );
+}
+
+function widgetSerializesToWorkflow(widget) {
+    return Boolean(widget) && widget.serialize !== false && widget.options?.serialize !== false;
+}
+
+export function serializedWidgetIndex(node, targetWidget) {
+    let serializedIndex = 0;
+    for (const widget of node?.widgets || []) {
+        if (widget === targetWidget) {
+            return widgetSerializesToWorkflow(widget) ? serializedIndex : -1;
+        }
+        if (widgetSerializesToWorkflow(widget)) {
+            serializedIndex += 1;
+        }
+    }
+    return -1;
+}
+
+export function writeSerializedWidgetValue(node, widget, value) {
+    const index = serializedWidgetIndex(node, widget);
+    for (const values of [node?.widgets_values, node?.last_serialization?.widgets_values]) {
+        if (Array.isArray(values) && index >= 0 && index < values.length) {
+            values[index] = value;
+        }
+    }
+}
+
+export function writePromptEnhancerWidgetValue(node, widget, value) {
+    if (!node || !widget) {
+        return false;
+    }
+    const previousValue = widget.value;
+    widget.value = value;
+    if (typeof widget.callback === "function") {
+        widget.callback(value, undefined, node, widget);
+    }
+    node.onWidgetChanged?.(widget.name ?? "", value, previousValue, widget);
+    node.graph?.incrementVersion?.();
+    node?.setDirtyCanvas?.(true, true);
+    node?.graph?.setDirtyCanvas?.(true, true);
+    return true;
+}
+
+export function writePromptSeedValue(node, seed) {
+    const seedWidget = getWidget(node, "seed");
+    if (!writePromptEnhancerWidgetValue(node, seedWidget, seed)) {
+        return false;
+    }
+    writeSerializedWidgetValue(node, seedWidget, seed);
+    return true;
+}
+
+export function writePromptSeedControlMode(node, mode) {
+    const controlMode = validPromptSeedControlMode(mode);
+    if (!controlMode) {
+        return false;
+    }
+    const seedWidget = getWidget(node, "seed");
+    const controlWidget = promptSeedControlWidget(node, seedWidget);
+    if (!writePromptEnhancerWidgetValue(node, controlWidget, controlMode)) {
+        return false;
+    }
+    writeSerializedWidgetValue(node, controlWidget, controlMode);
+    return true;
+}
+
+export function promptEnhancerGraphNodes(graph) {
+    const nodes = [];
+    const seenNodes = new Set();
+    const seenGraphs = new Set();
+
+    function visit(currentGraph) {
+        if (!currentGraph || seenGraphs.has(currentGraph)) {
+            return;
+        }
+        seenGraphs.add(currentGraph);
+        for (const node of currentGraph.nodes || currentGraph._nodes || []) {
+            if (!node || seenNodes.has(node)) {
+                continue;
+            }
+            seenNodes.add(node);
+            nodes.push(node);
+            if (node.subgraph) {
+                visit(node.subgraph);
+            }
+        }
+        const subgraphs = currentGraph.subgraphs;
+        if (subgraphs instanceof Map) {
+            for (const subgraph of subgraphs.values()) {
+                visit(subgraph);
+            }
+        } else if (Array.isArray(subgraphs)) {
+            for (const subgraph of subgraphs) {
+                visit(subgraph);
+            }
+        } else if (subgraphs && typeof subgraphs === "object") {
+            for (const subgraph of Object.values(subgraphs)) {
+                visit(subgraph);
+            }
+        }
+    }
+
+    visit(graph);
+    return nodes;
+}
+
+export function suspendPromptSeedControlCallbacks(controlWidget) {
+    if (!controlWidget) {
+        return null;
+    }
+    const beforeQueued = controlWidget.beforeQueued;
+    const afterQueued = controlWidget.afterQueued;
+    const beforeQueuedNoop = () => {};
+    const afterQueuedNoop = () => {};
+    controlWidget.beforeQueued = beforeQueuedNoop;
+    controlWidget.afterQueued = afterQueuedNoop;
+    return {
+        controlWidget,
+        beforeQueued,
+        afterQueued,
+        beforeQueuedNoop,
+        afterQueuedNoop,
+    };
+}
+
+export function restorePromptSeedControlCallbacks(suspended) {
+    for (const item of suspended) {
+        if (!item) {
+            continue;
+        }
+        if (item.controlWidget.beforeQueued === item.beforeQueuedNoop) {
+            item.controlWidget.beforeQueued = item.beforeQueued;
+        }
+        if (item.controlWidget.afterQueued === item.afterQueuedNoop) {
+            item.controlWidget.afterQueued = item.afterQueued;
+        }
+    }
+}
+
+export function randomizePromptEnhancerSeedsBeforeQueue(graph, options = {}) {
+    const queuedSeeds = [];
+    const random = typeof options.random === "function" ? options.random : Math.random;
+    const now = typeof options.now === "function" ? options.now : Date.now;
+    for (const node of promptEnhancerGraphNodes(graph)) {
+        if (!isPromptEnhancerNode(node) || livePromptSeedControlMode(node) !== "randomize") {
+            continue;
+        }
+        const seedWidget = getWidget(node, "seed");
+        const controlWidget = promptSeedControlWidget(node, seedWidget);
+        const seed = randomFixedPromptSeed(random);
+        if (!writePromptSeedValue(node, seed)) {
+            continue;
+        }
+        node[QUEUED_SEED_STATE] = { seed, at: now() };
+        queuedSeeds.push({
+            node,
+            seed,
+            suspended: suspendPromptSeedControlCallbacks(controlWidget),
+        });
+    }
+    return queuedSeeds;
+}
+
+export function restoreQueuedPromptEnhancerSeeds(queuedSeeds, options = {}) {
+    const now = typeof options.now === "function" ? options.now : Date.now;
+    restorePromptSeedControlCallbacks(queuedSeeds.map((item) => item.suspended).filter(Boolean));
+    for (const { node, seed } of queuedSeeds) {
+        const queuedSeed = node?.[QUEUED_SEED_STATE];
+        if (!queuedSeed || queuedSeed.seed !== seed || now() - queuedSeed.at > QUEUED_SEED_MAX_AGE_MS) {
+            continue;
+        }
+        if (Number(getWidget(node, "seed")?.value) !== Number(seed)) {
+            writePromptSeedValue(node, seed);
+        }
+    }
 }
 
 export function readPromptValue(node) {
@@ -118,18 +373,23 @@ export function promptEditorLayout(node, height = PROMPT_EDITOR_HEIGHT) {
 }
 
 export function setGenerateNewEachPrompt(node) {
-    setWidgetValue(getWidget(node, "seed"), -1);
+    if (writePromptSeedControlMode(node, "randomize")) {
+        return "randomize";
+    }
+    writePromptSeedValue(node, -1);
     return -1;
 }
 
 export function keepFixedPromptSeed(node) {
+    writePromptSeedControlMode(node, "fixed");
     const seed = getWidget(node, "seed")?.value;
     return Number.isFinite(Number(seed)) ? Number(seed) : -1;
 }
 
 export function setNewFixedPromptSeed(node, random = Math.random) {
-    const seed = Math.max(1, Math.floor(random() * MAX_FIXED_SEED));
-    setWidgetValue(getWidget(node, "seed"), seed);
+    const seed = randomFixedPromptSeed(random);
+    writePromptSeedValue(node, seed);
+    writePromptSeedControlMode(node, "fixed");
     return seed;
 }
 

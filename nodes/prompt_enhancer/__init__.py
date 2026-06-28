@@ -65,6 +65,7 @@ class PromptEnhancer(io.ComfyNode):
                     min=-1,
                     max=2_147_483_647,
                     step=1,
+                    control_after_generate=io.ControlAfterGenerate.randomize,
                     display_mode=io.NumberDisplay.number,
                 ),
                 io.String.Input("model", default=DEFAULT_OLLAMA_MODEL),

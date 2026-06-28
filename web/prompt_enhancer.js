@@ -16,6 +16,7 @@ import {
     deleteSystemPromptPreset,
     fetchSystemPromptPresets,
     hideSerializedSettingsWidgets,
+    isPromptEnhancerNode,
     keepFixedPromptSeed,
     isPointInPromptWidget,
     moveAutocompleteSelection,
@@ -30,8 +31,10 @@ import {
     readPromptEnhancerVisionModelConfig,
     readPromptText,
     readPromptVariables,
+    randomizePromptEnhancerSeedsBeforeQueue,
     rememberPromptEnhancerProviderModel,
     removePromptVariable,
+    restoreQueuedPromptEnhancerSeeds,
     resetDefaultSystemPrompt,
     saveDefaultSystemPrompt,
     saveSystemPromptPreset,
@@ -71,6 +74,9 @@ const PROMPT_EDITOR_STATE = "__heltoPromptEnhancerPromptEditor";
 const PROMPT_PRIVACY_SERIALIZATION = "__heltoPromptEnhancerPromptPrivacySerialization";
 const PROMPT_AUTOCOMPLETE_VISIBLE = "__heltoPromptEnhancerAutocompleteVisible";
 const PROMPT_AUTOCOMPLETE_SHORTCUT_CLEANUP = "__heltoPromptEnhancerAutocompleteShortcutCleanup";
+const SEED_QUEUE_WRAPPER_KEY = "__heltoPromptEnhancerSeedQueueWrapped";
+const SEED_QUEUE_INSTALL_KEY = "__heltoPromptEnhancerSeedQueueInstall";
+const SEED_QUEUE_INSTALL_ATTEMPT_LIMIT = 20;
 const SYSTEM_PROMPT_PRESET_ACTIONS = [
     { action: "new", label: "New preset", icon: "plus" },
     { action: "duplicate", label: "Duplicate preset", icon: "copy" },
@@ -79,13 +85,57 @@ const SYSTEM_PROMPT_PRESET_ACTIONS = [
     { action: "delete", label: "Delete preset", icon: "trash", danger: true },
 ];
 
-function isPromptEnhancerNode(node) {
-    return node?.comfyClass === PROMPT_ENHANCER_NODE_CLASS || node?.constructor?.comfyClass === PROMPT_ENHANCER_NODE_CLASS;
-}
-
 function setCanvasDirty(node) {
     node?.setDirtyCanvas?.(true, true);
     node?.graph?.setDirtyCanvas?.(true, true);
+    app.canvas?.setDirty?.(true, true);
+}
+
+function defaultGraph() {
+    return app.rootGraph || app.graph;
+}
+
+function installPromptEnhancerSeedQueuePatch(source = "install") {
+    if (typeof app.queuePrompt !== "function") {
+        return false;
+    }
+    if (app.queuePrompt[SEED_QUEUE_WRAPPER_KEY]) {
+        return true;
+    }
+
+    const originalQueuePrompt = app.queuePrompt;
+    const wrappedQueuePrompt = async function (...args) {
+        const queuedSeeds = randomizePromptEnhancerSeedsBeforeQueue(defaultGraph());
+        try {
+            return await originalQueuePrompt.apply(this, args);
+        } finally {
+            restoreQueuedPromptEnhancerSeeds(queuedSeeds);
+        }
+    };
+    Object.defineProperty(wrappedQueuePrompt, SEED_QUEUE_WRAPPER_KEY, {
+        value: true,
+        configurable: true,
+    });
+    app.queuePrompt = wrappedQueuePrompt;
+    return true;
+}
+
+function schedulePromptEnhancerSeedQueuePatch(source = "top-level") {
+    if (globalThis[SEED_QUEUE_INSTALL_KEY]) {
+        installPromptEnhancerSeedQueuePatch(`${source}:resync`);
+        return;
+    }
+    globalThis[SEED_QUEUE_INSTALL_KEY] = true;
+
+    let attempts = 0;
+    function attempt() {
+        attempts += 1;
+        installPromptEnhancerSeedQueuePatch(`${source}:${attempts}`);
+        if (attempts < SEED_QUEUE_INSTALL_ATTEMPT_LIMIT) {
+            setTimeout(attempt, 250);
+        }
+    }
+    attempt();
 }
 
 function updatePromptHover(node, nextValue) {
@@ -1563,6 +1613,7 @@ function ensurePromptEnhancerUi(node) {
     if (!isPromptEnhancerNode(node)) {
         return;
     }
+    installPromptEnhancerSeedQueuePatch("ensure-ui");
     hideSerializedSettingsWidgets(node, collapseHiddenWidgetLayout);
     installPromptPrivacySerialization(node);
     ensurePromptEditor(node);
@@ -1618,8 +1669,13 @@ function ensurePromptEnhancerUi(node) {
     refreshModels(node);
 }
 
+schedulePromptEnhancerSeedQueuePatch();
+
 app.registerExtension({
     name: "Helto.PromptEnhancer",
+    setup() {
+        schedulePromptEnhancerSeedQueuePatch("setup");
+    },
     async beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData.name !== PROMPT_ENHANCER_NODE_CLASS) {
             return;

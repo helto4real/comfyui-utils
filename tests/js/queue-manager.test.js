@@ -7,10 +7,12 @@ import {
     QUEUE_STATUS_COMPLETED,
     QUEUE_STATUS_PENDING,
     QUEUE_STATUS_RUNNING,
+    applyQueueStateSaveResponse,
     comfyQueueHasPromptId,
     createDefaultQueueState,
     createQueueRun,
     historyHasExecutionEvent,
+    fixLiveSeedControls,
     latestMediaPreviewFromHistory,
     mediaRecordToPreviewUrl,
     moveRunToHistory,
@@ -19,6 +21,7 @@ import {
     queueSummary,
     resolveQueueRunTitle,
     runCanBeRerun,
+    workflowWithFixedSeedControls,
 } from "../../web/queue_manager_helpers.js";
 
 test("promptWorkflowTitle reads workflow metadata with fallback", () => {
@@ -96,6 +99,34 @@ test("moveRunToHistory removes current run and prepends completed history", () =
     assert.deepEqual(queueSummary(next), { pending: 0, running: 0, history: 1 });
 });
 
+test("stale queue state save responses do not clear a newer active run", () => {
+    const staleSavedState = createDefaultQueueState();
+    const run = {
+        ...createQueueRun({ workflow: { name: "Race" }, output: { 1: {} } }, {
+            id: "run-race",
+            promptId: "11111111-1111-4111-8111-111111111111",
+            now: 1000,
+        }),
+        status: QUEUE_STATUS_RUNNING,
+        started_at: 1100,
+    };
+    const currentState = {
+        ...createDefaultQueueState(),
+        paused: false,
+        active_run_id: "run-race",
+        queue: [run],
+    };
+
+    const next = applyQueueStateSaveResponse(currentState, staleSavedState, 2, 1);
+
+    assert.equal(next.stale, true);
+    assert.equal(next.needsFollowUpSave, true);
+    assert.equal(next.state.active_run_id, "run-race");
+    assert.equal(next.state.queue.length, 1);
+    assert.equal(next.state.queue[0].status, QUEUE_STATUS_RUNNING);
+    assert.equal(next.state.history.length, 0);
+});
+
 test("moveRunToHistory preserves aborted history status", () => {
     const run = createQueueRun({ workflow: { name: "Stopped" }, output: {} }, {
         id: "run-aborted",
@@ -152,6 +183,228 @@ test("runCanBeRerun requires stored workflow and executable prompt data", () => 
     assert.equal(runCanBeRerun({ prompt: { workflow: {}, prompt: { 1: {} } } }), true);
     assert.equal(runCanBeRerun({ prompt: { workflow: {} } }), false);
     assert.equal(runCanBeRerun({ prompt: { output: { 1: {} } } }), false);
+});
+
+test("workflowWithFixedSeedControls fixes flat seed control widgets", () => {
+    const workflow = {
+        nodes: [{
+            type: "KSampler",
+            inputs: [
+                { name: "model", type: "MODEL", link: 1 },
+                { name: "seed", type: "INT", widget: { name: "seed" }, link: null },
+                { name: "steps", type: "INT", widget: { name: "steps" }, link: null },
+            ],
+            widgets_values: [123, "randomize", 20],
+        }],
+    };
+
+    const nextWorkflow = workflowWithFixedSeedControls(workflow);
+
+    assert.deepEqual(nextWorkflow.nodes[0].widgets_values, [123, "fixed", 20]);
+});
+
+test("workflowWithFixedSeedControls fixes noise seed and custom seed suffix controls", () => {
+    const workflow = {
+        nodes: [{
+            type: "Generator",
+            inputs: [
+                { name: "noise_seed", type: "INT", widget: { name: "noise_seed" }, link: null },
+                { name: "render_seed", type: "INT", widget: { name: "render_seed" }, link: null },
+                { name: "mode", type: "STRING", widget: { name: "mode" }, link: null },
+            ],
+            widgets_values: [7, "increment", 9, "decrement", "randomize"],
+        }],
+    };
+
+    const nextWorkflow = workflowWithFixedSeedControls(workflow);
+
+    assert.deepEqual(nextWorkflow.nodes[0].widgets_values, [7, "fixed", 9, "fixed", "randomize"]);
+});
+
+test("workflowWithFixedSeedControls traverses nested subgraphs", () => {
+    const workflow = {
+        nodes: [],
+        definitions: {
+            subgraphs: [{
+                nodes: [{
+                    type: "KSamplerAdvanced",
+                    inputs: [{ name: "noise_seed", type: "INT", widget: { name: "noise_seed" }, link: null }],
+                    widgets_values: [44, "decrement"],
+                }],
+                definitions: {
+                    subgraphs: [{
+                        nodes: [{
+                            type: "SeedNode",
+                            inputs: [{ name: "seed", type: "INT", widget: { name: "seed" }, link: null }],
+                            widgets_values: [55, "increment-wrap"],
+                        }],
+                    }],
+                },
+            }],
+        },
+    };
+
+    const nextWorkflow = workflowWithFixedSeedControls(workflow);
+
+    assert.equal(nextWorkflow.definitions.subgraphs[0].nodes[0].widgets_values[1], "fixed");
+    assert.equal(nextWorkflow.definitions.subgraphs[0].definitions.subgraphs[0].nodes[0].widgets_values[1], "fixed");
+});
+
+test("workflowWithFixedSeedControls does not mutate the original workflow", () => {
+    const workflow = {
+        nodes: [{
+            inputs: [{ name: "seed", type: "INT", widget: { name: "seed" }, link: null }],
+            widgets_values: [123, "randomize"],
+        }],
+    };
+
+    const nextWorkflow = workflowWithFixedSeedControls(workflow);
+
+    assert.notEqual(nextWorkflow, workflow);
+    assert.deepEqual(workflow.nodes[0].widgets_values, [123, "randomize"]);
+    assert.deepEqual(nextWorkflow.nodes[0].widgets_values, [123, "fixed"]);
+});
+
+test("workflowWithFixedSeedControls leaves non-seed and unsupported nodes unchanged", () => {
+    const workflow = {
+        nodes: [
+            {
+                inputs: [{ name: "mode", type: "STRING", widget: { name: "mode" }, link: null }],
+                widgets_values: ["fixed", "randomize"],
+            },
+            {
+                inputs: null,
+                widgets_values: [1, "randomize"],
+            },
+            {
+                inputs: [{ name: "seed", type: "INT", widget: { name: "seed" }, link: null }],
+                widgets_values: [1, "custom-control"],
+            },
+        ],
+    };
+
+    const nextWorkflow = workflowWithFixedSeedControls(workflow);
+
+    assert.deepEqual(nextWorkflow, workflow);
+});
+
+test("fixLiveSeedControls fixes linked seed control widgets", () => {
+    let callbackValue = null;
+    const controlWidget = {
+        name: "control_after_generate",
+        value: "randomize",
+        options: { values: ["fixed", "increment", "decrement", "randomize"] },
+        callback(value) {
+            callbackValue = value;
+        },
+    };
+    const graph = {
+        nodes: [{
+            widgets: [
+                { name: "seed", value: 123, linkedWidgets: [controlWidget] },
+                controlWidget,
+            ],
+        }],
+    };
+
+    assert.equal(fixLiveSeedControls(graph), 1);
+    assert.equal(controlWidget.value, "fixed");
+    assert.equal(callbackValue, "fixed");
+});
+
+test("fixLiveSeedControls fixes adjacent seed control widgets", () => {
+    const controlWidget = {
+        name: "control_after_generate",
+        value: "increment",
+        options: { values: ["fixed", "increment", "decrement", "randomize"] },
+    };
+    const graph = {
+        nodes: [{
+            widgets: [
+                { name: "seed", value: 123 },
+                controlWidget,
+            ],
+        }],
+    };
+
+    assert.equal(fixLiveSeedControls(graph), 1);
+    assert.equal(controlWidget.value, "fixed");
+});
+
+test("fixLiveSeedControls handles seed suffixes and custom control names with control options", () => {
+    const controlWidget = {
+        name: "generation_mode",
+        value: "decrement",
+        options: { values: ["fixed", "increment", "decrement", "randomize", "increment-wrap"] },
+    };
+    const graph = {
+        nodes: [{
+            widgets: [
+                { name: "noise_seed", value: 123 },
+                controlWidget,
+            ],
+        }],
+    };
+
+    assert.equal(fixLiveSeedControls(graph), 1);
+    assert.equal(controlWidget.value, "fixed");
+});
+
+test("fixLiveSeedControls traverses live subgraphs", () => {
+    const controlWidget = {
+        name: "control_after_generate",
+        value: "randomize",
+        options: { values: ["fixed", "increment", "decrement", "randomize"] },
+    };
+    const graph = {
+        nodes: [{
+            widgets: [],
+            isSubgraphNode() {
+                return true;
+            },
+            subgraph: {
+                nodes: [{
+                    widgets: [
+                        { name: "seed", value: 123 },
+                        controlWidget,
+                    ],
+                }],
+            },
+        }],
+    };
+
+    assert.equal(fixLiveSeedControls(graph), 1);
+    assert.equal(controlWidget.value, "fixed");
+});
+
+test("fixLiveSeedControls leaves non-control widgets unchanged", () => {
+    const modeWidget = {
+        name: "mode",
+        value: "randomize",
+        options: { values: ["randomize", "precise"] },
+    };
+    const graph = {
+        nodes: [
+            {
+                widgets: [
+                    { name: "seed", value: 123 },
+                    modeWidget,
+                ],
+            },
+            {
+                widgets: [
+                    { name: "mode", value: "fixed" },
+                    { name: "control_after_generate", value: "randomize" },
+                ],
+            },
+            {
+                widgets: null,
+            },
+        ],
+    };
+
+    assert.equal(fixLiveSeedControls(graph), 0);
+    assert.equal(modeWidget.value, "randomize");
 });
 
 test("latestMediaPreviewFromHistory finds private image outputs", () => {
@@ -273,6 +526,17 @@ test("queue manager sidebar icon shows active queue count badge", () => {
     assert.match(source, /icon\.dataset\.queueCount = label/);
     assert.match(source, /delete icon\.dataset\.queueCount/);
     assert.match(source, /scheduleSidebarBadgeUpdate/);
+});
+
+test("queue manager guards in-flight state saves with a local revision", () => {
+    const source = readFileSync(new URL("../../web/queue_manager.js", import.meta.url), "utf8");
+
+    assert.match(source, /this\.stateRevision = 0/);
+    assert.match(source, /this\.stateRevision \+= 1/);
+    assert.match(source, /const saveRevision = this\.stateRevision/);
+    assert.match(source, /const stateSnapshot = cloneJson\(this\.state\)/);
+    assert.match(source, /applyQueueStateSaveResponse\(/);
+    assert.match(source, /if \(needsFollowUpSave\) \{\s*this\.scheduleSave\(\);/s);
 });
 
 test("queue manager aborts active runs and maps interrupted prompts to Aborted", () => {

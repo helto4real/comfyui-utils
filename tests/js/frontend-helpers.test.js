@@ -85,6 +85,7 @@ import {
     hideSerializedSettingsWidgets,
     isEncryptedText,
     isEncryptedVariables,
+    keepFixedPromptSeed,
     isPromptAutocompleteVisible,
     shouldSuppressPromptAutocompleteRefresh,
     isPointInPromptWidget,
@@ -97,8 +98,11 @@ import {
     normalizePromptVariables,
     parsePromptVariablesJson,
     promptEditorLayout,
+    promptEnhancerGraphNodes,
+    promptSeedControlWidget,
     promptSuggestionPopupPosition,
     promptWidgetBounds,
+    randomizePromptEnhancerSeedsBeforeQueue,
     readProviderModelHistory,
     readPromptEnhancerModelConfig,
     readPromptEnhancerVisionModelConfig,
@@ -107,6 +111,7 @@ import {
     readPromptEnhancerSettings,
     resetDefaultSystemPrompt,
     resetSystemPrompt,
+    restoreQueuedPromptEnhancerSeeds,
     saveDefaultSystemPrompt,
     saveSystemPrompt,
     saveSystemPromptPreset,
@@ -1135,26 +1140,166 @@ test("layout controller does not expose size callbacks during ambiguous Vue moun
     assert.equal(containerEl.style.height, "778px");
 });
 
-test("prompt enhancer seed buttons update seed widget", () => {
-    const callbacks = [];
+test("prompt enhancer seed buttons update seed widget and control mode", () => {
+    const seedCallbacks = [];
+    const controlCallbacks = [];
+    const controlWidget = {
+        name: "control_after_generate",
+        value: "fixed",
+        options: { values: ["fixed", "increment", "decrement", "randomize"] },
+        callback(value) {
+            controlCallbacks.push(value);
+        },
+    };
+    const seedWidget = {
+        name: "seed",
+        value: 5,
+        linkedWidgets: [controlWidget],
+        callback(value) {
+            seedCallbacks.push(value);
+        },
+    };
     const node = {
-        widgets: [
-            {
-                name: "seed",
-                value: 5,
-                callback(value) {
-                    callbacks.push(value);
-                },
-            },
-        ],
+        widgets: [seedWidget, controlWidget],
+        widgets_values: [5, "fixed"],
+        last_serialization: { widgets_values: [5, "fixed"] },
     };
 
-    assert.equal(setGenerateNewEachPrompt(node), -1);
-    assert.equal(node.widgets[0].value, -1);
+    assert.equal(setGenerateNewEachPrompt(node), "randomize");
+    assert.equal(seedWidget.value, 5);
+    assert.equal(controlWidget.value, "randomize");
+    assert.deepEqual(node.widgets_values, [5, "randomize"]);
 
     assert.equal(setNewFixedPromptSeed(node, () => 0.5), 1073741823);
-    assert.equal(node.widgets[0].value, 1073741823);
-    assert.deepEqual(callbacks, [-1, 1073741823]);
+    assert.equal(seedWidget.value, 1073741823);
+    assert.equal(controlWidget.value, "fixed");
+    assert.deepEqual(node.widgets_values, [1073741823, "fixed"]);
+    assert.deepEqual(node.last_serialization.widgets_values, [1073741823, "fixed"]);
+
+    assert.equal(keepFixedPromptSeed(node), 1073741823);
+    assert.equal(controlWidget.value, "fixed");
+    assert.deepEqual(seedCallbacks, [1073741823]);
+    assert.deepEqual(controlCallbacks, ["randomize", "fixed", "fixed"]);
+});
+
+test("prompt enhancer detects linked adjacent seed controls and graph subgraphs", () => {
+    const linkedControl = {
+        name: "custom",
+        value: "randomize",
+        options: { values: ["fixed", "increment", "decrement", "randomize"] },
+    };
+    const adjacentControl = {
+        name: "control_after_generate",
+        value: "randomize",
+    };
+    const seedWidget = { name: "seed", linkedWidgets: [linkedControl] };
+    const rootNode = { comfyClass: "HeltoPromptEnhancer", widgets: [seedWidget, adjacentControl] };
+    const subgraphNode = { comfyClass: "HeltoPromptEnhancer", widgets: [] };
+    const graph = {
+        nodes: [{
+            subgraph: {
+                nodes: [subgraphNode],
+            },
+        }],
+        subgraphs: new Map([["extra", { nodes: [rootNode] }]]),
+    };
+
+    assert.equal(promptSeedControlWidget(rootNode, seedWidget), linkedControl);
+    assert.deepEqual(promptEnhancerGraphNodes(graph), [graph.nodes[0], subgraphNode, rootNode]);
+});
+
+test("prompt enhancer queue randomization writes seed and suspends control callbacks", () => {
+    const calls = [];
+    const originalBeforeQueued = () => calls.push("before");
+    const originalAfterQueued = () => calls.push("after");
+    const controlWidget = {
+        name: "control_after_generate",
+        value: "randomize",
+        options: { values: ["fixed", "increment", "decrement", "randomize"] },
+        beforeQueued: originalBeforeQueued,
+        afterQueued: originalAfterQueued,
+    };
+    const seedWidget = {
+        name: "seed",
+        value: 5,
+        linkedWidgets: [controlWidget],
+        callback(value) {
+            calls.push(["seed-callback", value]);
+        },
+    };
+    const node = {
+        comfyClass: "HeltoPromptEnhancer",
+        widgets: [seedWidget, controlWidget],
+        widgets_values: [5],
+        last_serialization: { widgets_values: [5] },
+        onWidgetChanged(name, value, previousValue, widget) {
+            calls.push(["changed", name, value, previousValue, widget === seedWidget]);
+        },
+        graph: {
+            version: 0,
+            dirty: 0,
+            incrementVersion() {
+                this.version += 1;
+            },
+            setDirtyCanvas() {
+                this.dirty += 1;
+            },
+        },
+    };
+    const graph = { nodes: [node] };
+
+    const queuedSeeds = randomizePromptEnhancerSeedsBeforeQueue(graph, {
+        random: () => 0.25,
+        now: () => 1000,
+    });
+
+    assert.equal(queuedSeeds.length, 1);
+    assert.equal(seedWidget.value, 536870911);
+    assert.deepEqual(node.widgets_values, [536870911]);
+    assert.deepEqual(node.last_serialization.widgets_values, [536870911]);
+    assert.notEqual(controlWidget.beforeQueued, originalBeforeQueued);
+    assert.notEqual(controlWidget.afterQueued, originalAfterQueued);
+    controlWidget.beforeQueued();
+    controlWidget.afterQueued();
+    assert.equal(calls.includes("before"), false);
+    assert.equal(calls.includes("after"), false);
+
+    seedWidget.value = -1;
+    node.widgets_values[0] = -1;
+    restoreQueuedPromptEnhancerSeeds(queuedSeeds, { now: () => 1005 });
+
+    assert.equal(controlWidget.beforeQueued, originalBeforeQueued);
+    assert.equal(controlWidget.afterQueued, originalAfterQueued);
+    assert.equal(seedWidget.value, 536870911);
+    assert.deepEqual(node.widgets_values, [536870911]);
+    assert.deepEqual(calls, [
+        ["seed-callback", 536870911],
+        ["changed", "seed", 536870911, 5, true],
+        ["seed-callback", 536870911],
+        ["changed", "seed", 536870911, -1, true],
+    ]);
+    assert.equal(node.graph.version, 2);
+    assert.equal(node.graph.dirty, 2);
+});
+
+test("prompt enhancer queue randomization skips fixed seed controls", () => {
+    const seedWidget = { name: "seed", value: 5 };
+    const node = {
+        comfyClass: "HeltoPromptEnhancer",
+        widgets: [
+            seedWidget,
+            {
+                name: "control_after_generate",
+                value: "fixed",
+                options: { values: ["fixed", "increment", "decrement", "randomize"] },
+            },
+        ],
+        widgets_values: [5],
+    };
+
+    assert.deepEqual(randomizePromptEnhancerSeedsBeforeQueue({ nodes: [node] }, { random: () => 0.25 }), []);
+    assert.equal(seedWidget.value, 5);
+    assert.deepEqual(node.widgets_values, [5]);
 });
 
 test("prompt enhancer settings read and write serialized widgets", () => {

@@ -10,6 +10,7 @@ const DEFAULT_RUN_TITLE = "Untitled run";
 const WORKFLOW_FILE_RE = /\.json$/i;
 const VIDEO_EXTENSIONS = new Set([".avi", ".m4v", ".mkv", ".mov", ".mp4", ".webm"]);
 const IMAGE_EXTENSIONS = new Set([".apng", ".avif", ".gif", ".jpeg", ".jpg", ".png", ".webp"]);
+const SEED_CONTROL_VALUES = new Set(["fixed", "increment", "decrement", "increment-wrap", "randomize"]);
 const MEDIA_OUTPUT_KEYS = [
     "helto_private_images",
     "images",
@@ -47,6 +48,186 @@ export function cloneJson(value) {
         return structuredClone(value);
     }
     return JSON.parse(JSON.stringify(value));
+}
+
+function isSeedWidgetName(value) {
+    const name = String(value ?? "").toLocaleLowerCase();
+    return name === "seed" || name.endsWith("_seed");
+}
+
+function isControlWidgetName(value) {
+    const name = String(value ?? "").trim().toLocaleLowerCase();
+    return name === "control_after_generate" || name === "control after generate";
+}
+
+function serializedWidgetName(input) {
+    if (!input || typeof input !== "object") {
+        return null;
+    }
+    if (input.widget && typeof input.widget === "object") {
+        return input.widget.name || input.name || null;
+    }
+    return null;
+}
+
+function fixSeedControlsForNode(node) {
+    if (!node || typeof node !== "object" || !Array.isArray(node.inputs) || !Array.isArray(node.widgets_values)) {
+        return;
+    }
+
+    let widgetValueIndex = 0;
+    for (const input of node.inputs) {
+        const widgetName = serializedWidgetName(input);
+        if (!widgetName) {
+            continue;
+        }
+
+        const controlIndex = widgetValueIndex + 1;
+        if (isSeedWidgetName(widgetName) && SEED_CONTROL_VALUES.has(node.widgets_values[controlIndex])) {
+            node.widgets_values[controlIndex] = "fixed";
+            widgetValueIndex += 2;
+        } else {
+            widgetValueIndex += 1;
+        }
+    }
+}
+
+function fixSeedControlsForGraph(graph, visited = new WeakSet()) {
+    if (!graph || typeof graph !== "object" || visited.has(graph)) {
+        return;
+    }
+    visited.add(graph);
+
+    if (Array.isArray(graph.nodes)) {
+        for (const node of graph.nodes) {
+            fixSeedControlsForNode(node);
+        }
+    }
+
+    const subgraphs = graph.definitions?.subgraphs;
+    if (Array.isArray(subgraphs)) {
+        for (const subgraph of subgraphs) {
+            fixSeedControlsForGraph(subgraph, visited);
+        }
+    }
+}
+
+export function workflowWithFixedSeedControls(workflow) {
+    if (!workflow || typeof workflow !== "object") {
+        return workflow;
+    }
+    const nextWorkflow = cloneJson(workflow);
+    fixSeedControlsForGraph(nextWorkflow);
+    return nextWorkflow;
+}
+
+function controlWidgetValues(widget) {
+    const values = widget?.options?.values;
+    if (Array.isArray(values)) {
+        return values;
+    }
+    if (values && typeof values === "object") {
+        return [...Object.keys(values), ...Object.values(values)];
+    }
+    return [];
+}
+
+function hasSeedControlOptions(widget) {
+    return controlWidgetValues(widget).filter((value) => SEED_CONTROL_VALUES.has(value)).length >= 3;
+}
+
+function isLiveSeedControlWidget(widget) {
+    return !!(
+        widget
+        && typeof widget === "object"
+        && SEED_CONTROL_VALUES.has(widget.value)
+        && (
+            isControlWidgetName(widget.name)
+            || isControlWidgetName(widget.label)
+            || hasSeedControlOptions(widget)
+        )
+    );
+}
+
+function setLiveControlFixed(widget) {
+    if (!isLiveSeedControlWidget(widget) || widget.value === "fixed") {
+        return 0;
+    }
+    widget.value = "fixed";
+    if (typeof widget.callback === "function") {
+        widget.callback("fixed");
+    }
+    return 1;
+}
+
+function fixLiveSeedControlsForNode(node) {
+    if (!node || typeof node !== "object" || !Array.isArray(node.widgets)) {
+        return 0;
+    }
+
+    let fixedCount = 0;
+    const fixedControls = new Set();
+    for (const [index, widget] of node.widgets.entries()) {
+        if (!isSeedWidgetName(widget?.name)) {
+            continue;
+        }
+
+        const candidateControls = [
+            ...(Array.isArray(widget.linkedWidgets) ? widget.linkedWidgets : []),
+            node.widgets[index + 1],
+        ];
+        for (const controlWidget of candidateControls) {
+            if (!controlWidget || fixedControls.has(controlWidget)) {
+                continue;
+            }
+            fixedControls.add(controlWidget);
+            fixedCount += setLiveControlFixed(controlWidget);
+        }
+    }
+    return fixedCount;
+}
+
+function graphNodes(graph) {
+    if (Array.isArray(graph?.nodes)) {
+        return graph.nodes;
+    }
+    if (Array.isArray(graph?._nodes)) {
+        return graph._nodes;
+    }
+    return [];
+}
+
+function graphSubgraphs(graph) {
+    const subgraphs = graph?.subgraphs;
+    if (Array.isArray(subgraphs)) {
+        return subgraphs;
+    }
+    if (subgraphs instanceof Map) {
+        return [...subgraphs.values()];
+    }
+    if (subgraphs && typeof subgraphs === "object") {
+        return Object.values(subgraphs);
+    }
+    return [];
+}
+
+export function fixLiveSeedControls(graph, visited = new WeakSet()) {
+    if (!graph || typeof graph !== "object" || visited.has(graph)) {
+        return 0;
+    }
+    visited.add(graph);
+
+    let fixedCount = 0;
+    for (const node of graphNodes(graph)) {
+        fixedCount += fixLiveSeedControlsForNode(node);
+        if (node?.subgraph && (node.isSubgraphNode?.() || typeof node.subgraph === "object")) {
+            fixedCount += fixLiveSeedControls(node.subgraph, visited);
+        }
+    }
+    for (const subgraph of graphSubgraphs(graph)) {
+        fixedCount += fixLiveSeedControls(subgraph, visited);
+    }
+    return fixedCount;
 }
 
 function basenameWithoutWorkflowExtension(value) {
@@ -234,6 +415,15 @@ export function enqueueRun(state, run) {
     return {
         ...state,
         queue: [...(state.queue || []), normalizeQueueRun(run)],
+    };
+}
+
+export function applyQueueStateSaveResponse(currentState, savedState, currentRevision, saveRevision) {
+    const stale = currentRevision !== saveRevision;
+    return {
+        state: stale ? currentState : normalizeQueueState(savedState),
+        stale,
+        needsFollowUpSave: stale,
     };
 }
 

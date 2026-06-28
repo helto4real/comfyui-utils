@@ -14,6 +14,7 @@ import {
     QUEUE_STATUS_RUNNING,
     QUEUE_STATUS_SUBMITTING,
     activeQueueRun,
+    applyQueueStateSaveResponse,
     clearQueueHistory,
     cloneJson,
     comfyQueueHasPromptId,
@@ -21,6 +22,7 @@ import {
     deleteHistoryRun,
     deleteQueueRun,
     enqueueRun,
+    fixLiveSeedControls,
     formatQueueTime,
     historyHasExecutionEvent,
     latestMediaPreviewFromHistory,
@@ -33,6 +35,7 @@ import {
     queueSummary,
     runCanBeLoaded,
     runCanBeRerun,
+    workflowWithFixedSeedControls,
 } from "./queue_manager_helpers.js";
 
 const STATE_ROUTE = "/helto_queue_manager/state";
@@ -638,6 +641,7 @@ class HeltoQueueManager {
         this.loaded = false;
         this.saving = false;
         this.saveTimer = null;
+        this.stateRevision = 0;
         this.submitting = false;
         this.bypass = false;
         this.promptResults = new Map();
@@ -676,6 +680,7 @@ class HeltoQueueManager {
 
     setState(nextState, { save = true } = {}) {
         this.state = normalizeQueueState(nextState);
+        this.stateRevision += 1;
         this.render();
         if (save) {
             this.scheduleSave();
@@ -695,21 +700,34 @@ class HeltoQueueManager {
             this.scheduleSave();
             return;
         }
+        const saveRevision = this.stateRevision;
+        const stateSnapshot = cloneJson(this.state);
+        let needsFollowUpSave = false;
         this.saving = true;
         try {
             const payload = await jsonFetch(STATE_ROUTE, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                    state: this.state,
-                    privacy_enabled: !!this.state.privacy_enabled,
+                    state: stateSnapshot,
+                    privacy_enabled: !!stateSnapshot.privacy_enabled,
                 }),
             });
-            this.state = normalizeQueueState(payload.state);
+            const saved = applyQueueStateSaveResponse(
+                this.state,
+                payload.state,
+                this.stateRevision,
+                saveRevision,
+            );
+            this.state = saved.state;
+            needsFollowUpSave = saved.needsFollowUpSave;
         } catch (err) {
             console.error("[Helto Queue Manager] Failed to save state:", err);
         } finally {
             this.saving = false;
+            if (needsFollowUpSave) {
+                this.scheduleSave();
+            }
             this.render();
         }
     }
@@ -1052,7 +1070,11 @@ class HeltoQueueManager {
     async loadWorkflow(runId, source) {
         const run = (source === "history" ? this.state.history : this.state.queue).find((item) => item.id === runId);
         if (!runCanBeLoaded(run)) return;
-        await app.loadGraphData(cloneJson(run.prompt.workflow));
+        await app.loadGraphData(workflowWithFixedSeedControls(run.prompt.workflow));
+        if (fixLiveSeedControls(app.rootGraph ?? app.graph) > 0) {
+            app.graph?.setDirtyCanvas?.(true, true);
+            app.canvas?.setDirty?.(true, true);
+        }
     }
 
     async rerunHistoryRun(runId) {
