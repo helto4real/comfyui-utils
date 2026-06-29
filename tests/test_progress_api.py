@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import types
 import unittest
@@ -215,7 +216,13 @@ class ProgressApiTests(unittest.TestCase):
             })
 
         self.assertTrue(ok)
-        self.assertEqual(sent, [("Loading model", "7", "client-a")])
+        self.assertEqual(len(sent), 1)
+        text, node_id, sid = sent[0]
+        self.assertEqual(node_id, progress_api.TEXT_BRIDGE_NODE_ID)
+        self.assertEqual(sid, "client-a")
+        bridge = json.loads(text)
+        self.assertEqual(bridge["node_id"], "7")
+        self.assertEqual(bridge["text"], "Loading model")
 
     def test_native_text_mirror_sends_message_and_detail_log(self):
         sent = []
@@ -237,7 +244,13 @@ class ProgressApiTests(unittest.TestCase):
             })
 
         self.assertTrue(ok)
-        self.assertEqual(sent, [("Encoding frame | ffmpeg accepted frame 4", "8", "client-a")])
+        self.assertEqual(len(sent), 1)
+        text, node_id, sid = sent[0]
+        self.assertEqual(node_id, progress_api.TEXT_BRIDGE_NODE_ID)
+        self.assertEqual(sid, "client-a")
+        bridge = json.loads(text)
+        self.assertEqual(bridge["node_id"], "8")
+        self.assertEqual(bridge["text"], "Encoding frame | ffmpeg accepted frame 4")
 
     def test_native_text_mirror_noops_without_required_server_state(self):
         sent = []
@@ -298,7 +311,14 @@ class ProgressApiTests(unittest.TestCase):
 
         self.assertEqual(sent_events, [("helto_progress", payload, "client-a")])
         self.assertEqual(progress_updates, [("9", 4.0, 10.0, None)])
-        self.assertEqual(text_events, [("Writing frame | ffmpeg accepted frame 4", "9", "client-a")])
+        self.assertEqual(len(text_events), 1)
+        text, node_id, sid = text_events[0]
+        self.assertEqual(node_id, progress_api.TEXT_BRIDGE_NODE_ID)
+        self.assertEqual(sid, "client-a")
+        bridge = json.loads(text)
+        self.assertEqual(bridge["prompt_id"], "prompt-a")
+        self.assertEqual(bridge["node_id"], "9")
+        self.assertEqual(bridge["text"], "Writing frame | ffmpeg accepted frame 4")
 
 
 if __name__ == "__main__":

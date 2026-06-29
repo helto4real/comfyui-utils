@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+    HELTO_PROGRESS_TEXT_NODE_ID,
     applyProgressEvent,
     createProgressState,
     formatProgressText,
@@ -17,6 +18,13 @@ const PROMPT = {
         4: { class_type: "SaveImage", _meta: { title: "Save" } },
     },
 };
+
+function bridgeProgressText(payload) {
+    return {
+        nodeId: HELTO_PROGRESS_TEXT_NODE_ID,
+        text: JSON.stringify({ version: 1, ...payload }),
+    };
+}
 
 test("execution start applies known prompt data and resets runtime state", () => {
     let state = createProgressState();
@@ -88,11 +96,11 @@ test("progress_text updates current status in real time", () => {
             },
         },
     });
-    state = applyProgressEvent(state, "progress_text", {
+    state = applyProgressEvent(state, "progress_text", bridgeProgressText({
         prompt_id: "prompt-a",
-        nodeId: "2",
+        node_id: "2",
         text: "Downloading shard 2",
-    });
+    }));
 
     const snapshot = progressSnapshot(state);
 
@@ -102,15 +110,43 @@ test("progress_text updates current status in real time", () => {
     assert.match(formatProgressText(snapshot), /Downloading shard 2/);
 });
 
+test("ordinary ComfyUI progress_text is ignored", () => {
+    let state = createProgressState();
+    state = rememberPromptData(state, "prompt-a", PROMPT);
+    state = applyProgressEvent(state, "execution_start", { prompt_id: "prompt-a" });
+    state = applyProgressEvent(state, "progress_state", {
+        prompt_id: "prompt-a",
+        nodes: {
+            2: {
+                node_id: "2",
+                display_node_id: "2",
+                state: "running",
+                value: 2,
+                max: 10,
+            },
+        },
+    });
+    state = applyProgressEvent(state, "progress_text", {
+        prompt_id: "prompt-a",
+        nodeId: "2",
+        text: "Native node preview text",
+    });
+
+    const snapshot = progressSnapshot(state);
+
+    assert.equal(snapshot.current.message, null);
+    assert.doesNotMatch(formatProgressText(snapshot), /Native node preview text/);
+});
+
 test("progress_text survives following progress_state updates", () => {
     let state = createProgressState();
     state = rememberPromptData(state, "prompt-a", PROMPT);
     state = applyProgressEvent(state, "execution_start", { prompt_id: "prompt-a" });
-    state = applyProgressEvent(state, "progress_text", {
+    state = applyProgressEvent(state, "progress_text", bridgeProgressText({
         prompt_id: "prompt-a",
-        nodeId: "2",
+        node_id: "2",
         text: "Encoding frame 4",
-    });
+    }));
     state = applyProgressEvent(state, "progress_state", {
         prompt_id: "prompt-a",
         nodes: {
@@ -183,11 +219,11 @@ test("progress_text separator does not duplicate helto_progress detail log", () 
             },
         },
     });
-    state = applyProgressEvent(state, "progress_text", {
+    state = applyProgressEvent(state, "progress_text", bridgeProgressText({
         prompt_id: "prompt-a",
-        nodeId: "2",
+        node_id: "2",
         text: "Writing frame | ffmpeg accepted frame 4",
-    });
+    }));
     state = applyProgressEvent(state, "helto_progress", {
         version: 1,
         event: "update",
@@ -212,16 +248,16 @@ test("blank progress_text does not clear current message", () => {
     let state = createProgressState();
     state = rememberPromptData(state, "prompt-a", PROMPT);
     state = applyProgressEvent(state, "execution_start", { prompt_id: "prompt-a" });
-    state = applyProgressEvent(state, "progress_text", {
+    state = applyProgressEvent(state, "progress_text", bridgeProgressText({
         prompt_id: "prompt-a",
-        nodeId: "2",
+        node_id: "2",
         text: "Keep this status",
-    });
-    state = applyProgressEvent(state, "progress_text", {
+    }));
+    state = applyProgressEvent(state, "progress_text", bridgeProgressText({
         prompt_id: "prompt-a",
-        nodeId: "2",
+        node_id: "2",
         text: "   ",
-    });
+    }));
 
     const snapshot = progressSnapshot(state);
 

@@ -1,4 +1,5 @@
 export const HELTO_PROGRESS_EVENT_LIMIT = 80;
+export const HELTO_PROGRESS_TEXT_NODE_ID = "__helto_progress_text__";
 
 const FINISHED_STATES = new Set(["finished", "success", "done", "completed"]);
 const RUNNING_STATES = new Set(["running", "executing"]);
@@ -70,7 +71,6 @@ export function applyProgressEvent(state, eventType, detail = {}, options = {}) 
             switchPrompt(next, detail?.prompt_id);
             return applyProgressState(next, detail, options);
         case "progress_text":
-            switchPrompt(next, detail?.prompt_id);
             return applyProgressText(next, detail, options);
         case "executed":
             switchPrompt(next, detail?.prompt_id);
@@ -316,20 +316,23 @@ function applyHeltoProgress(state, detail, options, now) {
 }
 
 function applyProgressText(state, detail, options) {
-    const nodeId = normalizeId(detail?.nodeId ?? detail?.node_id ?? detail?.node);
-    const message = cleanLogText(detail?.text ?? detail?.message);
+    const bridge = parseProgressTextBridge(detail);
+    if (!bridge) return state;
+    switchPrompt(state, bridge.prompt_id);
+    const nodeId = normalizeId(bridge.node_id);
+    const message = cleanLogText(bridge.text ?? bridge.message);
     if (!nodeId || !message) return state;
 
     state.status = "running";
     state.error = null;
-    rememberNodeLabel(state, nodeId, detail, options);
+    rememberNodeLabel(state, nodeId, bridge, options);
     const currentMatches = currentMatchesNode(state.current, nodeId);
     state.current = {
         ...(currentMatches ? state.current : {}),
         nodeId: currentMatches ? state.current.nodeId : nodeId,
-        displayNodeId: currentMatches ? state.current.displayNodeId : normalizeId(detail?.display_node_id) || nodeId,
-        label: labelForNode(state, nodeId, options, detail),
-        phase: currentMatches ? state.current.phase : null,
+        displayNodeId: currentMatches ? state.current.displayNodeId : normalizeId(bridge.display_node_id) || nodeId,
+        label: labelForNode(state, nodeId, options, bridge),
+        phase: bridge.phase || (currentMatches ? state.current.phase : null),
         message,
         level: currentMatches ? state.current.level : "info",
         value: currentMatches ? state.current.value : null,
@@ -337,6 +340,21 @@ function applyProgressText(state, detail, options) {
         percent: currentMatches ? state.current.percent : null,
     };
     return state;
+}
+
+function parseProgressTextBridge(detail) {
+    const bridgeNodeId = normalizeId(detail?.nodeId ?? detail?.node_id ?? detail?.node);
+    if (bridgeNodeId !== HELTO_PROGRESS_TEXT_NODE_ID) return null;
+
+    const text = detail?.text ?? detail?.message;
+    if (typeof text !== "string") return null;
+
+    try {
+        const payload = JSON.parse(text);
+        return payload && typeof payload === "object" ? payload : null;
+    } catch (_error) {
+        return null;
+    }
 }
 
 function switchPrompt(state, promptId, options = {}) {

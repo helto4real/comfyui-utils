@@ -7,6 +7,7 @@ from typing import Any
 
 
 EVENT_NAME = "helto_progress"
+TEXT_BRIDGE_NODE_ID = "__helto_progress_text__"
 PAYLOAD_VERSION = 1
 LEVELS = {"debug", "info", "success", "warning", "error"}
 
@@ -402,10 +403,25 @@ def _mirror_native_text(payload: dict[str, Any]) -> bool:
         return False
 
     try:
-        send_progress_text(text, str(node_id), sid)
+        bridge_text = json.dumps(_text_bridge_payload(payload, text), separators=(",", ":"))
+        send_progress_text(bridge_text, TEXT_BRIDGE_NODE_ID, sid)
     except Exception:
         return False
     return True
+
+
+def _text_bridge_payload(payload: dict[str, Any], text: str) -> dict[str, Any]:
+    return {
+        "version": PAYLOAD_VERSION,
+        "prompt_id": payload.get("prompt_id"),
+        "node_id": str(payload.get("node_id")) if payload.get("node_id") is not None else None,
+        "display_node_id": payload.get("display_node_id"),
+        "parent_node_id": payload.get("parent_node_id"),
+        "real_node_id": payload.get("real_node_id"),
+        "phase": payload.get("phase"),
+        "text": text,
+        "timestamp": payload.get("timestamp"),
+    }
 
 
 def _native_text(payload: dict[str, Any]) -> str | None:
@@ -506,6 +522,7 @@ __all__ = [
     "EVENT_NAME",
     "PAYLOAD_VERSION",
     "ProgressPhase",
+    "TEXT_BRIDGE_NODE_ID",
     "done",
     "error",
     "install_public_alias",
