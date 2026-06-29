@@ -45,6 +45,7 @@ function injectStyles() {
             overflow: visible;
             position: relative;
             top: 0;
+            transition: opacity 240ms cubic-bezier(0.34, 1.56, 0.64, 1);
             user-select: none;
             width: 100%;
             z-index: 999;
@@ -61,7 +62,7 @@ function injectStyles() {
             left: 0;
             position: absolute;
             top: 0;
-            transition: width 80ms ease;
+            transition: width 90ms linear;
             width: 0%;
         }
         .helto-progress-track {
@@ -70,20 +71,83 @@ function injectStyles() {
             right: 0;
             width: 100%;
         }
+        /* Overall workflow progress: dim gold, brighter toward the leading edge. */
         .helto-progress-workflow {
-            background: linear-gradient(90deg, rgba(241, 199, 92, 0.34), rgba(241, 199, 92, 0.22));
+            background: linear-gradient(90deg, rgba(241, 199, 92, 0.14), rgba(241, 199, 92, 0.30));
             border-right: 1px solid var(--accent-border, rgba(241, 199, 92, 0.55));
             height: 50%;
+            overflow: hidden;
+            transition: width 90ms linear, background 240ms ease, height 240ms ease;
         }
+        /* Current node progress: translucent gold (keeps overlaid text legible),
+           the "live" step is emphasised by its crisp leading edge, glow and sheen. */
         .helto-progress-node {
-            background: linear-gradient(90deg, rgba(94, 155, 255, 0.48), rgba(94, 155, 255, 0.28));
-            border-right: 1px solid rgba(94, 155, 255, 0.65);
+            background: linear-gradient(90deg, rgba(241, 199, 92, 0.32), rgba(241, 199, 92, 0.52));
+            border-right: 1px solid var(--accent-hover, #ffd873);
+            overflow: hidden;
             top: 50%;
+        }
+        /* Soft sheen that sweeps across the live node bar while running. */
+        .helto-progress-node::after {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.38), transparent);
+            opacity: 0;
+            transform: translateX(-120%);
+            pointer-events: none;
+        }
+        /* Indeterminate shimmer when running with no known percentage. */
+        .helto-progress-track::after {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(90deg, transparent, var(--accent-dim, rgba(241, 199, 92, 0.16)), rgba(241, 199, 92, 0.36), var(--accent-dim, rgba(241, 199, 92, 0.16)), transparent);
+            opacity: 0;
+            transform: translateX(-70%);
+            pointer-events: none;
+        }
+        .helto-progress-bar.is-running .helto-progress-node {
+            box-shadow: var(--shadow-glow, 0 0 10px rgba(241, 199, 92, 0.35));
+        }
+        .helto-progress-bar.is-idle {
+            opacity: 0.7;
+        }
+        /* Completion flourish: translucent gold fills the strip, glow does the "pop". */
+        .helto-progress-bar.is-complete .helto-progress-workflow {
+            background: linear-gradient(90deg, rgba(241, 199, 92, 0.34), rgba(241, 199, 92, 0.5));
+            height: 100%;
         }
         .helto-progress-bar.is-error .helto-progress-workflow,
         .helto-progress-bar.is-error .helto-progress-node {
             background: var(--danger, #ec5a6b);
             border-right-color: rgba(255, 255, 255, 0.45);
+        }
+        @media (prefers-reduced-motion: no-preference) {
+            .helto-progress-bar.is-running .helto-progress-node::after {
+                opacity: 1;
+                animation: heltoProgressSheen 4s ease-in-out infinite;
+            }
+            .helto-progress-bar.is-indeterminate .helto-progress-track::after {
+                opacity: 1;
+                animation: heltoProgressIndeterminate 2.8s ease-in-out infinite;
+            }
+            .helto-progress-bar.is-complete {
+                animation: heltoProgressComplete 0.9s ease-out;
+            }
+        }
+        @keyframes heltoProgressSheen {
+            0% { transform: translateX(-120%); }
+            32%, 100% { transform: translateX(120%); }
+        }
+        @keyframes heltoProgressIndeterminate {
+            0% { transform: translateX(-70%); }
+            100% { transform: translateX(170%); }
+        }
+        @keyframes heltoProgressComplete {
+            0% { box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.35), 0 1px 0 rgba(255, 255, 255, 0.06); }
+            30% { box-shadow: inset 0 0 18px rgba(241, 199, 92, 0.55), 0 0 12px rgba(241, 199, 92, 0.4); }
+            100% { box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.35), 0 1px 0 rgba(255, 255, 255, 0.06); }
         }
         .helto-progress-text {
             align-items: center;
@@ -98,7 +162,7 @@ function injectStyles() {
             position: absolute;
             right: 0;
             text-overflow: ellipsis;
-            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85);
+            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9), 0 0 2px rgba(0, 0, 0, 0.55);
             top: 0;
             white-space: nowrap;
             z-index: 2;
@@ -123,6 +187,11 @@ function injectStyles() {
         .helto-progress-popover.is-visible {
             display: flex;
             flex-direction: column;
+            animation: heltoProgressPopover 0.16s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+        @keyframes heltoProgressPopover {
+            from { opacity: 0; transform: translateY(-6px); }
+            to { opacity: 1; transform: translateY(0); }
         }
         .helto-progress-popover-header {
             align-items: center;
@@ -357,7 +426,15 @@ class HeltoProgressBar {
         if (!this.root) return;
         const snapshot = progressSnapshot(this.state);
         const text = formatProgressText(snapshot);
-        this.root.classList.toggle("is-error", snapshot.status === "error");
+        const status = snapshot.status;
+        const indeterminate = status === "running"
+            && snapshot.currentPercent == null
+            && snapshot.workflowPercent == null;
+        this.root.classList.toggle("is-error", status === "error");
+        this.root.classList.toggle("is-running", status === "running");
+        this.root.classList.toggle("is-indeterminate", indeterminate);
+        this.root.classList.toggle("is-complete", status === "success");
+        this.root.classList.toggle("is-idle", status === "idle" || status === "interrupted");
         this.workflowEl.style.width = `${snapshot.workflowWidth || 0}%`;
         this.nodeEl.style.width = `${snapshot.currentWidth || 0}%`;
         this.textEl.textContent = text;
