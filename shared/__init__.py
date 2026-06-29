@@ -7,6 +7,7 @@ from .video_params import (
     calculate_video_dimensions,
     parse_quality_tier,
 )
+from . import progress_api
 
 __all__ = [
     "LTX_QUALITY_TIERS",
@@ -16,4 +17,5 @@ __all__ = [
     "calculate_ltx_frames",
     "calculate_video_dimensions",
     "parse_quality_tier",
+    "progress_api",
 ]

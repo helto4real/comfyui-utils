@@ -2,6 +2,7 @@ from typing_extensions import override
 
 from comfy_api.latest import ComfyExtension, io
 
+from .shared import progress_api as _helto_progress_api
 from .nodes.aspect_ratio_calculator import AspectRatioCalculator
 from .nodes.image_comparer import ImageComparer
 from .nodes.load_video import HeltoLoadVideo
@@ -19,6 +20,7 @@ from .shared import queue_manager_routes  # noqa: F401
 
 
 WEB_DIRECTORY = "./web"
+_helto_progress_api.install_public_alias()
 
 
 class HeltoUtilsExtension(ComfyExtension):

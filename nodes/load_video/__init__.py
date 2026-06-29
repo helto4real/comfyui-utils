@@ -8,6 +8,8 @@ import torch
 import torch.nn.functional as F
 from comfy_api.latest import InputImpl, io, ui
 
+from ...shared import progress_api as helto_progress
+
 try:
     import comfy.model_management
 except Exception:
@@ -217,71 +219,86 @@ class HeltoLoadVideo(io.ComfyNode):
         custom_height: int = 0,
         privacy_mode: bool = True,
     ) -> io.NodeOutput:
+        helto_progress.start("Resolving video source", phase="probe", percent=0)
         try:
             source_path = _resolve_source(video, video_folder_alias)
-        except Exception:
+        except Exception as exc:
+            helto_progress.report("Video source unavailable", phase="probe", level="warning", detail=str(exc))
             return io.NodeOutput(_empty_images(), _empty_audio(), 0.0, 64, 64, 0.0)
-        preview = ui.PreviewVideo([preview_result(source_path, privacy_mode=privacy_mode)])
+        try:
+            preview = ui.PreviewVideo([preview_result(source_path, privacy_mode=privacy_mode)])
 
-        start_time = max(_as_float(start_time), 0.0)
-        requested_duration = max(_as_float(duration), 0.0)
-        force_rate = max(0.0, _as_float(force_rate, 0.0))
-        frame_load_cap = max(0, _as_int(frame_load_cap))
-        select_every_nth = max(1, _as_int(select_every_nth, 1))
-        skip_first_frames = max(0, _as_int(skip_first_frames))
+            start_time = max(_as_float(start_time), 0.0)
+            requested_duration = max(_as_float(duration), 0.0)
+            force_rate = max(0.0, _as_float(force_rate, 0.0))
+            frame_load_cap = max(0, _as_int(frame_load_cap))
+            select_every_nth = max(1, _as_int(select_every_nth, 1))
+            skip_first_frames = max(0, _as_int(skip_first_frames))
 
-        metadata_source = InputImpl.VideoFromFile(str(source_path))
-        metadata_fps = _as_float(metadata_source.get_frame_rate(), 0.0)
-        load_duration = requested_duration
-        if frame_load_cap > 0 and metadata_fps > 0:
-            if force_rate > 0:
-                capped_duration = (skip_first_frames / metadata_fps) + (frame_load_cap / force_rate)
+            helto_progress.update("Probing video metadata", phase="probe", percent=10)
+            metadata_source = InputImpl.VideoFromFile(str(source_path))
+            metadata_fps = _as_float(metadata_source.get_frame_rate(), 0.0)
+            load_duration = requested_duration
+            if frame_load_cap > 0 and metadata_fps > 0:
+                if force_rate > 0:
+                    capped_duration = (skip_first_frames / metadata_fps) + (frame_load_cap / force_rate)
+                else:
+                    capped_duration = (skip_first_frames + (frame_load_cap * select_every_nth)) / metadata_fps
+                capped_duration += 1.0 / metadata_fps
+                load_duration = min(requested_duration, capped_duration) if requested_duration > 0 else capped_duration
+
+            helto_progress.start("Decoding video frames", phase="decode", percent=20)
+            source = InputImpl.VideoFromFile(str(source_path), start_time=start_time, duration=load_duration)
+            components = source.get_components()
+            source_fps = _as_float(components.frame_rate, metadata_fps)
+
+            images = _normalize_images(components.images)
+            helto_progress.done(f"Decoded {int(images.shape[0]) if images.ndim == 4 else 0} frames", phase="decode", percent=55)
+            if skip_first_frames >= images.shape[0]:
+                audio = _trim_audio(components.audio, 0.0, 0.0)
+                helto_progress.done("Video load produced no frames", phase="complete", percent=100)
+                return io.NodeOutput(_empty_images(), audio, source_fps, 64, 64, 0.0, ui=preview)
+
+            helto_progress.update("Sampling video frames", phase="sample", percent=65)
+            if skip_first_frames > 0:
+                images = images[skip_first_frames:]
+
+            indices, output_fps = _sample_indices(
+                int(images.shape[0]),
+                source_fps,
+                select_every_nth,
+                force_rate,
+            )
+            if frame_load_cap > 0:
+                indices = indices[:frame_load_cap]
+
+            if indices:
+                images = images[torch.tensor(indices, dtype=torch.long)]
             else:
-                capped_duration = (skip_first_frames + (frame_load_cap * select_every_nth)) / metadata_fps
-            capped_duration += 1.0 / metadata_fps
-            load_duration = min(requested_duration, capped_duration) if requested_duration > 0 else capped_duration
+                images = _empty_images()
+                output_fps = source_fps
 
-        source = InputImpl.VideoFromFile(str(source_path), start_time=start_time, duration=load_duration)
-        components = source.get_components()
-        source_fps = _as_float(components.frame_rate, metadata_fps)
+            output_fps = output_fps if output_fps > 0 else source_fps
+            output_duration = float(images.shape[0] / output_fps) if output_fps > 0 else 0.0
+            audio_start_offset = (skip_first_frames / source_fps) if source_fps > 0 else 0.0
+            helto_progress.update("Trimming video audio", phase="audio", percent=75)
+            audio = _trim_audio(components.audio, audio_start_offset, output_duration)
 
-        images = _normalize_images(components.images)
-        if skip_first_frames >= images.shape[0]:
-            return io.NodeOutput(_empty_images(), _trim_audio(components.audio, 0.0, 0.0), source_fps, 64, 64, 0.0, ui=preview)
+            helto_progress.update("Resizing video frames", phase="resize", percent=85)
+            images = _resize_images(
+                images,
+                resize_mode=resize_mode,
+                custom_width=max(0, _as_int(custom_width)),
+                custom_height=max(0, _as_int(custom_height)),
+            )
 
-        if skip_first_frames > 0:
-            images = images[skip_first_frames:]
+            device, dtype = _target_device_dtype()
+            images = images.to(device=device, dtype=dtype)
+            height = int(images.shape[1]) if images.ndim == 4 else 0
+            width = int(images.shape[2]) if images.ndim == 4 else 0
 
-        indices, output_fps = _sample_indices(
-            int(images.shape[0]),
-            source_fps,
-            select_every_nth,
-            force_rate,
-        )
-        if frame_load_cap > 0:
-            indices = indices[:frame_load_cap]
-
-        if indices:
-            images = images[torch.tensor(indices, dtype=torch.long)]
-        else:
-            images = _empty_images()
-            output_fps = source_fps
-
-        output_fps = output_fps if output_fps > 0 else source_fps
-        output_duration = float(images.shape[0] / output_fps) if output_fps > 0 else 0.0
-        audio_start_offset = (skip_first_frames / source_fps) if source_fps > 0 else 0.0
-        audio = _trim_audio(components.audio, audio_start_offset, output_duration)
-
-        images = _resize_images(
-            images,
-            resize_mode=resize_mode,
-            custom_width=max(0, _as_int(custom_width)),
-            custom_height=max(0, _as_int(custom_height)),
-        )
-
-        device, dtype = _target_device_dtype()
-        images = images.to(device=device, dtype=dtype)
-        height = int(images.shape[1]) if images.ndim == 4 else 0
-        width = int(images.shape[2]) if images.ndim == 4 else 0
-
-        return io.NodeOutput(images, audio, float(output_fps), width, height, float(output_duration), ui=preview)
+            helto_progress.done(f"Loaded {int(images.shape[0]) if images.ndim == 4 else 0} video frames", phase="complete", percent=100)
+            return io.NodeOutput(images, audio, float(output_fps), width, height, float(output_duration), ui=preview)
+        except Exception as exc:
+            helto_progress.error(str(exc), phase="error")
+            raise

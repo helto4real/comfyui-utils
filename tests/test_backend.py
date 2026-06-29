@@ -12,10 +12,12 @@ import unittest
 from collections.abc import Mapping
 from io import BytesIO
 from pathlib import Path
+from unittest.mock import patch
 
 from PIL import Image
 import torch
 
+import helto_selector_backend.image_processing as selector_image_processing
 from helto_selector_backend import crypto as selector_crypto
 from helto_selector_backend.crypto import decrypt_selection, encrypt_selection
 from helto_selector_backend.image_processing import (
@@ -147,6 +149,29 @@ class ImageProcessingTests(unittest.TestCase):
             self.assertEqual(tuple(mask_batch.shape), (1, 5, 7))
             self.assertEqual(float(mask_batch.min()), 1.0)
             self.assertEqual(bboxes, [[]])
+
+    def test_selector_reports_progress_phases(self):
+        if selector_image_processing.helto_progress is None:
+            self.skipTest("progress API is unavailable")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = os.path.join(tmpdir, "image.png")
+            write_image(image_path, (7, 5), (255, 0, 0))
+            sent = []
+
+            with patch.object(
+                selector_image_processing.helto_progress,
+                "_send_payload",
+                side_effect=lambda payload: sent.append(payload) or True,
+            ):
+                select_images(json.dumps([image_path]))
+
+        phases = {payload["phase"] for payload in sent}
+        self.assertIn("selection", phases)
+        self.assertIn("load_images", phases)
+        self.assertIn("load_masks", phases)
+        self.assertIn("batch", phases)
+        self.assertIn("complete", phases)
 
     def test_bbox_outputs_match_selector_resize_modes(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2177,6 +2202,39 @@ Second beat moves toward the doorway. @image1:end
         self.assertFalse(control["paused"])
         self.assertEqual(control["mode"], "ready")
 
+    def test_save_image_reports_per_image_progress(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        node_cls = extension_module.SaveImageAdvanced
+        module_globals = node_cls.execute.__func__.__globals__
+        helper = module_globals["ui"].ImageSaveHelper
+        original_hidden = getattr(node_cls, "hidden", None)
+        original_metadata = helper._create_png_metadata
+        original_convert = helper._convert_tensor_to_pil
+        sent = []
+
+        helper._create_png_metadata = staticmethod(lambda _cls: None)
+        helper._convert_tensor_to_pil = staticmethod(lambda _image: Image.new("RGB", (1, 1), (255, 0, 0)))
+        node_cls.hidden = types.SimpleNamespace(unique_id="save-image-progress-node")
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                with patch.object(
+                    module_globals["helto_progress"],
+                    "_send_payload",
+                    side_effect=lambda payload: sent.append(payload) or True,
+                ):
+                    saved = node_cls._save_images(["first", "second"], tmpdir, "img")
+        finally:
+            helper._create_png_metadata = original_metadata
+            helper._convert_tensor_to_pil = original_convert
+            node_cls.hidden = original_hidden
+
+        self.assertEqual(len(saved), 2)
+        save_events = [payload for payload in sent if payload["phase"] == "save_images"]
+        self.assertGreaterEqual(len(save_events), 4)
+        self.assertEqual(save_events[-1]["event"], "done")
+        self.assertEqual(save_events[-1]["value"], 2.0)
+        self.assertEqual(save_events[-1]["total"], 2.0)
+
     def test_save_image_pause_mode_stores_image_and_blocks_downstream_quietly(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()
         node_cls = extension_module.SaveImageAdvanced
@@ -2720,6 +2778,75 @@ Second beat moves toward the doorway. @image1:end
 
             self.assertEqual(output_files, [os.path.join(tmpdir, "video_00001.mp4")])
             self.assertEqual(Path(output_files[0]).read_bytes(), b"silent video")
+
+    def test_save_video_ffmpeg_reports_progress_phases(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        node_cls = extension_module.SaveVideoAdvanced
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            module_globals = self._configure_ffmpeg_video_test_runtime(node_cls)
+            original_popen = module_globals["subprocess"].Popen
+            original_run = module_globals["subprocess"].run
+            original_find_ffmpeg = module_globals["_find_ffmpeg"]
+            original_hidden = getattr(node_cls, "hidden", None)
+            frames = [
+                module_globals["torch"].zeros((2, 2, 3)),
+                module_globals["torch"].ones((2, 2, 3)),
+            ]
+            sent = []
+
+            class FakeProcess:
+                def __init__(self, command, **_kwargs):
+                    self.stdin = types.SimpleNamespace(write=lambda _data: None, close=lambda: None)
+                    self.stderr = types.SimpleNamespace(read=lambda: b"")
+                    Path(command[-1]).write_bytes(b"silent video")
+
+                def wait(self):
+                    return 0
+
+            def fake_run(*_args, **_kwargs):
+                raise AssertionError("audio mux should not run without audio")
+
+            module_globals["_find_ffmpeg"] = lambda: "ffmpeg"
+            module_globals["subprocess"].Popen = FakeProcess
+            module_globals["subprocess"].run = fake_run
+            node_cls.hidden = types.SimpleNamespace(
+                unique_id="save-video-progress-node",
+                prompt=None,
+                extra_pnginfo=None,
+            )
+            try:
+                with patch.object(
+                    module_globals["helto_progress"],
+                    "_send_payload",
+                    side_effect=lambda payload: sent.append(payload) or True,
+                ):
+                    output_files = node_cls._save_ffmpeg_video(
+                        frames=frames,
+                        audio=None,
+                        save_dir=tmpdir,
+                        filename_prefix="video",
+                        counter=1,
+                        frame_rate=24.0,
+                        loop_count=0,
+                        format_ext="h264-mp4",
+                        save_output=True,
+                        format_kwargs={},
+                    )
+            finally:
+                module_globals["subprocess"].Popen = original_popen
+                module_globals["subprocess"].run = original_run
+                module_globals["_find_ffmpeg"] = original_find_ffmpeg
+                node_cls.hidden = original_hidden
+
+        self.assertEqual(output_files, [os.path.join(tmpdir, "video_00001.mp4")])
+        phases = {payload["phase"] for payload in sent}
+        self.assertIn("encode_video", phases)
+        self.assertIn("convert_frames", phases)
+        self.assertIn("write_frames", phases)
+        write_done = [payload for payload in sent if payload["phase"] == "write_frames" and payload["event"] == "done"]
+        self.assertEqual(write_done[-1]["value"], 2.0)
+        self.assertEqual(write_done[-1]["total"], 2.0)
 
     def test_save_video_audio_mux_failure_cleans_temp_file(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()

@@ -11,10 +11,18 @@ import server
 from comfy_api.latest import io, ui
 from comfy_execution.graph import ExecutionBlocker
 
+from ...shared import progress_api as helto_progress
 from ...shared.privacy import private_media_record, write_encrypted_temp_bytes
 
 
 _COUNTER_RE_TEMPLATE = r"^{prefix}_(?P<counter>\d+)_?\.png$"
+
+
+def _item_count(value) -> int | None:
+    try:
+        return len(value)
+    except Exception:
+        return None
 
 
 class SaveImageAdvanced(io.ComfyNode):
@@ -97,50 +105,58 @@ class SaveImageAdvanced(io.ComfyNode):
                 ),
             )
 
-        filename_prefix = cls._normalize_filename_prefix(filename_prefix)
+        helto_progress.start("Preparing image output", phase="prepare", percent=0, node_id=node_id)
+        try:
+            filename_prefix = cls._normalize_filename_prefix(filename_prefix)
 
-        if save_image:
-            save_dir = cls._resolve_save_dir(
-                folder=folder,
-                alternative_folder=alternative_folder,
-                use_alternative_folder=use_alternative_folder,
-                use_date_folder=use_date_folder,
-                subfolder=subfolder,
-            )
-            saved_paths = cls._save_images(images, save_dir, filename_prefix)
-            print(f"Save Image Advanced saved {len(saved_paths)} image(s) to: {save_dir}")
-        else:
-            print("Save Image Advanced created a preview without saving output files.")
-
-        if privacy_mode:
-            preview = {
-                "helto_private_images": cls._private_preview_records(images, filename_prefix),
-                "images": [],
-            }
-        else:
-            preview = ui.SavedImages(
-                ui.ImageSaveHelper.save_images(
-                    images,
-                    filename_prefix=filename_prefix,
-                    folder_type=io.FolderType.temp,
-                    cls=cls,
-                    compress_level=4,
+            if save_image:
+                save_dir = cls._resolve_save_dir(
+                    folder=folder,
+                    alternative_folder=alternative_folder,
+                    use_alternative_folder=use_alternative_folder,
+                    use_date_folder=use_date_folder,
+                    subfolder=subfolder,
                 )
+                saved_paths = cls._save_images(images, save_dir, filename_prefix)
+                print(f"Save Image Advanced saved {len(saved_paths)} image(s) to: {save_dir}")
+            else:
+                helto_progress.update("Preparing preview only", phase="preview", percent=35, node_id=node_id)
+                print("Save Image Advanced created a preview without saving output files.")
+
+            if privacy_mode:
+                preview = {
+                    "helto_private_images": cls._private_preview_records(images, filename_prefix),
+                    "images": [],
+                }
+            else:
+                helto_progress.update("Creating temp preview", phase="preview", percent=70, node_id=node_id)
+                preview = ui.SavedImages(
+                    ui.ImageSaveHelper.save_images(
+                        images,
+                        filename_prefix=filename_prefix,
+                        folder_type=io.FolderType.temp,
+                        cls=cls,
+                        compress_level=4,
+                    )
+                )
+            revision = cls._store_media(node_id, images, paused=bool(pause_mode))
+            control = cls._pause_control_payload(
+                node_id,
+                mode="paused" if pause_mode else "ready",
+                paused=bool(pause_mode),
+                revision=revision,
             )
-        revision = cls._store_media(node_id, images, paused=bool(pause_mode))
-        control = cls._pause_control_payload(
-            node_id,
-            mode="paused" if pause_mode else "ready",
-            paused=bool(pause_mode),
-            revision=revision,
-        )
-        preview = cls._with_pause_control(preview, control)
-        cls.state["previews"][node_id] = preview
+            preview = cls._with_pause_control(preview, control)
+            cls.state["previews"][node_id] = preview
+            helto_progress.done("Image output ready", phase="complete", percent=100, node_id=node_id)
 
-        if pause_mode:
-            return io.NodeOutput(ExecutionBlocker(None), ui=preview)
+            if pause_mode:
+                return io.NodeOutput(ExecutionBlocker(None), ui=preview)
 
-        return io.NodeOutput(images, ui=preview)
+            return io.NodeOutput(images, ui=preview)
+        except Exception as exc:
+            helto_progress.error(str(exc), phase="error", node_id=node_id)
+            raise
 
     @classmethod
     def _node_id(cls) -> str:
@@ -280,21 +296,41 @@ class SaveImageAdvanced(io.ComfyNode):
         counter = cls._next_counter(save_dir, filename_prefix)
         metadata = ui.ImageSaveHelper._create_png_metadata(cls)
         saved_paths = []
+        total = _item_count(images)
+        node_id = cls._node_id()
+        helto_progress.start("Saving image files", phase="save_images", value=0, total=total, node_id=node_id)
 
-        for image in images:
+        for index, image in enumerate(images, start=1):
             image_file = f"{filename_prefix}_{counter:05}.png"
             image_path = os.path.join(save_dir, image_file)
             pil_image = ui.ImageSaveHelper._convert_tensor_to_pil(image)
             pil_image.save(image_path, pnginfo=metadata, compress_level=4)
             saved_paths.append(image_path)
             counter += 1
+            helto_progress.update(
+                f"Saved image {index}/{total or index}",
+                phase="save_images",
+                value=index,
+                total=total,
+                node_id=node_id,
+            )
 
+        helto_progress.done(
+            "Saved image files",
+            phase="save_images",
+            value=total if total is not None else len(saved_paths),
+            total=total,
+            node_id=node_id,
+        )
         return saved_paths
 
     @classmethod
     def _private_preview_records(cls, images, filename_prefix: str) -> list[dict]:
         records = []
         metadata = ui.ImageSaveHelper._create_png_metadata(cls)
+        total = _item_count(images)
+        node_id = cls._node_id()
+        helto_progress.start("Creating private image previews", phase="private_preview", value=0, total=total, node_id=node_id)
         for index, image in enumerate(images):
             pil_image = ui.ImageSaveHelper._convert_tensor_to_pil(image)
             buffer = BytesIO()
@@ -308,6 +344,20 @@ class SaveImageAdvanced(io.ComfyNode):
                     filename=f"{filename_prefix}_{index + 1:05}.png",
                 )
             )
+            helto_progress.update(
+                f"Encrypted preview {index + 1}/{total or index + 1}",
+                phase="private_preview",
+                value=index + 1,
+                total=total,
+                node_id=node_id,
+            )
+        helto_progress.done(
+            "Created private image previews",
+            phase="private_preview",
+            value=total if total is not None else len(records),
+            total=total,
+            node_id=node_id,
+        )
         return records
 
     @staticmethod

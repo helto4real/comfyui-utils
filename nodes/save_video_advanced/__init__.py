@@ -26,6 +26,7 @@ from comfy_execution.graph import ExecutionBlocker
 from PIL import Image, ExifTags
 from PIL.PngImagePlugin import PngInfo
 
+from ...shared import progress_api as helto_progress
 from ...shared.privacy import (
     content_type_for_path,
     decrypt_bytes,
@@ -457,9 +458,15 @@ class SaveVideoAdvanced(io.ComfyNode):
                 ),
             )
 
-        decoded_images = cls._prepare_images(images, vae)
-        frames = [frame for frame in decoded_images]
+        helto_progress.start("Preparing video frames", phase="prepare", percent=0, node_id=node_id)
+        try:
+            decoded_images = cls._prepare_images(images, vae)
+            frames = [frame for frame in decoded_images]
+        except Exception as exc:
+            helto_progress.error(str(exc), phase="error", node_id=node_id)
+            raise
         if len(frames) == 0:
+            helto_progress.done("No video frames to save", phase="complete", percent=100, node_id=node_id)
             return io.NodeOutput(
                 decoded_images,
                 audio,
@@ -471,6 +478,9 @@ class SaveVideoAdvanced(io.ComfyNode):
             )
         if pingpong:
             frames = _to_pingpong(frames)
+            helto_progress.update(f"Prepared {len(frames)} ping-pong frames", phase="prepare", percent=20, node_id=node_id)
+        else:
+            helto_progress.update(f"Prepared {len(frames)} frames", phase="prepare", percent=20, node_id=node_id)
 
         staging_dir = None
         save_dir = (
@@ -496,6 +506,7 @@ class SaveVideoAdvanced(io.ComfyNode):
         counter = cls._next_counter(save_dir, filename_prefix)
 
         try:
+            helto_progress.update("Saving video output", phase="save_video", percent=30, node_id=node_id)
             output_files = cls._save_video(
                 frames=frames,
                 audio=audio,
@@ -509,6 +520,7 @@ class SaveVideoAdvanced(io.ComfyNode):
                 format_kwargs=kwargs,
             )
             final_path = output_files[-1]
+            helto_progress.update("Creating video preview", phase="preview", percent=75, node_id=node_id)
             if privacy_mode:
                 preview = ui.PreviewVideo([cls._private_preview_record(final_path)])
             else:
@@ -516,6 +528,7 @@ class SaveVideoAdvanced(io.ComfyNode):
 
             returned_files = output_files if save_output or not privacy_mode else []
             filenames = (save_output, returned_files)
+            helto_progress.update("Storing replay bundle", phase="store", percent=88, node_id=node_id)
             revision = cls._store_replay_bundle(
                 node_id,
                 images=decoded_images,
@@ -532,6 +545,7 @@ class SaveVideoAdvanced(io.ComfyNode):
             )
             preview = cls._with_pause_control(preview, control)
             cls.state["previews"][node_id] = preview
+            helto_progress.done("Video output ready", phase="complete", percent=100, node_id=node_id)
 
             if save_output:
                 print(f"Save Video Advanced saved {len(output_files)} file(s) to: {save_dir}")
@@ -545,6 +559,9 @@ class SaveVideoAdvanced(io.ComfyNode):
                 return io.NodeOutput(blocker, blocker, blocker, ui=preview)
 
             return io.NodeOutput(decoded_images, audio, filenames, ui=preview)
+        except Exception as exc:
+            helto_progress.error(str(exc), phase="error", node_id=node_id)
+            raise
         finally:
             if staging_dir is not None:
                 shutil.rmtree(staging_dir, ignore_errors=True)
@@ -724,13 +741,18 @@ class SaveVideoAdvanced(io.ComfyNode):
 
     @classmethod
     def _prepare_images(cls, images, vae):
+        node_id = cls._node_id()
         if isinstance(images, dict):
             if vae is None:
                 raise ValueError("Save Video Advanced requires a VAE when the images input receives latents.")
             samples = images.get("samples")
             if samples is None:
                 raise ValueError("Save Video Advanced received a latent dictionary without samples.")
-            return vae.decode(samples)
+            helto_progress.start("Decoding latent frames", phase="decode", percent=0, node_id=node_id)
+            decoded = vae.decode(samples)
+            helto_progress.done("Decoded latent frames", phase="decode", percent=100, node_id=node_id)
+            return decoded
+        helto_progress.update("Using image frames", phase="prepare", percent=10, node_id=node_id)
         return images
 
     @classmethod
@@ -751,7 +773,9 @@ class SaveVideoAdvanced(io.ComfyNode):
             raise ValueError(f"Save Video Advanced expected a type/name format, got: {format}")
 
         format_type, format_ext = format.split("/", 1)
+        node_id = cls._node_id()
         if format_type == "image":
+            helto_progress.update(f"Encoding animated {format_ext.upper()}", phase="encode_animation", percent=0, node_id=node_id)
             output_path = cls._save_animated_image(
                 frames,
                 save_dir,
@@ -767,6 +791,7 @@ class SaveVideoAdvanced(io.ComfyNode):
         if format_type != "video":
             raise ValueError(f"Save Video Advanced does not support format type: {format_type}")
 
+        helto_progress.update(f"Encoding {format_ext} video", phase="encode_video", percent=0, node_id=node_id)
         return cls._save_ffmpeg_video(
             frames,
             audio,
@@ -795,7 +820,25 @@ class SaveVideoAdvanced(io.ComfyNode):
         if format_ext not in ("gif", "webp"):
             raise ValueError(f"Save Video Advanced image format is not supported: image/{format_ext}")
 
-        pil_frames = [Image.fromarray(_tensor_to_bytes(frame[..., :3])) for frame in frames]
+        total = len(frames)
+        node_id = cls._node_id()
+        helto_progress.start(
+            f"Converting {format_ext.upper()} frames",
+            phase="encode_animation",
+            value=0,
+            total=total,
+            node_id=node_id,
+        )
+        pil_frames = []
+        for index, frame in enumerate(frames, start=1):
+            pil_frames.append(Image.fromarray(_tensor_to_bytes(frame[..., :3])))
+            helto_progress.update(
+                f"Converted frame {index}/{total}",
+                phase="encode_animation",
+                value=index,
+                total=total,
+                node_id=node_id,
+            )
         output_path = os.path.join(save_dir, f"{filename_prefix}_{counter:05}.{format_ext}")
         kwargs: dict[str, Any] = {
             "save_all": True,
@@ -817,7 +860,9 @@ class SaveVideoAdvanced(io.ComfyNode):
         if metadata is not None and format_ext == "png":
             kwargs["pnginfo"] = metadata
 
+        helto_progress.update(f"Writing {format_ext.upper()} file", phase="encode_animation", value=total, total=total, node_id=node_id)
         pil_frames[0].save(output_path, format=format_ext.upper(), **kwargs)
+        helto_progress.done(f"Encoded {format_ext.upper()} file", phase="encode_animation", value=total, total=total, node_id=node_id)
         return output_path
 
     @classmethod
@@ -834,6 +879,8 @@ class SaveVideoAdvanced(io.ComfyNode):
         save_output: bool,
         format_kwargs: dict[str, Any],
     ) -> list[str]:
+        node_id = cls._node_id()
+        helto_progress.start("Configuring ffmpeg video", phase="encode_video", percent=0, node_id=node_id)
         ffmpeg = _find_ffmpeg()
         if ffmpeg is None:
             raise ProcessLookupError(
@@ -848,12 +895,32 @@ class SaveVideoAdvanced(io.ComfyNode):
         dim_alignment = int(video_format.get("dim_alignment", 2))
         frames, dimensions = cls._pad_frames(frames, dim_alignment)
 
+        frame_total = len(frames)
+        helto_progress.start("Converting video frames", phase="convert_frames", value=0, total=frame_total, node_id=node_id)
+        frame_arrays = []
         if video_format.get("input_color_depth", "8bit") == "16bit":
-            frame_arrays = [_tensor_to_shorts(frame[..., : 4 if has_alpha else 3]) for frame in frames]
+            for index, frame in enumerate(frames, start=1):
+                frame_arrays.append(_tensor_to_shorts(frame[..., : 4 if has_alpha else 3]))
+                helto_progress.update(
+                    f"Converted frame {index}/{frame_total}",
+                    phase="convert_frames",
+                    value=index,
+                    total=frame_total,
+                    node_id=node_id,
+                )
             input_pix_fmt = "rgba64" if has_alpha else "rgb48"
         else:
-            frame_arrays = [_tensor_to_bytes(frame[..., : 4 if has_alpha else 3]) for frame in frames]
+            for index, frame in enumerate(frames, start=1):
+                frame_arrays.append(_tensor_to_bytes(frame[..., : 4 if has_alpha else 3]))
+                helto_progress.update(
+                    f"Converted frame {index}/{frame_total}",
+                    phase="convert_frames",
+                    value=index,
+                    total=frame_total,
+                    node_id=node_id,
+                )
             input_pix_fmt = "rgba" if has_alpha else "rgb24"
+        helto_progress.done("Converted video frames", phase="convert_frames", value=frame_total, total=frame_total, node_id=node_id)
 
         extension = video_format["extension"]
         video_path = os.path.join(save_dir, f"{filename_prefix}_{counter:05}.{extension}")
@@ -904,14 +971,23 @@ class SaveVideoAdvanced(io.ComfyNode):
         env = os.environ.copy()
         env.update(video_format.get("environment", {}))
         pbar = ProgressBar(len(frame_arrays))
+        frame_total = len(frame_arrays)
+        helto_progress.start("Writing frames to ffmpeg", phase="write_frames", value=0, total=frame_total, node_id=node_id)
         try:
             process = subprocess.Popen(command, stdin=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
             assert process.stdin is not None
             assert process.stderr is not None
             try:
-                for frame_array in frame_arrays:
+                for index, frame_array in enumerate(frame_arrays, start=1):
                     process.stdin.write(frame_array.tobytes())
                     pbar.update(1)
+                    helto_progress.update(
+                        f"Writing frame {index}/{frame_total}",
+                        phase="write_frames",
+                        value=index,
+                        total=frame_total,
+                        node_id=node_id,
+                    )
                 process.stdin.close()
                 stderr = process.stderr.read()
                 return_code = process.wait()
@@ -927,9 +1003,11 @@ class SaveVideoAdvanced(io.ComfyNode):
 
         if return_code != 0:
             raise RuntimeError("Save Video Advanced ffmpeg failed:\n" + stderr.decode("utf-8", "replace"))
+        helto_progress.done("Wrote frames to ffmpeg", phase="write_frames", value=frame_total, total=frame_total, node_id=node_id)
         if stderr:
             print(stderr.decode("utf-8", "replace"), end="")
 
+        helto_progress.update("Finalizing video file", phase="encode_video", percent=95, node_id=node_id)
         cls._replace_with_audio_mux_if_needed(
             audio=audio,
             video_path=video_path,
@@ -943,6 +1021,7 @@ class SaveVideoAdvanced(io.ComfyNode):
             env=env,
         )
 
+        helto_progress.done("Encoded video file", phase="encode_video", percent=100, node_id=node_id)
         return [video_path]
 
     @classmethod
@@ -982,6 +1061,7 @@ class SaveVideoAdvanced(io.ComfyNode):
         video_format: dict[str, Any],
         env: dict[str, str],
     ) -> None:
+        node_id = cls._node_id()
         if audio is None or "waveform" not in audio:
             return
 
@@ -989,6 +1069,7 @@ class SaveVideoAdvanced(io.ComfyNode):
         if ffmpeg is None:
             return
 
+        helto_progress.start("Muxing audio", phase="mux_audio", percent=0, node_id=node_id)
         waveform = audio["waveform"]
         if waveform.ndim == 3:
             waveform = waveform[0]
@@ -1028,6 +1109,7 @@ class SaveVideoAdvanced(io.ComfyNode):
             if result.stderr:
                 print(result.stderr.decode("utf-8", "replace"), end="")
             os.replace(output_path, video_path)
+            helto_progress.done("Muxed audio", phase="mux_audio", percent=100, node_id=node_id)
         finally:
             try:
                 os.unlink(output_path)

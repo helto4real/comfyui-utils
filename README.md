@@ -17,6 +17,49 @@ The pack registers through ComfyUI's V3 `comfy_entrypoint()` extension API and e
 
 `Save Video Advanced` needs `ffmpeg` for video container outputs. It first tries `imageio-ffmpeg`, then falls back to `ffmpeg` on `PATH`.
 
+## Global Progress Bar
+
+Helto Utils adds a compact global progress bar at the top of ComfyUI. It follows ComfyUI's standard execution events, then enriches the display when nodes emit more precise phase updates through the public `helto_progress` helper.
+
+The bar shows overall workflow progress, current node progress, phase text, and a small in-memory detail popover for recent node events. Clicking the bar focuses the current node when ComfyUI can resolve it on the graph.
+
+Custom nodes can report detailed state with:
+
+```python
+import helto_progress
+
+helto_progress.report("Loading model", phase="load")
+```
+
+For looped work:
+
+```python
+import helto_progress
+
+for index, item in enumerate(items, start=1):
+    helto_progress.update(
+        "Processing item",
+        phase="sample",
+        value=index,
+        total=len(items),
+    )
+```
+
+For a scoped phase:
+
+```python
+import helto_progress
+
+with helto_progress.phase("download", total=len(files)) as progress:
+    for file in files:
+        download(file)
+        progress.step()
+```
+
+Payloads are sent only to the active ComfyUI client when available. The helper automatically fills `prompt_id`, `node_id`, display node ID, parent node ID, and real node ID from ComfyUI's execution context when a node is currently running.
+
+Bundled Helto nodes that emit detailed phase updates include Prompt Enhancer, Multi-Image Selector, Load Video, Save Image Advanced, and Save Video Advanced.
+
 ## Node Catalog
 
 | Node | ID | Category | What it is for |

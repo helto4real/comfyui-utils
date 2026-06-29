@@ -12,8 +12,24 @@ from PIL import Image, ImageOps
 from .crypto import decrypt_selection
 from .mask_storage import edited_mask_path_set, load_mask_image
 
+try:
+    from shared import progress_api as helto_progress
+except Exception:
+    try:
+        from ..shared import progress_api as helto_progress
+    except Exception:
+        helto_progress = None
+
 DEFAULT_PLACEHOLDER_SIZE = 512
 DEFAULT_RESIZE_MODE = "zoom to fit"
+
+
+def _progress(event: str, message: str, **kwargs) -> None:
+    if helto_progress is None:
+        return
+    reporter = getattr(helto_progress, event, None)
+    if callable(reporter):
+        reporter(message, **kwargs)
 
 
 def make_placeholder_image(size: int = DEFAULT_PLACEHOLDER_SIZE) -> torch.Tensor:
@@ -354,28 +370,57 @@ def select_images(
     edited_masks: str | None = "{}",
     edited_bboxes: str | None = "{}",
 ) -> tuple[list[torch.Tensor], torch.Tensor, list[torch.Tensor], torch.Tensor, list[list[dict[str, int]]]]:
+    _progress("start", "Reading selected images", phase="selection", percent=0)
     image_paths = parse_selected_paths(selected_images)
     edited_mask_map = parse_edited_masks(edited_masks)
     edited_bbox_map = parse_edited_bboxes(edited_bboxes)
     valid_paths = filter_existing_paths(image_paths)
 
     if not valid_paths:
+        _progress("report", "No selector images selected", phase="selection", level="warning", percent=100)
         print("[HeltoSelector] No images selected. Outputting 512x512 black placeholder.")
         black_image = make_placeholder_image()
         white_mask = make_placeholder_mask()
         return [black_image], black_image, [white_mask], white_mask, [[]]
 
+    _progress("done", f"Found {len(valid_paths)} selected images", phase="selection", percent=100)
+    _progress("start", f"Loading {len(valid_paths)} selected images", phase="load_images", value=0, total=len(valid_paths))
     image_pairs = load_rgb_image_pairs(valid_paths)
+    _progress(
+        "done",
+        f"Loaded {len(image_pairs)} selected images",
+        phase="load_images",
+        value=len(image_pairs),
+        total=len(valid_paths),
+    )
     if not image_pairs:
+        _progress("report", "No selector images could be loaded", phase="load_images", level="warning", percent=100)
         black_image = make_placeholder_image()
         white_mask = make_placeholder_mask()
         return [black_image], black_image, [white_mask], white_mask, [[]]
 
     loaded_images = [img for _, img in image_pairs]
+    _progress("start", "Loading selector masks", phase="load_masks", value=0, total=len(image_pairs))
     loaded_masks = load_masks_for_images(image_pairs, edited_mask_map)
+    _progress("done", "Loaded selector masks", phase="load_masks", value=len(loaded_masks), total=len(image_pairs))
+    _progress("update", "Resizing selected images", phase="resize", percent=35)
     processed_images = resize_images(loaded_images, resize_mode)
     processed_masks = resize_masks(loaded_masks, resize_mode)
+    _progress("update", "Transforming selector bounding boxes", phase="bboxes", percent=65)
     output_bboxes = transform_bboxes_for_output(image_pairs, processed_images, edited_bbox_map, resize_mode)
-    tensor_list = [image_to_tensor(img) for img in processed_images]
-    mask_list = [mask_to_tensor(mask) for mask in processed_masks]
+    tensor_total = len(processed_images) + len(processed_masks)
+    tensor_index = 0
+    _progress("start", "Building selector tensors", phase="batch", value=0, total=tensor_total)
+    tensor_list = []
+    for img in processed_images:
+        tensor_index += 1
+        tensor_list.append(image_to_tensor(img))
+        _progress("update", "Converted selector image tensor", phase="batch", value=tensor_index, total=tensor_total)
+    mask_list = []
+    for mask in processed_masks:
+        tensor_index += 1
+        mask_list.append(mask_to_tensor(mask))
+        _progress("update", "Converted selector mask tensor", phase="batch", value=tensor_index, total=tensor_total)
+    _progress("done", f"Prepared {len(tensor_list)} selected images", phase="batch", value=tensor_index, total=tensor_total)
+    _progress("done", "Selector images ready", phase="complete", percent=100)
     return tensor_list, make_image_batch(tensor_list), mask_list, make_mask_batch(mask_list), output_bboxes

@@ -3,6 +3,8 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Any
 
+from .. import progress_api as helto_progress
+
 
 PROGRESS_TOTAL = 1000
 PHASE_RANGES: dict[str, tuple[int, int]] = {
@@ -13,11 +15,20 @@ PHASE_RANGES: dict[str, tuple[int, int]] = {
     "cleanup": (930, 970),
     "release": (970, 1000),
 }
+PHASE_LABELS: dict[str, str] = {
+    "media": "Preparing media",
+    "download": "Downloading model",
+    "load": "Loading model",
+    "generate": "Generating prompt",
+    "cleanup": "Cleaning up",
+    "release": "Releasing model",
+}
 
 
 class PromptEnhancerProgress:
     def __init__(self, unique_id: str | None = None, progress_bar: Any | None = None, enabled: bool = True):
         self.enabled = enabled
+        self._node_id = unique_id
         self._last_value = 0
         self._model_call_total = 0
         self._model_call_index = 0
@@ -44,13 +55,17 @@ class PromptEnhancerProgress:
     def phase_fraction(self, phase: str, fraction: float) -> None:
         start, end = PHASE_RANGES.get(phase, (0, PROGRESS_TOTAL))
         safe_fraction = max(0.0, min(1.0, float(fraction)))
-        self.update_absolute(round(start + ((end - start) * safe_fraction)))
+        absolute = round(start + ((end - start) * safe_fraction))
+        self.update_absolute(absolute)
+        self._report_phase_update(phase, self._last_value)
 
     def phase_start(self, phase: str) -> None:
+        self._report_phase_start(phase)
         self.phase_fraction(phase, 0.0)
 
     def phase_done(self, phase: str) -> None:
         self.phase_fraction(phase, 1.0)
+        self._report_phase_done(phase)
 
     def generation_tokens(self, generated: int, expected: int) -> None:
         if expected <= 0:
@@ -93,10 +108,56 @@ class PromptEnhancerProgress:
         call_width = (end - start) / max(1, call_total)
         safe_index = max(0, min(call_total - 1, int(call_index)))
         safe_fraction = max(0.0, min(1.0, float(fraction)))
-        self.update_absolute(round(start + (call_width * safe_index) + (call_width * safe_fraction)))
+        absolute = round(start + (call_width * safe_index) + (call_width * safe_fraction))
+        self.update_absolute(absolute)
+        self._report_phase_update(
+            "generate",
+            self._last_value,
+            message=f"Generating prompt {safe_index + 1}/{call_total}",
+        )
 
     def complete(self) -> None:
         self.update_absolute(PROGRESS_TOTAL)
+        helto_progress.done(
+            "Prompt enhancer complete",
+            phase="complete",
+            value=PROGRESS_TOTAL,
+            total=PROGRESS_TOTAL,
+            node_id=self._node_id,
+        )
+
+    def _report_phase_start(self, phase: str) -> None:
+        if not self.enabled:
+            return
+        helto_progress.start(
+            PHASE_LABELS.get(phase, phase),
+            phase=phase,
+            value=self._last_value,
+            total=PROGRESS_TOTAL,
+            node_id=self._node_id,
+        )
+
+    def _report_phase_update(self, phase: str, absolute: int, message: str | None = None) -> None:
+        if not self.enabled:
+            return
+        helto_progress.update(
+            message or PHASE_LABELS.get(phase, phase),
+            phase=phase,
+            value=absolute,
+            total=PROGRESS_TOTAL,
+            node_id=self._node_id,
+        )
+
+    def _report_phase_done(self, phase: str) -> None:
+        if not self.enabled:
+            return
+        helto_progress.done(
+            PHASE_LABELS.get(phase, phase),
+            phase=phase,
+            value=self._last_value,
+            total=PROGRESS_TOTAL,
+            node_id=self._node_id,
+        )
 
     @staticmethod
     def check_interrupted() -> None:
