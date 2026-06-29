@@ -2221,13 +2221,18 @@ Second beat moves toward the doorway. @image1:end
                     module_globals["helto_progress"],
                     "_send_payload",
                     side_effect=lambda payload: sent.append(payload) or True,
-                ):
+                ), patch.object(
+                    module_globals["helto_progress"],
+                    "_mirror_native_text",
+                    side_effect=AssertionError("Save image progress should not draw native node text"),
+                ) as mirror_text:
                     saved = node_cls._save_images(["first", "second"], tmpdir, "img")
         finally:
             helper._create_png_metadata = original_metadata
             helper._convert_tensor_to_pil = original_convert
             node_cls.hidden = original_hidden
 
+        mirror_text.assert_not_called()
         self.assertEqual(len(saved), 2)
         save_events = [payload for payload in sent if payload["phase"] == "save_images"]
         self.assertGreaterEqual(len(save_events), 4)

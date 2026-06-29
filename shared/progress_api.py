@@ -25,6 +25,7 @@ def report(
     detail: Any | None = None,
     node_id: str | int | None = None,
     prompt_id: str | None = None,
+    native_text: bool = True,
 ) -> dict[str, Any]:
     return _emit(
         "report",
@@ -37,6 +38,7 @@ def report(
         detail=detail,
         node_id=node_id,
         prompt_id=prompt_id,
+        native_text=native_text,
     )
 
 
@@ -50,6 +52,7 @@ def start(
     detail: Any | None = None,
     node_id: str | int | None = None,
     prompt_id: str | None = None,
+    native_text: bool = True,
 ) -> dict[str, Any]:
     return _emit(
         "start",
@@ -62,6 +65,7 @@ def start(
         detail=detail,
         node_id=node_id,
         prompt_id=prompt_id,
+        native_text=native_text,
     )
 
 
@@ -75,6 +79,7 @@ def update(
     detail: Any | None = None,
     node_id: str | int | None = None,
     prompt_id: str | None = None,
+    native_text: bool = True,
 ) -> dict[str, Any]:
     return _emit(
         "update",
@@ -87,6 +92,7 @@ def update(
         detail=detail,
         node_id=node_id,
         prompt_id=prompt_id,
+        native_text=native_text,
     )
 
 
@@ -100,6 +106,7 @@ def done(
     detail: Any | None = None,
     node_id: str | int | None = None,
     prompt_id: str | None = None,
+    native_text: bool = True,
 ) -> dict[str, Any]:
     return _emit(
         "done",
@@ -112,6 +119,7 @@ def done(
         detail=detail,
         node_id=node_id,
         prompt_id=prompt_id,
+        native_text=native_text,
     )
 
 
@@ -125,6 +133,7 @@ def error(
     detail: Any | None = None,
     node_id: str | int | None = None,
     prompt_id: str | None = None,
+    native_text: bool = True,
 ) -> dict[str, Any]:
     return _emit(
         "error",
@@ -137,6 +146,7 @@ def error(
         detail=detail,
         node_id=node_id,
         prompt_id=prompt_id,
+        native_text=native_text,
     )
 
 
@@ -148,6 +158,7 @@ class ProgressPhase:
         total: float | int | None = None,
         node_id: str | int | None = None,
         prompt_id: str | None = None,
+        native_text: bool = True,
     ):
         self.name = str(name)
         self.label = label or self.name
@@ -155,6 +166,7 @@ class ProgressPhase:
         self.value = 0.0
         self.node_id = node_id
         self.prompt_id = prompt_id
+        self.native_text = native_text
 
     def __enter__(self) -> "ProgressPhase":
         start(
@@ -165,6 +177,7 @@ class ProgressPhase:
             percent=0,
             node_id=self.node_id,
             prompt_id=self.prompt_id,
+            native_text=self.native_text,
         )
         return self
 
@@ -177,6 +190,7 @@ class ProgressPhase:
                 total=self.total,
                 node_id=self.node_id,
                 prompt_id=self.prompt_id,
+                native_text=self.native_text,
             )
             return False
         done(
@@ -186,6 +200,7 @@ class ProgressPhase:
             total=self.total,
             node_id=self.node_id,
             prompt_id=self.prompt_id,
+            native_text=self.native_text,
         )
         return False
 
@@ -195,6 +210,7 @@ class ProgressPhase:
         message: str | None = None,
         detail: Any | None = None,
         percent: float | int | None = None,
+        native_text: bool | None = None,
     ) -> dict[str, Any]:
         if value is not None:
             self.value = _number_or_none(value) or 0.0
@@ -207,6 +223,7 @@ class ProgressPhase:
             detail=detail,
             node_id=self.node_id,
             prompt_id=self.prompt_id,
+            native_text=self.native_text if native_text is None else native_text,
         )
 
     def step(
@@ -225,8 +242,16 @@ def phase(
     total: float | int | None = None,
     node_id: str | int | None = None,
     prompt_id: str | None = None,
+    native_text: bool = True,
 ) -> ProgressPhase:
-    return ProgressPhase(name, label=label, total=total, node_id=node_id, prompt_id=prompt_id)
+    return ProgressPhase(
+        name,
+        label=label,
+        total=total,
+        node_id=node_id,
+        prompt_id=prompt_id,
+        native_text=native_text,
+    )
 
 
 def _emit(
@@ -241,6 +266,7 @@ def _emit(
     detail: Any | None,
     node_id: str | int | None,
     prompt_id: str | None,
+    native_text: bool,
 ) -> dict[str, Any]:
     prompt_id, node_id = _resolve_execution_ids(prompt_id, node_id)
     value_number = _number_or_none(value)
@@ -267,7 +293,8 @@ def _emit(
     }
     _send_payload(payload)
     _mirror_native_progress(payload)
-    _mirror_native_text(payload)
+    if native_text:
+        _mirror_native_text(payload)
     return payload
 
 

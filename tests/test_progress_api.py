@@ -300,6 +300,45 @@ class ProgressApiTests(unittest.TestCase):
         self.assertEqual(progress_updates, [("9", 4.0, 10.0, None)])
         self.assertEqual(text_events, [("Writing frame | ffmpeg accepted frame 4", "9", "client-a")])
 
+    def test_emit_can_skip_native_text_mirror(self):
+        sent_events = []
+        text_events = []
+        progress_updates = []
+        server_module = types.ModuleType("server")
+        package = types.ModuleType("comfy_execution")
+        progress = types.ModuleType("comfy_execution.progress")
+
+        class PromptServer:
+            instance = SimpleNamespace(
+                client_id="client-a",
+                send_sync=lambda event, payload, sid: sent_events.append((event, payload, sid)),
+                send_progress_text=lambda text, node_id, sid: text_events.append((text, node_id, sid)),
+            )
+
+        server_module.PromptServer = PromptServer
+        progress.get_progress_state = lambda: SimpleNamespace(
+            dynprompt=SimpleNamespace(),
+            update_progress=lambda node_id, value, total, image: progress_updates.append((node_id, value, total, image)),
+        )
+
+        with patch.dict(sys.modules, {
+            "server": server_module,
+            "comfy_execution": package,
+            "comfy_execution.progress": progress,
+        }):
+            payload = progress_api.update(
+                "Save preview should not draw text",
+                value=2,
+                total=4,
+                node_id="10",
+                prompt_id="prompt-a",
+                native_text=False,
+            )
+
+        self.assertEqual(sent_events, [("helto_progress", payload, "client-a")])
+        self.assertEqual(progress_updates, [("10", 2.0, 4.0, None)])
+        self.assertEqual(text_events, [])
+
 
 if __name__ == "__main__":
     unittest.main()

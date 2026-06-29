@@ -45,6 +45,12 @@ for index, item in enumerate(items, start=1):
     )
 ```
 
+Nodes that own an image or video preview surface can keep ComfyUI from drawing native progress text over that preview while still sending Helto events and numeric progress:
+
+```python
+helto_progress.update("Saving preview", phase="preview", percent=50, native_text=False)
+```
+
 For a scoped phase:
 
 ```python
