@@ -110,7 +110,6 @@ class SaveImageAdvanced(io.ComfyNode):
             phase="prepare",
             percent=0,
             node_id=node_id,
-            native_text=False,
         )
         try:
             filename_prefix = cls._normalize_filename_prefix(filename_prefix)
@@ -131,7 +130,6 @@ class SaveImageAdvanced(io.ComfyNode):
                     phase="preview",
                     percent=35,
                     node_id=node_id,
-                    native_text=False,
                 )
                 print("Save Image Advanced created a preview without saving output files.")
 
@@ -146,7 +144,6 @@ class SaveImageAdvanced(io.ComfyNode):
                     phase="preview",
                     percent=70,
                     node_id=node_id,
-                    native_text=False,
                 )
                 preview = ui.SavedImages(
                     ui.ImageSaveHelper.save_images(
@@ -171,7 +168,6 @@ class SaveImageAdvanced(io.ComfyNode):
                 phase="complete",
                 percent=100,
                 node_id=node_id,
-                native_text=False,
             )
 
             if pause_mode:
@@ -179,7 +175,7 @@ class SaveImageAdvanced(io.ComfyNode):
 
             return io.NodeOutput(images, ui=preview)
         except Exception as exc:
-            helto_progress.error(str(exc), phase="error", node_id=node_id, native_text=False)
+            helto_progress.error(str(exc), phase="error", node_id=node_id)
             raise
 
     @classmethod
@@ -328,7 +324,6 @@ class SaveImageAdvanced(io.ComfyNode):
             value=0,
             total=total,
             node_id=node_id,
-            native_text=False,
         )
 
         for index, image in enumerate(images, start=1):
@@ -344,7 +339,6 @@ class SaveImageAdvanced(io.ComfyNode):
                 value=index,
                 total=total,
                 node_id=node_id,
-                native_text=False,
             )
 
         helto_progress.done(
@@ -353,7 +347,6 @@ class SaveImageAdvanced(io.ComfyNode):
             value=total if total is not None else len(saved_paths),
             total=total,
             node_id=node_id,
-            native_text=False,
         )
         return saved_paths
 
@@ -369,7 +362,6 @@ class SaveImageAdvanced(io.ComfyNode):
             value=0,
             total=total,
             node_id=node_id,
-            native_text=False,
         )
         for index, image in enumerate(images):
             pil_image = ui.ImageSaveHelper._convert_tensor_to_pil(image)
@@ -390,7 +382,6 @@ class SaveImageAdvanced(io.ComfyNode):
                 value=index + 1,
                 total=total,
                 node_id=node_id,
-                native_text=False,
             )
         helto_progress.done(
             "Created private image previews",
@@ -398,7 +389,6 @@ class SaveImageAdvanced(io.ComfyNode):
             value=total if total is not None else len(records),
             total=total,
             node_id=node_id,
-            native_text=False,
         )
         return records
 

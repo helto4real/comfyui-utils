@@ -7,6 +7,7 @@ from typing import Any
 
 
 EVENT_NAME = "helto_progress"
+TEXT_BRIDGE_NODE_ID = "__helto_progress_text__"
 PAYLOAD_VERSION = 1
 LEVELS = {"debug", "info", "success", "warning", "error"}
 
@@ -25,7 +26,7 @@ def report(
     detail: Any | None = None,
     node_id: str | int | None = None,
     prompt_id: str | None = None,
-    native_text: bool = True,
+    native_text: bool = False,
 ) -> dict[str, Any]:
     return _emit(
         "report",
@@ -52,7 +53,7 @@ def start(
     detail: Any | None = None,
     node_id: str | int | None = None,
     prompt_id: str | None = None,
-    native_text: bool = True,
+    native_text: bool = False,
 ) -> dict[str, Any]:
     return _emit(
         "start",
@@ -79,7 +80,7 @@ def update(
     detail: Any | None = None,
     node_id: str | int | None = None,
     prompt_id: str | None = None,
-    native_text: bool = True,
+    native_text: bool = False,
 ) -> dict[str, Any]:
     return _emit(
         "update",
@@ -106,7 +107,7 @@ def done(
     detail: Any | None = None,
     node_id: str | int | None = None,
     prompt_id: str | None = None,
-    native_text: bool = True,
+    native_text: bool = False,
 ) -> dict[str, Any]:
     return _emit(
         "done",
@@ -133,7 +134,7 @@ def error(
     detail: Any | None = None,
     node_id: str | int | None = None,
     prompt_id: str | None = None,
-    native_text: bool = True,
+    native_text: bool = False,
 ) -> dict[str, Any]:
     return _emit(
         "error",
@@ -158,7 +159,7 @@ class ProgressPhase:
         total: float | int | None = None,
         node_id: str | int | None = None,
         prompt_id: str | None = None,
-        native_text: bool = True,
+        native_text: bool = False,
     ):
         self.name = str(name)
         self.label = label or self.name
@@ -242,7 +243,7 @@ def phase(
     total: float | int | None = None,
     node_id: str | int | None = None,
     prompt_id: str | None = None,
-    native_text: bool = True,
+    native_text: bool = False,
 ) -> ProgressPhase:
     return ProgressPhase(
         name,
@@ -293,6 +294,7 @@ def _emit(
     }
     _send_payload(payload)
     _mirror_native_progress(payload)
+    _send_text_bridge(payload)
     if native_text:
         _mirror_native_text(payload)
     return payload
@@ -435,6 +437,47 @@ def _mirror_native_text(payload: dict[str, Any]) -> bool:
     return True
 
 
+def _send_text_bridge(payload: dict[str, Any]) -> bool:
+    node_id = payload.get("node_id")
+    if node_id is None:
+        return False
+
+    text = _native_text(payload)
+    if text is None:
+        return False
+
+    try:
+        from server import PromptServer  # type: ignore[import-not-found]
+
+        server = PromptServer.instance
+        send_progress_text = getattr(server, "send_progress_text", None)
+        sid = getattr(server, "client_id", None)
+    except Exception:
+        return False
+
+    if not callable(send_progress_text) or sid is None:
+        return False
+
+    bridge_payload = {
+        "version": PAYLOAD_VERSION,
+        "prompt_id": payload.get("prompt_id"),
+        "node_id": str(node_id),
+        "display_node_id": payload.get("display_node_id"),
+        "parent_node_id": payload.get("parent_node_id"),
+        "real_node_id": payload.get("real_node_id"),
+        "phase": payload.get("phase"),
+        "level": payload.get("level"),
+        "text": text,
+        "timestamp": payload.get("timestamp"),
+    }
+
+    try:
+        send_progress_text(json.dumps(bridge_payload, separators=(",", ":")), TEXT_BRIDGE_NODE_ID, sid)
+    except Exception:
+        return False
+    return True
+
+
 def _native_text(payload: dict[str, Any]) -> str | None:
     message = _clean_text(payload.get("message"))
     detail = _detail_text(payload.get("detail"))
@@ -532,6 +575,7 @@ install_public_alias()
 __all__ = [
     "EVENT_NAME",
     "PAYLOAD_VERSION",
+    "TEXT_BRIDGE_NODE_ID",
     "ProgressPhase",
     "done",
     "error",

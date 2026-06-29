@@ -5,6 +5,7 @@ import {
     applyProgressEvent,
     createProgressState,
     formatProgressText,
+    HELTO_PROGRESS_TEXT_NODE_ID,
     progressSnapshot,
     rememberPromptData,
 } from "../../web/progress_bar_helpers.js";
@@ -17,6 +18,18 @@ const PROMPT = {
         4: { class_type: "SaveImage", _meta: { title: "Save" } },
     },
 };
+
+function heltoBridgeDetail(payload) {
+    return {
+        nodeId: HELTO_PROGRESS_TEXT_NODE_ID,
+        text: JSON.stringify({
+            version: 1,
+            level: "info",
+            timestamp: 1,
+            ...payload,
+        }),
+    };
+}
 
 test("execution start applies known prompt data and resets runtime state", () => {
     let state = createProgressState();
@@ -72,7 +85,7 @@ test("progress_state updates current node percent", () => {
     assert.match(formatProgressText(snapshot), /Sampler/);
 });
 
-test("progress_text updates current status in real time", () => {
+test("hidden helto progress_text bridge updates current status in real time", () => {
     let state = createProgressState();
     state = rememberPromptData(state, "prompt-a", PROMPT);
     state = applyProgressEvent(state, "execution_start", { prompt_id: "prompt-a" });
@@ -88,29 +101,34 @@ test("progress_text updates current status in real time", () => {
             },
         },
     });
-    state = applyProgressEvent(state, "progress_text", {
+    state = applyProgressEvent(state, "progress_text", heltoBridgeDetail({
         prompt_id: "prompt-a",
-        nodeId: "2",
+        node_id: "2",
+        display_node_id: "2",
+        phase: "download",
         text: "Downloading shard 2",
-    });
+    }));
 
     const snapshot = progressSnapshot(state);
 
     assert.equal(snapshot.currentPercent, 20);
     assert.equal(snapshot.current.message, "Downloading shard 2");
+    assert.equal(snapshot.current.phase, "download");
     assert.equal(snapshot.recentEvents.length, 0);
     assert.match(formatProgressText(snapshot), /Downloading shard 2/);
 });
 
-test("progress_text survives following progress_state updates", () => {
+test("hidden helto progress_text bridge survives following progress_state updates", () => {
     let state = createProgressState();
     state = rememberPromptData(state, "prompt-a", PROMPT);
     state = applyProgressEvent(state, "execution_start", { prompt_id: "prompt-a" });
-    state = applyProgressEvent(state, "progress_text", {
+    state = applyProgressEvent(state, "progress_text", heltoBridgeDetail({
         prompt_id: "prompt-a",
-        nodeId: "2",
-        text: "Encoding frame 4",
-    });
+        node_id: "2",
+        display_node_id: "2",
+        phase: "encode_video",
+        text: "Encoding frame 4 | ffmpeg accepted frame 4",
+    }));
     state = applyProgressEvent(state, "progress_state", {
         prompt_id: "prompt-a",
         nodes: {
@@ -123,6 +141,18 @@ test("progress_text survives following progress_state updates", () => {
             },
         },
     });
+    state = applyProgressEvent(state, "helto_progress", {
+        version: 1,
+        event: "update",
+        prompt_id: "prompt-a",
+        node_id: "2",
+        display_node_id: "2",
+        phase: "encode_video",
+        message: "Encoding frame 4",
+        detail: { log: "ffmpeg accepted frame 4" },
+        level: "info",
+        timestamp: 1,
+    });
 
     const snapshot = progressSnapshot(state);
     const text = formatProgressText(snapshot);
@@ -130,6 +160,8 @@ test("progress_text survives following progress_state updates", () => {
     assert.equal(snapshot.currentPercent, 60);
     assert.equal(snapshot.current.message, "Encoding frame 4");
     assert.match(text, /Encoding frame 4/);
+    assert.match(text, /ffmpeg accepted frame 4/);
+    assert.equal(text.match(/ffmpeg accepted frame 4/g).length, 1);
 });
 
 test("helto_progress augments current node phase and message", () => {
@@ -167,7 +199,7 @@ test("helto_progress augments current node phase and message", () => {
     assert.equal(snapshot.recentEvents.length, 1);
 });
 
-test("progress_text separator does not duplicate helto_progress detail log", () => {
+test("helto_progress separator does not duplicate detail log", () => {
     let state = createProgressState();
     state = rememberPromptData(state, "prompt-a", PROMPT);
     state = applyProgressEvent(state, "execution_start", { prompt_id: "prompt-a" });
@@ -182,11 +214,6 @@ test("progress_text separator does not duplicate helto_progress detail log", () 
                 max: 10,
             },
         },
-    });
-    state = applyProgressEvent(state, "progress_text", {
-        prompt_id: "prompt-a",
-        nodeId: "2",
-        text: "Writing frame | ffmpeg accepted frame 4",
     });
     state = applyProgressEvent(state, "helto_progress", {
         version: 1,
@@ -208,25 +235,56 @@ test("progress_text separator does not duplicate helto_progress detail log", () 
     assert.equal(text.match(/ffmpeg accepted frame 4/g).length, 1);
 });
 
-test("blank progress_text does not clear current message", () => {
+test("normal progress_text updates nodes without helto reporting", () => {
     let state = createProgressState();
     state = rememberPromptData(state, "prompt-a", PROMPT);
     state = applyProgressEvent(state, "execution_start", { prompt_id: "prompt-a" });
-    state = applyProgressEvent(state, "progress_text", {
+    state = applyProgressEvent(state, "progress_state", {
         prompt_id: "prompt-a",
-        nodeId: "2",
-        text: "Keep this status",
+        nodes: {
+            3: {
+                node_id: "3",
+                display_node_id: "3",
+                state: "running",
+                value: 1,
+                max: 2,
+            },
+        },
     });
     state = applyProgressEvent(state, "progress_text", {
+        nodeId: "3",
+        text: "width: 1024, height: 768",
+    });
+
+    const snapshot = progressSnapshot(state);
+
+    assert.equal(snapshot.currentPercent, 50);
+    assert.equal(snapshot.current.message, "width: 1024, height: 768");
+    assert.equal(snapshot.recentEvents.length, 0);
+    assert.match(formatProgressText(snapshot), /width: 1024, height: 768/);
+});
+
+test("normal progress_text does not override helto-marked nodes", () => {
+    let state = createProgressState();
+    state = rememberPromptData(state, "prompt-a", PROMPT);
+    state = applyProgressEvent(state, "execution_start", { prompt_id: "prompt-a" });
+    state = applyProgressEvent(state, "progress_text", heltoBridgeDetail({
+        prompt_id: "prompt-a",
+        node_id: "2",
+        display_node_id: "2",
+        text: "Keep this status",
+    }));
+    state = applyProgressEvent(state, "progress_text", {
         prompt_id: "prompt-a",
         nodeId: "2",
-        text: "   ",
+        text: "Native node text should stay out",
     });
 
     const snapshot = progressSnapshot(state);
 
     assert.equal(snapshot.current.message, "Keep this status");
     assert.match(formatProgressText(snapshot), /Keep this status/);
+    assert.doesNotMatch(formatProgressText(snapshot), /Native node text should stay out/);
 });
 
 test("execution error and interruption update active state", () => {

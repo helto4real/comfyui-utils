@@ -45,10 +45,10 @@ for index, item in enumerate(items, start=1):
     )
 ```
 
-Nodes that own an image or video preview surface can keep ComfyUI from drawing native progress text over that preview while still sending Helto events and numeric progress:
+By default, Helto progress text is sent through a hidden top-bar bridge and does not draw text on the node itself. If a node intentionally wants ComfyUI to draw the same status text on the node canvas too, opt in to native node text:
 
 ```python
-helto_progress.update("Saving preview", phase="preview", percent=50, native_text=False)
+helto_progress.update("Visible on node too", phase="preview", percent=50, native_text=True)
 ```
 
 For a scoped phase:

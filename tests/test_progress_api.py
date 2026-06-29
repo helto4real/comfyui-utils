@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import types
 import unittest
@@ -7,6 +8,11 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from shared import progress_api
+
+
+def parse_bridge_event(event):
+    text, node_id, sid = event
+    return json.loads(text), node_id, sid
 
 
 class ProgressApiTests(unittest.TestCase):
@@ -261,7 +267,7 @@ class ProgressApiTests(unittest.TestCase):
 
         self.assertEqual(sent, [])
 
-    def test_emit_preserves_custom_event_numeric_mirror_and_text_mirror(self):
+    def test_emit_defaults_to_custom_event_and_numeric_mirror_without_native_text(self):
         sent_events = []
         text_events = []
         progress_updates = []
@@ -298,9 +304,16 @@ class ProgressApiTests(unittest.TestCase):
 
         self.assertEqual(sent_events, [("helto_progress", payload, "client-a")])
         self.assertEqual(progress_updates, [("9", 4.0, 10.0, None)])
-        self.assertEqual(text_events, [("Writing frame | ffmpeg accepted frame 4", "9", "client-a")])
+        bridge, node_id, sid = parse_bridge_event(text_events[0])
+        self.assertEqual(node_id, progress_api.TEXT_BRIDGE_NODE_ID)
+        self.assertEqual(sid, "client-a")
+        self.assertEqual(bridge["prompt_id"], "prompt-a")
+        self.assertEqual(bridge["node_id"], "9")
+        self.assertEqual(bridge["display_node_id"], "9")
+        self.assertEqual(bridge["text"], "Writing frame | ffmpeg accepted frame 4")
+        self.assertFalse(any(event[1] == "9" for event in text_events))
 
-    def test_emit_can_skip_native_text_mirror(self):
+    def test_emit_can_opt_into_native_text_mirror(self):
         sent_events = []
         text_events = []
         progress_updates = []
@@ -327,17 +340,92 @@ class ProgressApiTests(unittest.TestCase):
             "comfy_execution.progress": progress,
         }):
             payload = progress_api.update(
-                "Save preview should not draw text",
+                "Visible node status",
                 value=2,
                 total=4,
+                detail={"log": "detail line"},
                 node_id="10",
                 prompt_id="prompt-a",
-                native_text=False,
+                native_text=True,
             )
 
         self.assertEqual(sent_events, [("helto_progress", payload, "client-a")])
         self.assertEqual(progress_updates, [("10", 2.0, 4.0, None)])
-        self.assertEqual(text_events, [])
+        bridge, node_id, sid = parse_bridge_event(text_events[0])
+        self.assertEqual(node_id, progress_api.TEXT_BRIDGE_NODE_ID)
+        self.assertEqual(sid, "client-a")
+        self.assertEqual(bridge["node_id"], "10")
+        self.assertEqual(bridge["text"], "Visible node status | detail line")
+        self.assertEqual(text_events[1], ("Visible node status | detail line", "10", "client-a"))
+
+    def test_text_bridge_noops_without_required_server_state(self):
+        sent = []
+        self.assertFalse(progress_api._send_text_bridge({"message": "Working"}))
+        self.assertFalse(progress_api._send_text_bridge({"node_id": "1", "message": "   "}))
+
+        server_module = types.ModuleType("server")
+        server_module.PromptServer = SimpleNamespace(instance=SimpleNamespace(client_id="client-a"))
+        with patch.dict(sys.modules, {"server": server_module}):
+            self.assertFalse(progress_api._send_text_bridge({"node_id": "1", "message": "Working"}))
+
+        class PromptServer:
+            instance = SimpleNamespace(
+                client_id=None,
+                send_progress_text=lambda text, node_id, sid: sent.append((text, node_id, sid)),
+            )
+
+        server_module.PromptServer = PromptServer
+        with patch.dict(sys.modules, {"server": server_module}):
+            self.assertFalse(progress_api._send_text_bridge({"node_id": "1", "message": "Working"}))
+
+        self.assertEqual(sent, [])
+
+    def test_phase_respects_native_text_setting(self):
+        text_events = []
+        server_module = types.ModuleType("server")
+        package = types.ModuleType("comfy_execution")
+        progress = types.ModuleType("comfy_execution.progress")
+
+        class PromptServer:
+            instance = SimpleNamespace(
+                client_id="client-a",
+                send_sync=lambda _event, _payload, _sid: None,
+                send_progress_text=lambda text, node_id, sid: text_events.append((text, node_id, sid)),
+            )
+
+        server_module.PromptServer = PromptServer
+        progress.get_progress_state = lambda: SimpleNamespace(
+            dynprompt=SimpleNamespace(),
+            update_progress=lambda _node_id, _value, _total, _image: None,
+        )
+
+        with patch.dict(sys.modules, {
+            "server": server_module,
+            "comfy_execution": package,
+            "comfy_execution.progress": progress,
+        }):
+            with progress_api.phase("download", total=2, node_id="11") as phase:
+                phase.step()
+            with progress_api.phase("upload", total=1, node_id="12", native_text=True) as phase:
+                phase.step()
+
+        bridge_events = [event for event in text_events if event[1] == progress_api.TEXT_BRIDGE_NODE_ID]
+        native_events = [event for event in text_events if event[1] != progress_api.TEXT_BRIDGE_NODE_ID]
+
+        self.assertEqual(len(bridge_events), 6)
+        self.assertEqual([parse_bridge_event(event)[0]["node_id"] for event in bridge_events], [
+            "11",
+            "11",
+            "11",
+            "12",
+            "12",
+            "12",
+        ])
+        self.assertEqual(native_events, [
+            ("upload", "12", "client-a"),
+            ("upload", "12", "client-a"),
+            ("upload", "12", "client-a"),
+        ])
 
 
 if __name__ == "__main__":
