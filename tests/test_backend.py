@@ -1243,6 +1243,7 @@ class NodeSchemaContractTests(unittest.TestCase):
         prompt_enhancer_external_prompt_input = next(
             input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "external_prompt"
         )
+        prompt_enhancer_clip_input = next(input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "clip")
         prompt_enhancer_segment_input = next(
             input_def for input_def in prompt_enhancer_schema.inputs if input_def.id == "active_segment_index"
         )
@@ -1282,6 +1283,8 @@ class NodeSchemaContractTests(unittest.TestCase):
         self.assertTrue(prompt_enhancer_external_prompt_input.kwargs["optional"])
         self.assertTrue(prompt_enhancer_external_prompt_input.kwargs["force_input"])
         self.assertFalse(prompt_enhancer_external_prompt_input.kwargs["dynamic_prompts"])
+        self.assertEqual(prompt_enhancer_clip_input.kwargs["io_kind"], "Clip")
+        self.assertTrue(prompt_enhancer_clip_input.kwargs["optional"])
         self.assertEqual(prompt_enhancer_segment_input.kwargs["io_kind"], "Int")
         self.assertEqual(prompt_enhancer_segment_input.kwargs["default"], 1)
         self.assertEqual(prompt_enhancer_segment_mode_input.kwargs["io_kind"], "Combo")
@@ -1507,6 +1510,187 @@ class NodeSchemaContractTests(unittest.TestCase):
         self.assertEqual(result[0], "External documentary storyboard")
         self.assertEqual(result[2], "External documentary storyboard")
         self.assertEqual(requests[0].prompt, "External documentary storyboard")
+
+    def test_prompt_enhancer_connected_clip_overrides_writer_provider_settings(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        prompt_node = next(
+            node_cls
+            for node_cls in asyncio.run(extension_module.HeltoUtilsExtension().get_node_list())
+            if node_cls.define_schema().node_id == "HeltoPromptEnhancer"
+        )
+        globals_ = prompt_node.execute.__func__.__globals__
+        original_provider = globals_["PromptProviderRegistry"]
+
+        class FailingRegistry:
+            def generate(self, request, progress=None):
+                raise AssertionError("provider registry should not generate when clip is connected")
+
+        class FakeClip:
+            def __init__(self):
+                self.tokenized_text = None
+                self.generate_kwargs = None
+
+            def tokenize(self, text):
+                self.tokenized_text = text
+                return {"tokens": text}
+
+            def generate(self, tokens, **kwargs):
+                self.generate_kwargs = kwargs
+                self.generated_tokens = tokens
+                return ["generated-ids"]
+
+            def decode(self, token_ids):
+                self.decoded_ids = token_ids
+                return " clip enhanced prompt "
+
+        clip = FakeClip()
+        globals_["PromptProviderRegistry"] = FailingRegistry
+        try:
+            result = prompt_node.execute(
+                clip=clip,
+                seed=42,
+                generation_max_tokens=64,
+                prompt_type="image",
+                script="Create a moody portrait",
+                provider="ollama",
+                model="mistral:latest",
+                model_id="mistral:latest",
+            )
+        finally:
+            globals_["PromptProviderRegistry"] = original_provider
+
+        self.assertEqual(result[0], "clip enhanced prompt")
+        self.assertIn("User prompt:\nCreate a moody portrait", clip.tokenized_text)
+        self.assertEqual(clip.generate_kwargs["max_length"], 64)
+        self.assertEqual(clip.generate_kwargs["seed"], 42)
+        self.assertFalse(clip.generate_kwargs["do_sample"])
+        self.assertEqual(clip.decoded_ids, ["generated-ids"])
+
+    def test_prompt_enhancer_connected_clip_generates_each_video_segment(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        prompt_node = next(
+            node_cls
+            for node_cls in asyncio.run(extension_module.HeltoUtilsExtension().get_node_list())
+            if node_cls.define_schema().node_id == "HeltoPromptEnhancer"
+        )
+        globals_ = prompt_node.execute.__func__.__globals__
+        original_provider = globals_["PromptProviderRegistry"]
+
+        class FailingRegistry:
+            def generate(self, request, progress=None):
+                raise AssertionError("provider registry should not generate when clip is connected")
+
+        class FakeClip:
+            def __init__(self):
+                self.prompts = []
+                self.generated = 0
+
+            def tokenize(self, text):
+                self.prompts.append(text)
+                return {"tokens": text}
+
+            def generate(self, tokens, **kwargs):
+                self.generated += 1
+                return [self.generated]
+
+            def decode(self, token_ids):
+                return f"clip generated {token_ids[0]}"
+
+        clip = FakeClip()
+        globals_["PromptProviderRegistry"] = FailingRegistry
+        try:
+            result = prompt_node.execute(
+                clip=clip,
+                seed=7,
+                generation_max_tokens=0,
+                prompt_type="video",
+                segment_generation_mode="all segments",
+                vision_context_mode="off",
+                script="First beat.\n---\nSecond beat.",
+            )
+        finally:
+            globals_["PromptProviderRegistry"] = original_provider
+
+        self.assertEqual(clip.generated, 2)
+        self.assertEqual(len(clip.prompts), 2)
+        self.assertIn("Segment: 1 of 2", clip.prompts[0])
+        self.assertIn("Segment: 2 of 2", clip.prompts[1])
+        self.assertEqual(result[0], "clip generated 1\n\nclip generated 2")
+
+    def test_prompt_enhancer_connected_clip_auto_uses_separate_vision_context(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        prompt_node = next(
+            node_cls
+            for node_cls in asyncio.run(extension_module.HeltoUtilsExtension().get_node_list())
+            if node_cls.define_schema().node_id == "HeltoPromptEnhancer"
+        )
+        globals_ = prompt_node.execute.__func__.__globals__
+        original_provider = globals_["PromptProviderRegistry"]
+        original_encode = globals_["encode_images_for_ollama"]
+        original_support = globals_["provider_model_supports_images"]
+        vision_requests = []
+
+        class FakeRegistry:
+            def generate(self, request, progress=None):
+                raise AssertionError("writer provider should not generate when clip is connected")
+
+            def generate_visual_context(self, request, progress=None):
+                vision_requests.append(request)
+                return "rain-soaked neon portrait reference"
+
+        class FakeClip:
+            def __init__(self):
+                self.tokenized_text = None
+
+            def tokenize(self, text):
+                self.tokenized_text = text
+                return {"tokens": text}
+
+            def generate(self, tokens, **kwargs):
+                return ["clip-output"]
+
+            def decode(self, token_ids):
+                return "final clip prompt"
+
+        clip = FakeClip()
+        globals_["PromptProviderRegistry"] = FakeRegistry
+        globals_["encode_images_for_ollama"] = lambda *args, **kwargs: ["encoded-image-1"]
+        globals_["provider_model_supports_images"] = lambda provider, model_id, backend="": model_id == "qwen3_vl_4b_fast"
+        try:
+            result = prompt_node.execute(
+                clip=clip,
+                images=[object()],
+                prompt_type="image",
+                vision_context_mode="auto",
+                script="Create a cinematic portrait",
+                provider="ollama",
+                model="llava:latest",
+                model_id="llava:latest",
+                vision_provider="local_transformers_vlm",
+                vision_model_id="qwen3_vl_4b_fast",
+                vision_model_backend="qwen",
+            )
+        finally:
+            globals_["PromptProviderRegistry"] = original_provider
+            globals_["encode_images_for_ollama"] = original_encode
+            globals_["provider_model_supports_images"] = original_support
+
+        self.assertEqual(len(vision_requests), 1)
+        self.assertEqual(vision_requests[0].images, ["encoded-image-1"])
+        self.assertIn("Visual context: rain-soaked neon portrait reference", clip.tokenized_text)
+        self.assertEqual(result[0], "final clip prompt")
+        self.assertEqual(result[7], "rain-soaked neon portrait reference")
+
+    def test_prompt_enhancer_connected_clip_requires_text_generation_methods(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        prompt_node = next(
+            node_cls
+            for node_cls in asyncio.run(extension_module.HeltoUtilsExtension().get_node_list())
+            if node_cls.define_schema().node_id == "HeltoPromptEnhancer"
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "Connected CLIP input must support ComfyUI text generation"):
+            prompt_node.execute(clip=object(), prompt_type="image", script="A quiet forest")
 
     def test_prompt_enhancer_video_script_sends_selected_segment_to_provider(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()
@@ -3079,6 +3263,7 @@ Second beat moves toward the doorway. @image1:end
             Combo = fake_socket("Combo")
             Boolean = fake_socket("Boolean")
             Model = fake_socket("Model")
+            Clip = fake_socket("Clip")
             Audio = fake_socket("Audio")
             Vae = fake_socket("Vae")
             Latent = fake_socket("Latent")

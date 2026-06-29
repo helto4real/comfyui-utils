@@ -28,6 +28,11 @@ from ...shared.prompt_enhancer import (
     substitute_prompt_variables,
     parse_video_prompt_script,
 )
+from ...shared.prompt_enhancer.local_provider import (
+    LOCAL_GENERATION_TOKENS,
+    _instruction,
+    clean_prompt_text,
+)
 from ...shared.prompt_enhancer.provider import encode_images_for_ollama
 from ...shared.prompt_enhancer import routes  # noqa: F401
 
@@ -59,6 +64,7 @@ class PromptEnhancer(io.ComfyNode):
                 io.Image.Input("images", optional=True),
                 io.Video.Input("video", optional=True),
                 io.Audio.Input("audio", optional=True),
+                io.Clip.Input("clip", optional=True),
                 io.Int.Input(
                     "seed",
                     default=-1,
@@ -153,6 +159,7 @@ class PromptEnhancer(io.ComfyNode):
         images=None,
         video=None,
         audio=None,
+        clip=None,
         seed: int = -1,
         provider: str = "ollama",
         model_id: str = "",
@@ -205,6 +212,9 @@ class PromptEnhancer(io.ComfyNode):
         model_identifier = (model_id or model or DEFAULT_OLLAMA_MODEL).strip()
         writer_provider = provider or "ollama"
         writer_backend = model_backend or ""
+        vision_writer_provider = "connected_clip" if clip is not None else writer_provider
+        vision_writer_model_identifier = "connected CLIP" if clip is not None else model_identifier
+        vision_writer_backend = "" if clip is not None else writer_backend
         vision_config = {
             "provider": (vision_provider or "").strip(),
             "model_id": (vision_model_id or "").strip(),
@@ -232,9 +242,9 @@ class PromptEnhancer(io.ComfyNode):
                 selected_mode, mode_warnings = _resolve_vision_mode(
                     vision_context_mode,
                     selected_images,
-                    writer_provider,
-                    model_identifier,
-                    writer_backend,
+                    vision_writer_provider,
+                    vision_writer_model_identifier,
+                    vision_writer_backend,
                     vision_config,
                 )
                 extra_warnings.extend(mode_warnings)
@@ -294,7 +304,7 @@ class PromptEnhancer(io.ComfyNode):
                     max_tokens=writer_max_tokens,
                 )
                 with progress.model_call() as call_progress:
-                    generated_prompts.append(registry.generate(request, call_progress))
+                    generated_prompts.append(_generate_writer_prompt(registry, request, clip, call_progress))
                 visual_contexts.append(visual_context)
 
             generated_prompt = _join_blocks(generated_prompts)
@@ -312,9 +322,9 @@ class PromptEnhancer(io.ComfyNode):
             selected_mode, mode_warnings = _resolve_vision_mode(
                 vision_context_mode,
                 encoded_images,
-                writer_provider,
-                model_identifier,
-                writer_backend,
+                vision_writer_provider,
+                vision_writer_model_identifier,
+                vision_writer_backend,
                 vision_config,
             )
             visual_context = ""
@@ -364,7 +374,7 @@ class PromptEnhancer(io.ComfyNode):
                 max_tokens=writer_max_tokens,
             )
             with progress.model_call() as call_progress:
-                generated_prompt = registry.generate(request, call_progress)
+                generated_prompt = _generate_writer_prompt(registry, request, clip, call_progress)
         progress.phase_done("cleanup")
         progress.complete()
         return io.NodeOutput(
@@ -390,6 +400,68 @@ def _as_int(value: Any, default: int) -> int:
 
 def _bounded_int(value: Any, default: int, minimum: int, maximum: int) -> int:
     return min(maximum, max(minimum, _as_int(value, default)))
+
+
+def _generate_writer_prompt(
+    registry: PromptProviderRegistry,
+    request: PromptEnhancerRequest,
+    clip: Any = None,
+    progress: PromptEnhancerProgress | None = None,
+) -> str:
+    if clip is None:
+        return registry.generate(request, progress)
+    return _generate_with_clip(
+        clip=clip,
+        system_prompt=request.system_prompt,
+        prompt=request.prompt,
+        seed=request.seed,
+        max_tokens=request.max_tokens,
+        progress=progress,
+    )
+
+
+def _generate_with_clip(
+    clip: Any,
+    system_prompt: str,
+    prompt: str,
+    seed: int,
+    max_tokens: int,
+    progress: PromptEnhancerProgress | None = None,
+) -> str:
+    required_methods = ("tokenize", "generate", "decode")
+    if any(not callable(getattr(clip, method_name, None)) for method_name in required_methods):
+        raise RuntimeError(
+            "Connected CLIP input must support ComfyUI text generation with tokenize, generate, and decode."
+        )
+
+    instruction = _instruction(system_prompt, prompt)
+    token_budget = _bounded_int(max_tokens, DEFAULT_GENERATION_MAX_TOKENS, 0, MAX_GENERATION_MAX_TOKENS)
+    if token_budget <= 0:
+        token_budget = LOCAL_GENERATION_TOKENS
+
+    if progress is not None:
+        progress.phase_start("generate")
+    try:
+        tokens = clip.tokenize(instruction)
+        generated_ids = clip.generate(
+            tokens,
+            do_sample=False,
+            max_length=token_budget,
+            temperature=0.2,
+            top_k=50,
+            top_p=0.95,
+            min_p=0.0,
+            repetition_penalty=1.05,
+            seed=seed,
+        )
+        return clean_prompt_text(clip.decode(generated_ids))
+    except Exception as exc:
+        raise RuntimeError(
+            "Connected CLIP input could not generate text; use a generation-capable ComfyUI CLIP/text-generator."
+        ) from exc
+    finally:
+        if progress is not None:
+            progress.phase_done("generate")
 
 
 def _prompt_image_count(images: Any) -> int:
