@@ -4,7 +4,6 @@ import { api } from "../../scripts/api.js";
 import {
     applyProgressEvent,
     createProgressState,
-    eventDisplayText,
     formatProgressText,
     progressSnapshot,
     rememberPromptData,
@@ -167,117 +166,8 @@ function injectStyles() {
             white-space: nowrap;
             z-index: 2;
         }
-        .helto-progress-popover {
-            background: var(--bg-primary, #151c2a);
-            border: 1px solid var(--border-strong, #3a465c);
-            border-radius: 8px;
-            box-shadow: var(--shadow-main, 0 14px 36px rgba(0, 0, 0, 0.55));
-            box-sizing: border-box;
-            color: var(--text-primary, #e7ebf3);
-            display: none;
-            font: 12px / 1.4 var(--font-sans, system-ui, sans-serif);
-            max-height: min(360px, calc(100vh - 42px));
-            overflow: hidden;
-            position: fixed;
-            right: 12px;
-            top: 20px;
-            width: min(520px, calc(100vw - 24px));
-            z-index: 10000;
-        }
-        .helto-progress-popover.is-visible {
-            display: flex;
-            flex-direction: column;
-            animation: heltoProgressPopover 0.16s cubic-bezier(0.34, 1.56, 0.64, 1);
-        }
-        @keyframes heltoProgressPopover {
-            from { opacity: 0; transform: translateY(-6px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-        .helto-progress-popover-header {
-            align-items: center;
-            border-bottom: 1px solid var(--border-subtle, #2a3346);
-            display: flex;
-            gap: 8px;
-            justify-content: space-between;
-            min-height: 34px;
-            padding: 8px 10px;
-        }
-        .helto-progress-popover-title {
-            color: var(--accent-primary, #f1c75c);
-            font-size: 12px;
-            font-weight: 800;
-            min-width: 0;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
-        .helto-progress-popover-status {
-            color: var(--text-secondary, #9aa6bd);
-            flex: 0 0 auto;
-            font-size: 11px;
-        }
-        .helto-progress-events {
-            display: flex;
-            flex-direction: column;
-            gap: 0;
-            overflow: auto;
-            padding: 4px 0;
-        }
-        .helto-progress-event {
-            border-left: 3px solid transparent;
-            display: grid;
-            gap: 2px 8px;
-            grid-template-columns: 70px minmax(0, 1fr);
-            padding: 7px 10px;
-        }
-        .helto-progress-event + .helto-progress-event {
-            border-top: 1px solid rgba(42, 51, 70, 0.72);
-        }
-        .helto-progress-event.is-error {
-            border-left-color: var(--danger, #ec5a6b);
-        }
-        .helto-progress-event.is-warning {
-            border-left-color: var(--accent-primary, #f1c75c);
-        }
-        .helto-progress-event.is-success {
-            border-left-color: #7bd88f;
-        }
-        .helto-progress-event-time {
-            color: var(--text-dim, #6f7c95);
-            font-family: var(--font-mono, ui-monospace, monospace);
-            font-size: 11px;
-        }
-        .helto-progress-event-message {
-            min-width: 0;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
-        .helto-progress-event-meta {
-            color: var(--text-secondary, #9aa6bd);
-            font-size: 11px;
-            grid-column: 2;
-            min-width: 0;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
-        .helto-progress-empty {
-            color: var(--text-secondary, #9aa6bd);
-            padding: 14px 10px;
-        }
     `;
     document.head.appendChild(style);
-}
-
-function escapeHtml(value) {
-    return String(value ?? "").replace(/[&<>"']/g, (char) => ({
-        "&": "&amp;",
-        "<": "&lt;",
-        ">": "&gt;",
-        '"': "&quot;",
-        "'": "&#39;",
-    }[char]));
 }
 
 function promptDataFromArgs(args) {
@@ -291,9 +181,6 @@ class HeltoProgressBar {
         this.workflowEl = null;
         this.nodeEl = null;
         this.textEl = null;
-        this.popoverEl = null;
-        this.pinned = false;
-        this.hovering = false;
     }
 
     setup() {
@@ -314,29 +201,14 @@ class HeltoProgressBar {
             root.className = "helto-progress-bar";
             root.setAttribute("role", "status");
             root.setAttribute("aria-live", "polite");
+            root.title = "Helto progress";
             root.innerHTML = `
                 <div class="helto-progress-track">
                     <div class="helto-progress-workflow"></div>
                     <div class="helto-progress-node"></div>
                 </div>
                 <div class="helto-progress-text">Idle</div>
-                <div class="helto-progress-popover" role="dialog" aria-label="Helto progress details"></div>
             `;
-            root.addEventListener("mouseenter", () => {
-                this.hovering = true;
-                this.showPopover();
-            });
-            root.addEventListener("mouseleave", () => {
-                this.hovering = false;
-                if (!this.pinned) this.hidePopoverSoon();
-            });
-            root.addEventListener("click", (event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                this.pinned = !this.pinned;
-                this.centerCurrentNode();
-                this.updatePopoverVisibility();
-            });
         }
 
         const target = document.querySelector(".comfyui-body-top") || document.body;
@@ -349,7 +221,6 @@ class HeltoProgressBar {
         this.workflowEl = root.querySelector(".helto-progress-workflow");
         this.nodeEl = root.querySelector(".helto-progress-node");
         this.textEl = root.querySelector(".helto-progress-text");
-        this.popoverEl = root.querySelector(".helto-progress-popover");
     }
 
     installEventHandlers() {
@@ -438,84 +309,7 @@ class HeltoProgressBar {
         this.workflowEl.style.width = `${snapshot.workflowWidth || 0}%`;
         this.nodeEl.style.width = `${snapshot.currentWidth || 0}%`;
         this.textEl.textContent = text;
-        this.root.title = snapshot.currentNodeId
-            ? "Helto progress. Click to focus the current node and pin details."
-            : "Helto progress. Click to pin details.";
-        this.renderPopover(snapshot);
-        this.updatePopoverVisibility();
     }
-
-    renderPopover(snapshot) {
-        const title = snapshot.current?.label || snapshot.error?.nodeType || "Helto progress";
-        const status = snapshot.workflowPercent == null
-            ? snapshot.status
-            : `${Math.round(snapshot.workflowPercent)}% workflow`;
-        const events = snapshot.recentEvents;
-        const body = events.length
-            ? events.map((event) => this.renderEvent(event)).join("")
-            : `<div class="helto-progress-empty">No detailed node events yet.</div>`;
-        this.popoverEl.innerHTML = `
-            <div class="helto-progress-popover-header">
-                <div class="helto-progress-popover-title">${escapeHtml(title)}</div>
-                <div class="helto-progress-popover-status">${escapeHtml(status)}</div>
-            </div>
-            <div class="helto-progress-events">${body}</div>
-        `;
-    }
-
-    renderEvent(event) {
-        const classes = ["helto-progress-event"];
-        if (event.level === "error") classes.push("is-error");
-        if (event.level === "warning") classes.push("is-warning");
-        if (event.level === "success") classes.push("is-success");
-        const percent = event.percent == null ? "" : ` ${Math.round(event.percent)}%`;
-        const node = event.displayNodeId || event.nodeId || "";
-        const meta = [node ? `Node ${node}` : "", event.event || "", percent.trim()].filter(Boolean).join(" - ");
-        return `
-            <div class="${classes.join(" ")}">
-                <div class="helto-progress-event-time">${escapeHtml(formatEventTime(event.timestamp))}</div>
-                <div class="helto-progress-event-message">${escapeHtml(eventDisplayText(event))}</div>
-                <div class="helto-progress-event-meta">${escapeHtml(meta)}</div>
-            </div>
-        `;
-    }
-
-    showPopover() {
-        this.popoverEl?.classList.add("is-visible");
-    }
-
-    hidePopoverSoon() {
-        setTimeout(() => {
-            if (!this.hovering && !this.pinned) {
-                this.popoverEl?.classList.remove("is-visible");
-            }
-        }, 120);
-    }
-
-    updatePopoverVisibility() {
-        if (this.pinned || this.hovering) {
-            this.showPopover();
-        } else {
-            this.popoverEl?.classList.remove("is-visible");
-        }
-    }
-
-    centerCurrentNode() {
-        const nodeId = progressSnapshot(this.state).currentNodeId;
-        const numericId = Number(nodeId);
-        if (!Number.isFinite(numericId)) return;
-        const graph = app?.rootGraph || app?.graph;
-        const node = graph?.getNodeById?.(numericId);
-        if (!node) return;
-        app?.canvas?.centerOnNode?.(node);
-        app?.canvas?.selectNode?.(node);
-    }
-}
-
-function formatEventTime(timestamp) {
-    const date = new Date(Number(timestamp || 0) * 1000);
-    if (!Number.isFinite(date.getTime())) return "";
-    return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
 const progressBar = new HeltoProgressBar();
