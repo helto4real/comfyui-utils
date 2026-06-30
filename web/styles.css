@@ -1639,3 +1639,108 @@
         width: 84px;
     }
 }
+
+/* --- Canvas Node Layout Tools --- */
+.helto-node-layout-button,
+.helto-node-layout-action {
+    align-items: center;
+    appearance: none;
+    background: linear-gradient(180deg, var(--bg-raised), var(--bg-secondary));
+    border: 1px solid var(--border-strong);
+    box-sizing: border-box;
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: inline-flex;
+    font-family: var(--font-sans);
+    justify-content: center;
+    margin: 0;
+    padding: 0;
+    transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease, color 140ms ease, opacity 140ms ease, transform 140ms ease;
+    user-select: none;
+}
+
+.helto-node-layout-button {
+    border-radius: 7px;
+    box-shadow: 0 7px 18px rgba(0, 0, 0, 0.34);
+    height: 28px;
+    left: 0;
+    opacity: 0;
+    pointer-events: none;
+    position: fixed;
+    top: 0;
+    transform: translate(-50%, -50%) scale(0.94);
+    width: 28px;
+    z-index: 9999;
+}
+
+.helto-node-layout-button.visible {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translate(-50%, -50%) scale(1);
+}
+
+.helto-node-layout-button:hover,
+.helto-node-layout-button.active,
+.helto-node-layout-action:hover {
+    background: linear-gradient(180deg, var(--bg-hover), var(--bg-raised));
+    border-color: var(--accent-border);
+    color: var(--accent-hover);
+}
+
+.helto-node-layout-button.active {
+    box-shadow: var(--shadow-glow), 0 8px 20px rgba(0, 0, 0, 0.45);
+}
+
+.helto-node-layout-button:focus-visible,
+.helto-node-layout-action:focus-visible {
+    border-color: var(--focus);
+    box-shadow: var(--focus-ring);
+    outline: none;
+}
+
+.helto-node-layout-popup {
+    background: rgba(21, 28, 42, 0.98);
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    box-shadow: var(--shadow-main);
+    box-sizing: border-box;
+    display: grid;
+    gap: 4px;
+    grid-template-columns: repeat(4, 30px);
+    left: 0;
+    opacity: 0;
+    padding: 6px;
+    pointer-events: none;
+    position: fixed;
+    top: 0;
+    transform: translateY(-3px);
+    transition: opacity 120ms ease, transform 120ms ease;
+    z-index: 10000;
+}
+
+.helto-node-layout-popup.visible {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(0);
+}
+
+.helto-node-layout-action {
+    border-radius: 6px;
+    height: 30px;
+    width: 30px;
+}
+
+.helto-node-layout-button:active {
+    transform: translate(-50%, -50%) scale(0.96);
+}
+
+.helto-node-layout-action:active {
+    transform: scale(0.96);
+}
+
+.helto-node-layout-button svg,
+.helto-node-layout-action svg {
+    display: block;
+    flex: 0 0 auto;
+    pointer-events: none;
+}
