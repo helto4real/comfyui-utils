@@ -257,7 +257,7 @@ function drawSplitImage(ctx, originalImage, newImage, x, y, width, height, split
     const clampedSplitX = Math.min(Math.max(splitX, x), x + width);
     ctx.save();
     ctx.beginPath();
-    ctx.rect(clampedSplitX, y, x + width - clampedSplitX, height);
+    ctx.rect(x, y, clampedSplitX - x, height);
     ctx.clip();
     const newRect = drawContainedImage(ctx, newImage, x, y, width, height);
     ctx.restore();

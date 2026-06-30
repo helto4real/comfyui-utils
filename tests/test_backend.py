@@ -1319,6 +1319,20 @@ class NodeSchemaContractTests(unittest.TestCase):
             ],
         )
 
+    def test_prompt_enhancer_fingerprint_is_stable_for_negative_seed(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        prompt_node = next(
+            node_cls
+            for node_cls in asyncio.run(extension_module.HeltoUtilsExtension().get_node_list())
+            if node_cls.define_schema().node_id == "HeltoPromptEnhancer"
+        )
+
+        first = prompt_node.fingerprint_inputs(seed=-1)
+        second = prompt_node.fingerprint_inputs(seed=-1)
+
+        self.assertEqual(first, second)
+        self.assertEqual(first, prompt_node.fingerprint_inputs(seed=42))
+
     def test_save_image_advanced_appends_save_image_toggle(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()
 

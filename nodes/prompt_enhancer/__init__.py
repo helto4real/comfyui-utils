@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import random
 from typing import Any
 
 from comfy_api.latest import io
@@ -149,8 +148,6 @@ class PromptEnhancer(io.ComfyNode):
 
     @classmethod
     def fingerprint_inputs(cls, seed: int = -1, **kwargs: Any) -> str:
-        if _as_int(seed, -1) < 0:
-            return str(random.SystemRandom().random())
         return ""
 
     @classmethod
