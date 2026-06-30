@@ -144,8 +144,10 @@ import {
     PRIVACY_SHOW_ANY_STATE_PROPERTY,
     collectPrivacyShowAnyNodes,
     decryptTextState,
+    decryptTextStateForOwner,
     encryptedPrivacyShowAnyState,
     encryptTextState,
+    encryptTextStateForOwner,
     extractPrivacyShowAnyText,
     flushPrivacyShowAnyEncryption,
     hidePrivacyShowAnyStateWidget,
@@ -156,6 +158,13 @@ import {
     serializedEncryptedWidgetValue,
     setEncryptedPrivacyShowAnyState,
 } from "../../web/privacy_show_any_helpers.js";
+import {
+    canonicalPrivacyValue,
+    encryptedOrReusePrivacyValue,
+    isPrivacyEnvelope,
+    rememberPrivacyEnvelope,
+    stablePrivacyJsonStringify,
+} from "../../web/privacy_envelope.js";
 
 function appWithSettings(settings) {
     return {
@@ -182,6 +191,23 @@ function jsonResponse(payload, ok = true) {
         ok,
         async json() {
             return payload;
+        },
+    };
+}
+
+function countingPrivacyApi() {
+    let encryptCount = 0;
+    return {
+        get encryptCount() {
+            return encryptCount;
+        },
+        async encrypt(text) {
+            encryptCount += 1;
+            return { encrypted: `__HELTO_ENC__:${encryptCount}:${Buffer.from(text).toString("base64")}` };
+        },
+        async decrypt(encrypted) {
+            const encoded = String(encrypted).split(":").pop() || "";
+            return { data: Buffer.from(encoded, "base64").toString("utf8") };
         },
     };
 }
@@ -228,6 +254,70 @@ function fakeDomDocument() {
     };
     return document;
 }
+
+test("privacy envelope helper reuses unchanged private values and canonicalizes objects", async () => {
+    const selectorApi = countingPrivacyApi();
+    const owner = {};
+
+    assert.equal(stablePrivacyJsonStringify({ b: 2, a: 1 }), "{\"a\":1,\"b\":2}");
+    assert.equal(canonicalPrivacyValue("plain"), "plain");
+
+    const first = await encryptedOrReusePrivacyValue(owner, "state", "{\"b\":2,\"a\":1}", {
+        selectorApi,
+        canonicalValue: { b: 2, a: 1 },
+    });
+    const second = await encryptedOrReusePrivacyValue(owner, "state", "{\"a\":1,\"b\":2}", {
+        selectorApi,
+        canonicalValue: { a: 1, b: 2 },
+    });
+
+    assert.equal(isPrivacyEnvelope(first), true);
+    assert.equal(second, first);
+    assert.equal(selectorApi.encryptCount, 1);
+
+    const changed = await encryptedOrReusePrivacyValue(owner, "state", "{\"a\":1,\"b\":3}", {
+        selectorApi,
+        canonicalValue: { a: 1, b: 3 },
+    });
+
+    assert.notEqual(changed, first);
+    assert.equal(selectorApi.encryptCount, 2);
+});
+
+test("privacy envelope helper leaves public and already encrypted values unchanged", async () => {
+    const selectorApi = countingPrivacyApi();
+    const owner = {};
+
+    const publicValue = await encryptedOrReusePrivacyValue(owner, "field", "public text", {
+        privacyMode: false,
+        selectorApi,
+    });
+    const encrypted = "__HELTO_ENC__:loaded";
+    const alreadyEncrypted = await encryptedOrReusePrivacyValue(owner, "field", encrypted, {
+        privacyMode: true,
+        selectorApi,
+    });
+
+    assert.equal(publicValue, "public text");
+    assert.equal(alreadyEncrypted, encrypted);
+    assert.equal(selectorApi.encryptCount, 0);
+});
+
+test("privacy envelope helper reuses envelopes remembered from restore", async () => {
+    const selectorApi = countingPrivacyApi();
+    const owner = {};
+    const loaded = "__HELTO_ENC__:loaded";
+
+    rememberPrivacyEnvelope(owner, "field", { z: 1, a: 2 }, loaded);
+
+    const serialized = await encryptedOrReusePrivacyValue(owner, "field", "{\"a\":2,\"z\":1}", {
+        selectorApi,
+        canonicalValue: { a: 2, z: 1 },
+    });
+
+    assert.equal(serialized, loaded);
+    assert.equal(selectorApi.encryptCount, 0);
+});
 
 test("selector image urls include metadata version tokens and keep legacy calls working", () => {
     const image = { date_modified: 1712345678.123, size_bytes: 4096 };
@@ -2109,14 +2199,7 @@ test("prompt enhancer variable helpers parse update and serialize configs", () =
 });
 
 test("prompt enhancer variable config encrypts only when privacy mode is enabled", async () => {
-    const selectorApi = {
-        async encrypt(text) {
-            return { encrypted: `__HELTO_ENC__:${Buffer.from(text).toString("base64")}` };
-        },
-        async decrypt(encrypted) {
-            return { data: Buffer.from(encrypted.slice("__HELTO_ENC__:".length), "base64").toString("utf8") };
-        },
-    };
+    const selectorApi = countingPrivacyApi();
     const node = {
         widgets: [
             { name: "variables", value: "[]" },
@@ -2125,9 +2208,16 @@ test("prompt enhancer variable config encrypts only when privacy mode is enabled
     const variables = [{ name: "style", mode: "fixed", values: ["cinematic"], fixed_index: 0 }];
 
     const encrypted = await writePromptVariables(node, variables, true, selectorApi);
+    const repeated = await writePromptVariables(node, [{ fixed_index: 0, values: ["cinematic"], mode: "fixed", name: "style" }], true, selectorApi);
 
     assert.equal(isEncryptedVariables(encrypted), true);
+    assert.equal(repeated, encrypted);
+    assert.equal(selectorApi.encryptCount, 1);
     assert.deepEqual(await readPromptVariables(node, selectorApi), variables);
+
+    const changed = await writePromptVariables(node, [{ name: "style", mode: "fixed", values: ["documentary"], fixed_index: 0 }], true, selectorApi);
+    assert.notEqual(changed, encrypted);
+    assert.equal(selectorApi.encryptCount, 2);
 
     const plain = await writePromptVariables(node, variables, false, selectorApi);
 
@@ -2176,6 +2266,33 @@ test("prompt enhancer prompt config encrypts only when privacy mode is enabled",
     assert.equal(node.widgets[0].value, "");
     resolveEncryption();
     assert.equal(isEncryptedText(await pending), true);
+});
+
+test("prompt enhancer prompt config reuses restored envelopes until text changes", async () => {
+    const selectorApi = countingPrivacyApi();
+    const node = {
+        widgets: [
+            { name: "script", value: "" },
+        ],
+    };
+
+    const first = await writePromptText(node, "stable prompt", true, selectorApi);
+    const repeated = await writePromptText(node, "stable prompt", true, selectorApi);
+
+    assert.equal(repeated, first);
+    assert.equal(selectorApi.encryptCount, 1);
+
+    const changed = await writePromptText(node, "edited prompt", true, selectorApi);
+
+    assert.notEqual(changed, first);
+    assert.equal(selectorApi.encryptCount, 2);
+
+    node.widgets[0].value = first;
+    assert.equal(await readPromptText(node, selectorApi), "stable prompt");
+    const restored = await writePromptText(node, "stable prompt", true, selectorApi);
+
+    assert.equal(restored, first);
+    assert.equal(selectorApi.encryptCount, 2);
 });
 
 test("prompt enhancer detects serialized variable widget changes for autocomplete refresh", () => {
@@ -2430,6 +2547,28 @@ test("privacy show any serializes only encrypted text state", async () => {
     assert.equal(serializedEncryptedWidgetValue({ value: encrypted }), encrypted);
     assert.equal(serializedEncryptedWidgetValue({ value: "private" }), "");
     assert.equal(await encryptTextState("private", { encrypt: async () => ({ encrypted: "private" }) }), "");
+});
+
+test("privacy show any owner-aware state reuses envelopes until text changes", async () => {
+    const selectorApi = countingPrivacyApi();
+    const node = {};
+
+    const first = await encryptTextStateForOwner(node, "private", selectorApi);
+    const repeated = await encryptTextStateForOwner(node, "private", selectorApi);
+
+    assert.equal(repeated, first);
+    assert.equal(selectorApi.encryptCount, 1);
+
+    const changed = await encryptTextStateForOwner(node, "edited", selectorApi);
+
+    assert.notEqual(changed, first);
+    assert.equal(selectorApi.encryptCount, 2);
+
+    assert.equal(await decryptTextStateForOwner(node, first, selectorApi), "private");
+    const restored = await encryptTextStateForOwner(node, "private", selectorApi);
+
+    assert.equal(restored, first);
+    assert.equal(selectorApi.encryptCount, 2);
 });
 
 test("privacy show any writes encrypted state to widget and property only", () => {

@@ -1,8 +1,16 @@
+import {
+    ENCRYPTED_PREFIX,
+    encryptedOrReusePrivacyValue,
+    forgetPrivacyEnvelope,
+    isPrivacyEnvelope,
+    rememberPrivacyEnvelope,
+} from "./privacy_envelope.js";
+
 export const PRIVACY_SHOW_ANY_NODE_CLASS = "HeltoPrivacyShowAny";
 export const PRIVACY_SHOW_ANY_STATE_WIDGET = "encrypted_text_state";
 export const PRIVACY_SHOW_ANY_STATE_PROPERTY = "helto_privacy_show_any_encrypted_text_state";
 export const PRIVACY_SHOW_ANY_UI_KEY = "helto_privacy_show_any";
-export const ENCRYPTED_PREFIX = "__HELTO_ENC__:";
+export { ENCRYPTED_PREFIX };
 export const PRIVACY_SHOW_ANY_LAYOUT = Object.freeze({
     minWidth: 360,
     minNodeHeight: 300,
@@ -13,7 +21,7 @@ export function getWidget(node, name) {
 }
 
 export function isEncryptedText(value) {
-    return typeof value === "string" && value.startsWith(ENCRYPTED_PREFIX);
+    return isPrivacyEnvelope(value);
 }
 
 export function extractPrivacyShowAnyText(output) {
@@ -38,10 +46,33 @@ export async function encryptTextState(text, selectorApi) {
     return isEncryptedText(result?.encrypted) ? result.encrypted : "";
 }
 
+export async function encryptTextStateForOwner(node, text, selectorApi) {
+    const plain = String(text ?? "");
+    if (!plain) {
+        forgetPrivacyEnvelope(node, PRIVACY_SHOW_ANY_STATE_WIDGET);
+        return "";
+    }
+    return encryptedOrReusePrivacyValue(node, PRIVACY_SHOW_ANY_STATE_WIDGET, plain, {
+        privacyMode: true,
+        selectorApi,
+        defaultValue: "",
+        canonicalValue: plain,
+        encryptEmpty: false,
+    });
+}
+
 export async function decryptTextState(encrypted, selectorApi) {
     if (!isEncryptedText(encrypted)) return "";
     const result = await selectorApi.decrypt(encrypted);
     return typeof result?.data === "string" ? result.data : "";
+}
+
+export async function decryptTextStateForOwner(node, encrypted, selectorApi) {
+    const plain = await decryptTextState(encrypted, selectorApi);
+    if (isEncryptedText(encrypted)) {
+        rememberPrivacyEnvelope(node, PRIVACY_SHOW_ANY_STATE_WIDGET, plain, encrypted);
+    }
+    return plain;
 }
 
 export function serializedEncryptedWidgetValue(widget) {

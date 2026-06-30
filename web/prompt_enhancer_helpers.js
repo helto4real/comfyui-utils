@@ -1,3 +1,11 @@
+import {
+    ENCRYPTED_PREFIX,
+    encryptedOrReusePrivacyValue,
+    forgetPrivacyEnvelope,
+    isPrivacyEnvelope,
+    rememberPrivacyEnvelope,
+} from "./privacy_envelope.js";
+
 export const PROMPT_ENHANCER_NODE_CLASS = "HeltoPromptEnhancer";
 export const SCRIPT_WIDGET_NAME = "script";
 export const PROMPT_EDITOR_WIDGET_NAME = "script editor";
@@ -6,8 +14,8 @@ export const PROMPT_EDITOR_HORIZONTAL_INSET = 24;
 export const PROMPT_EDITOR_PADDING = 6;
 export const MAX_FIXED_SEED = 2147483647;
 export const SEED_CONTROL_MODES = Object.freeze(["fixed", "increment", "decrement", "randomize"]);
-export const ENCRYPTED_PREFIX = "__HELTO_ENC__:";
 export const VARIABLE_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+export { ENCRYPTED_PREFIX };
 const QUEUED_SEED_MAX_AGE_MS = 10_000;
 const QUEUED_SEED_STATE = "__heltoPromptEnhancerQueuedSeed";
 
@@ -312,7 +320,7 @@ export function serializedPromptValue(node) {
 }
 
 export function isEncryptedText(value) {
-    return String(value || "").startsWith(ENCRYPTED_PREFIX);
+    return isPrivacyEnvelope(value);
 }
 
 export async function decryptPromptText(value, selectorApi) {
@@ -326,24 +334,36 @@ export async function decryptPromptText(value, selectorApi) {
 }
 
 export async function readPromptText(node, selectorApi) {
-    return decryptPromptText(serializedPromptValue(node), selectorApi);
+    const serialized = serializedPromptValue(node);
+    const plaintext = await decryptPromptText(serialized, selectorApi);
+    if (isEncryptedText(serialized)) {
+        rememberPrivacyEnvelope(node, SCRIPT_WIDGET_NAME, plaintext, serialized);
+    }
+    return plaintext;
 }
 
 export async function writePromptText(node, prompt, privacyMode, selectorApi) {
     const plain = String(prompt ?? "");
     if (!privacyMode) {
+        forgetPrivacyEnvelope(node, SCRIPT_WIDGET_NAME);
         writePromptValue(node, plain);
         return plain;
     }
     if (!plain) {
+        forgetPrivacyEnvelope(node, SCRIPT_WIDGET_NAME);
         writePromptValue(node, "");
         return "";
     }
     if (!isEncryptedText(serializedPromptValue(node))) {
         writePromptValue(node, "");
     }
-    const response = await selectorApi.encrypt(plain);
-    const encrypted = String(response?.encrypted || "");
+    const encrypted = await encryptedOrReusePrivacyValue(node, SCRIPT_WIDGET_NAME, plain, {
+        privacyMode: true,
+        selectorApi,
+        defaultValue: "",
+        canonicalValue: plain,
+        encryptEmpty: false,
+    });
     if (!isEncryptedText(encrypted)) {
         throw new Error("Failed to encrypt Prompt enhancer script.");
     }
@@ -841,7 +861,9 @@ export async function readPromptVariables(node, selectorApi) {
     }
     try {
         const response = await selectorApi.decrypt(value);
-        return parsePromptVariablesJson(response?.data || "[]");
+        const variables = parsePromptVariablesJson(response?.data || "[]");
+        rememberPrivacyEnvelope(node, "variables", variables, value);
+        return variables;
     } catch (err) {
         console.warn("Prompt enhancer variable decrypt failed:", err);
         return [];
@@ -850,13 +872,19 @@ export async function readPromptVariables(node, selectorApi) {
 
 export async function writePromptVariables(node, variables, privacyMode, selectorApi) {
     const widget = getWidget(node, "variables");
-    const plainJson = serializePromptVariables(variables);
+    const normalized = normalizePromptVariables(variables);
+    const plainJson = JSON.stringify(normalized);
     if (!privacyMode) {
+        forgetPrivacyEnvelope(node, "variables");
         setWidgetValue(widget, plainJson);
         return plainJson;
     }
-    const response = await selectorApi.encrypt(plainJson);
-    const encrypted = String(response?.encrypted || "");
+    const encrypted = await encryptedOrReusePrivacyValue(node, "variables", plainJson, {
+        privacyMode: true,
+        selectorApi,
+        defaultValue: "",
+        canonicalValue: normalized,
+    });
     if (!isEncryptedText(encrypted)) {
         throw new Error("Failed to encrypt Prompt enhancer variables.");
     }

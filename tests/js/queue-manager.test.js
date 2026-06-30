@@ -30,6 +30,22 @@ import {
     runCanBeRerun,
     workflowWithFixedSeedControls,
 } from "../../web/queue_manager_helpers.js";
+import {
+    encryptedOrReusePrivacyValue,
+} from "../../web/privacy_envelope.js";
+
+function countingPrivacyApi() {
+    let encryptCount = 0;
+    return {
+        get encryptCount() {
+            return encryptCount;
+        },
+        async encrypt(text) {
+            encryptCount += 1;
+            return { encrypted: `__HELTO_ENC__:${encryptCount}:${Buffer.from(text).toString("base64")}` };
+        },
+    };
+}
 
 test("promptWorkflowTitle reads workflow metadata with fallback", () => {
     assert.equal(promptWorkflowTitle({ workflow: { name: "Render pass" } }), "Render pass");
@@ -371,6 +387,63 @@ test("captureQueuedPromptBatches captures a fresh serialized seed for each batch
 
     assert.deepEqual(capturedSeeds, [100, 101, 102]);
     assert.equal(seedWidget.value, 103);
+});
+
+test("captureQueuedPromptBatches reuses private envelopes across workflow and executable payload serialization", async () => {
+    const selectorApi = countingPrivacyApi();
+    const privateNode = {
+        privateState: { b: 2, a: 1 },
+        widgets: [],
+    };
+    const serializePrivateState = async () => {
+        const plainJson = JSON.stringify(privateNode.privateState);
+        return encryptedOrReusePrivacyValue(privateNode, "selected_images", plainJson, {
+            selectorApi,
+            canonicalValue: privateNode.privateState,
+        });
+    };
+    privateNode.widgets.push({ name: "selected_images", serializeValue: serializePrivateState });
+    const graph = { nodes: [privateNode] };
+    const captured = [];
+    const graphToPrompt = async () => {
+        const workflowValue = await privateNode.widgets[0].serializeValue();
+        const executableValue = await privateNode.widgets[0].serializeValue();
+        return {
+            workflow: { nodes: [{ widgets_values: [workflowValue] }] },
+            output: { 1: { inputs: { selected_images: executableValue } } },
+        };
+    };
+
+    await captureQueuedPromptBatches({
+        graph,
+        batchCount: 2,
+        graphToPrompt,
+        enqueuePromptData: async (promptData) => {
+            captured.push(promptData);
+            return { prompt_id: `prompt-${captured.length}` };
+        },
+    });
+
+    const firstWorkflowValue = captured[0].workflow.nodes[0].widgets_values[0];
+    assert.equal(captured[0].output[1].inputs.selected_images, firstWorkflowValue);
+    assert.equal(captured[1].workflow.nodes[0].widgets_values[0], firstWorkflowValue);
+    assert.equal(captured[1].output[1].inputs.selected_images, firstWorkflowValue);
+    assert.equal(selectorApi.encryptCount, 1);
+
+    privateNode.privateState = { a: 1, b: 3 };
+    await captureQueuedPromptBatches({
+        graph,
+        graphToPrompt,
+        enqueuePromptData: async (promptData) => {
+            captured.push(promptData);
+            return { prompt_id: `prompt-${captured.length}` };
+        },
+    });
+
+    const changedWorkflowValue = captured[2].workflow.nodes[0].widgets_values[0];
+    assert.notEqual(changedWorkflowValue, firstWorkflowValue);
+    assert.equal(captured[2].output[1].inputs.selected_images, changedWorkflowValue);
+    assert.equal(selectorApi.encryptCount, 2);
 });
 
 test("createQueueRun stores partial execution targets and preview method", () => {

@@ -33,6 +33,12 @@ import {
 } from "./ui.js";
 import { openBboxEditor, openMaskEditor } from "./mask_editor.js";
 import { closeHeltoMediaPreview, openHeltoMediaPreview } from "./media_preview.js";
+import {
+    encryptedOrReusePrivacyValue,
+    forgetPrivacyEnvelope,
+    isPrivacyEnvelope,
+    rememberPrivacyEnvelope,
+} from "./privacy_envelope.js";
 
 // Load Stylesheet dynamically using modern ES modules URL resolving
 if (!document.getElementById("helto-utils-styles")) {
@@ -45,6 +51,9 @@ if (!document.getElementById("helto-utils-styles")) {
 
 const HELTO_SELECTOR_NODE_CLASS = "HeltoImageSelector";
 const GRAPH_TO_PROMPT_PATCHED = "__heltoImageSelectorGraphToPromptPatched";
+const SELECTOR_SELECTED_IMAGES_FIELD = "selected_images";
+const SELECTOR_EDITED_MASKS_FIELD = "edited_masks";
+const SELECTOR_EDITED_BBOXES_FIELD = "edited_bboxes";
 
 function getSelectorNodes(graph) {
     const nodes = graph?.computeExecutionOrder?.(false) || graph?._nodes || [];
@@ -52,47 +61,65 @@ function getSelectorNodes(graph) {
 }
 
 async function serializeSelectedImagesForPrompt(node) {
-    const plainString = JSON.stringify(Array.isArray(node.selectedPaths) ? node.selectedPaths : []);
+    const selectedPaths = Array.isArray(node.selectedPaths) ? node.selectedPaths : [];
+    const plainString = JSON.stringify(selectedPaths);
 
     if (node.properties?.privacyMode) {
         try {
-            const res = await selectorApi.encrypt(plainString);
-            return res.encrypted || plainString;
+            return await encryptedOrReusePrivacyValue(node, SELECTOR_SELECTED_IMAGES_FIELD, plainString, {
+                privacyMode: true,
+                selectorApi,
+                defaultValue: plainString,
+                canonicalValue: selectedPaths,
+            });
         } catch (e) {
             console.error("Encryption API failed:", e);
         }
     }
 
+    forgetPrivacyEnvelope(node, SELECTOR_SELECTED_IMAGES_FIELD);
     return plainString;
 }
 
 async function serializeEditedMasksForPrompt(node) {
-    const plainString = JSON.stringify(node.editedMasks && typeof node.editedMasks === "object" ? node.editedMasks : {});
+    const editedMasks = node.editedMasks && typeof node.editedMasks === "object" ? node.editedMasks : {};
+    const plainString = JSON.stringify(editedMasks);
 
     if (node.properties?.privacyMode) {
         try {
-            const res = await selectorApi.encrypt(plainString);
-            return res.encrypted || plainString;
+            return await encryptedOrReusePrivacyValue(node, SELECTOR_EDITED_MASKS_FIELD, plainString, {
+                privacyMode: true,
+                selectorApi,
+                defaultValue: plainString,
+                canonicalValue: editedMasks,
+            });
         } catch (e) {
             console.error("Encryption API failed:", e);
         }
     }
 
+    forgetPrivacyEnvelope(node, SELECTOR_EDITED_MASKS_FIELD);
     return plainString;
 }
 
 async function serializeEditedBboxesForPrompt(node) {
-    const plainString = JSON.stringify(node.editedBboxes && typeof node.editedBboxes === "object" ? node.editedBboxes : {});
+    const editedBboxes = node.editedBboxes && typeof node.editedBboxes === "object" ? node.editedBboxes : {};
+    const plainString = JSON.stringify(editedBboxes);
 
     if (node.properties?.privacyMode) {
         try {
-            const res = await selectorApi.encrypt(plainString);
-            return res.encrypted || plainString;
+            return await encryptedOrReusePrivacyValue(node, SELECTOR_EDITED_BBOXES_FIELD, plainString, {
+                privacyMode: true,
+                selectorApi,
+                defaultValue: plainString,
+                canonicalValue: editedBboxes,
+            });
         } catch (e) {
             console.error("Encryption API failed:", e);
         }
     }
 
+    forgetPrivacyEnvelope(node, SELECTOR_EDITED_BBOXES_FIELD);
     return plainString;
 }
 
@@ -153,10 +180,10 @@ app.registerExtension({
         // Remove input socket ports so they are completely hidden
         if (node.inputs) {
             node.inputs = node.inputs.filter(input => (
-                input.name !== "selected_images" &&
+                input.name !== SELECTOR_SELECTED_IMAGES_FIELD &&
                 input.name !== "resize_mode" &&
-                input.name !== "edited_masks" &&
-                input.name !== "edited_bboxes" &&
+                input.name !== SELECTOR_EDITED_MASKS_FIELD &&
+                input.name !== SELECTOR_EDITED_BBOXES_FIELD &&
                 input.name !== "batching_mode"
             ));
         }
@@ -180,10 +207,10 @@ app.registerExtension({
             return widget;
         }
 
-        const selectedImagesWidget = ensureHiddenWidget("selected_images", "[]");
+        const selectedImagesWidget = ensureHiddenWidget(SELECTOR_SELECTED_IMAGES_FIELD, "[]");
         const resizeModeWidget = ensureHiddenWidget("resize_mode", "zoom to fit");
-        const editedMasksWidget = ensureHiddenWidget("edited_masks", "{}");
-        const editedBboxesWidget = ensureHiddenWidget("edited_bboxes", "{}");
+        const editedMasksWidget = ensureHiddenWidget(SELECTOR_EDITED_MASKS_FIELD, "{}");
+        const editedBboxesWidget = ensureHiddenWidget(SELECTOR_EDITED_BBOXES_FIELD, "{}");
         const batchingModeWidget = ensureHiddenWidget("batching_mode", false);
         collapseHiddenWidgetLayout(selectedImagesWidget);
         collapseHiddenWidgetLayout(resizeModeWidget);
@@ -423,19 +450,24 @@ app.registerExtension({
         let maskSerializationPromise = null;
         let bboxSerializationPromise = null;
 
-        async function serializeHiddenJsonWidget(widget, plainValue, defaultValue) {
+        async function serializeHiddenJsonWidget(widget, plainValue, defaultValue, fieldName) {
             if (!widget) return defaultValue;
             const plainString = JSON.stringify(plainValue);
 
             if (node.properties.privacyMode) {
                 try {
-                    const res = await selectorApi.encrypt(plainString);
-                    widget.value = res.encrypted;
+                    widget.value = await encryptedOrReusePrivacyValue(node, fieldName, plainString, {
+                        privacyMode: true,
+                        selectorApi,
+                        defaultValue: plainString,
+                        canonicalValue: plainValue,
+                    });
                 } catch (e) {
                     console.error("Encryption API failed:", e);
                     widget.value = plainString;
                 }
             } else {
+                forgetPrivacyEnvelope(node, fieldName);
                 widget.value = plainString;
             }
             return widget.value || defaultValue;
@@ -444,9 +476,9 @@ app.registerExtension({
         async function updateWidgetValue() {
             preserveSelectorSizeOnNextResize();
 
-            const valWidget = node.widgets ? node.widgets.find(w => w.name === "selected_images") : null;
+            const valWidget = node.widgets ? node.widgets.find(w => w.name === SELECTOR_SELECTED_IMAGES_FIELD) : null;
             selectionSerializationPromise = (async () => {
-                return serializeHiddenJsonWidget(valWidget, node.selectedPaths, "[]");
+                return serializeHiddenJsonWidget(valWidget, node.selectedPaths, "[]", SELECTOR_SELECTED_IMAGES_FIELD);
             })();
 
             return selectionSerializationPromise;
@@ -455,9 +487,9 @@ app.registerExtension({
         async function updateMaskWidgetValue() {
             preserveSelectorSizeOnNextResize();
 
-            const maskWidget = node.widgets ? node.widgets.find(w => w.name === "edited_masks") : null;
+            const maskWidget = node.widgets ? node.widgets.find(w => w.name === SELECTOR_EDITED_MASKS_FIELD) : null;
             maskSerializationPromise = (async () => {
-                return serializeHiddenJsonWidget(maskWidget, node.editedMasks || {}, "{}");
+                return serializeHiddenJsonWidget(maskWidget, node.editedMasks || {}, "{}", SELECTOR_EDITED_MASKS_FIELD);
             })();
 
             return maskSerializationPromise;
@@ -466,9 +498,9 @@ app.registerExtension({
         async function updateBboxWidgetValue() {
             preserveSelectorSizeOnNextResize();
 
-            const bboxWidget = node.widgets ? node.widgets.find(w => w.name === "edited_bboxes") : null;
+            const bboxWidget = node.widgets ? node.widgets.find(w => w.name === SELECTOR_EDITED_BBOXES_FIELD) : null;
             bboxSerializationPromise = (async () => {
-                return serializeHiddenJsonWidget(bboxWidget, node.editedBboxes || {}, "{}");
+                return serializeHiddenJsonWidget(bboxWidget, node.editedBboxes || {}, "{}", SELECTOR_EDITED_BBOXES_FIELD);
             })();
 
             return bboxSerializationPromise;
@@ -505,12 +537,14 @@ app.registerExtension({
             return updateBboxWidgetValue();
         };
 
-        async function parseSerializedJson(value, fallback) {
+        async function parseSerializedJson(value, fallback, fieldName) {
             if (!value) return fallback;
-            if (value.startsWith("__HELTO_ENC__:")) {
+            if (isPrivacyEnvelope(value)) {
                 try {
                     const res = await selectorApi.decrypt(value);
-                    return JSON.parse(res.data);
+                    const parsed = JSON.parse(res.data);
+                    rememberPrivacyEnvelope(node, fieldName, parsed, value);
+                    return parsed;
                 } catch (e) {
                     console.error("Decryption API failed:", e);
                     return fallback;
@@ -524,9 +558,9 @@ app.registerExtension({
         }
 
         node.restoreSelection = async function() {
-            const valWidget = node.widgets ? node.widgets.find(w => w.name === "selected_images") : null;
+            const valWidget = node.widgets ? node.widgets.find(w => w.name === SELECTOR_SELECTED_IMAGES_FIELD) : null;
             if (!valWidget || !valWidget.value) return;
-            const parsed = await parseSerializedJson(valWidget.value, []);
+            const parsed = await parseSerializedJson(valWidget.value, [], SELECTOR_SELECTED_IMAGES_FIELD);
             node.selectedPaths = Array.isArray(parsed) ? parsed : [];
 
             updateFooter();
@@ -534,9 +568,9 @@ app.registerExtension({
         };
 
         node.restoreEditedMasks = async function() {
-            const maskWidget = node.widgets ? node.widgets.find(w => w.name === "edited_masks") : null;
+            const maskWidget = node.widgets ? node.widgets.find(w => w.name === SELECTOR_EDITED_MASKS_FIELD) : null;
             if (!maskWidget || !maskWidget.value) return;
-            const parsed = await parseSerializedJson(maskWidget.value, {});
+            const parsed = await parseSerializedJson(maskWidget.value, {}, SELECTOR_EDITED_MASKS_FIELD);
             node.editedMasks = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
 
             renderGrid();
@@ -544,9 +578,9 @@ app.registerExtension({
         };
 
         node.restoreEditedBboxes = async function() {
-            const bboxWidget = node.widgets ? node.widgets.find(w => w.name === "edited_bboxes") : null;
+            const bboxWidget = node.widgets ? node.widgets.find(w => w.name === SELECTOR_EDITED_BBOXES_FIELD) : null;
             if (!bboxWidget || !bboxWidget.value) return;
-            const parsed = await parseSerializedJson(bboxWidget.value, {});
+            const parsed = await parseSerializedJson(bboxWidget.value, {}, SELECTOR_EDITED_BBOXES_FIELD);
             node.editedBboxes = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
 
             renderGrid();

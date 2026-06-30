@@ -8,8 +8,8 @@ import {
     PRIVACY_SHOW_ANY_LAYOUT,
     PRIVACY_SHOW_ANY_NODE_CLASS,
     PRIVACY_SHOW_ANY_STATE_WIDGET,
-    decryptTextState,
-    encryptTextState,
+    decryptTextStateForOwner,
+    encryptTextStateForOwner,
     extractPrivacyShowAnyText,
     flushPrivacyShowAnyEncryption,
     getWidget,
@@ -122,7 +122,7 @@ async function persistEncryptedState(node, text) {
         return "";
     }
     try {
-        const encrypted = await encryptTextState(plain, selectorApi);
+        const encrypted = await encryptTextStateForOwner(node, plain, selectorApi);
         const safe = setEncryptedPrivacyShowAnyState(node, stateWidget, encrypted);
         captureWorkflowState(node);
         return safe;
@@ -172,7 +172,7 @@ async function restoreEncryptedState(node) {
         return;
     }
     try {
-        const text = await decryptTextState(encrypted, selectorApi);
+        const text = await decryptTextStateForOwner(node, encrypted, selectorApi);
         setDisplayText(node, text, false);
     } catch (err) {
         console.error("Privacy Show Any decryption failed:", err);

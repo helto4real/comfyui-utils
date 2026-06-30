@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,6 +11,18 @@ from shared.queue_manager_store import (
     load_queue_manager_state,
     save_queue_manager_state,
 )
+
+
+def stored_queue_state_row(path: Path) -> tuple[bytes, int]:
+    conn = sqlite3.connect(path)
+    try:
+        row = conn.execute(
+            "SELECT payload, updated_at FROM queue_manager_state WHERE id = 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    return bytes(row[0]), int(row[1])
 
 
 class QueueManagerStoreTests(unittest.TestCase):
@@ -60,6 +73,37 @@ class QueueManagerStoreTests(unittest.TestCase):
         self.assertNotIn(b"private graph", raw)
         self.assertEqual(result["state"]["queue"][0]["title"], "secret workflow")
         self.assertTrue(result["encrypted_at_rest"])
+
+    def test_private_state_reuses_encrypted_payload_when_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "state.sqlite3"
+            state = default_queue_manager_state()
+            state["privacy_enabled"] = True
+            state["queue"] = [{
+                "id": "run-private",
+                "title": "stable secret workflow",
+                "status": "pending",
+                "prompt": {"workflow": {"name": "stable private graph"}},
+            }]
+
+            first = save_queue_manager_state(state, privacy_enabled=True, path=path)
+            first_payload, first_updated_at = stored_queue_state_row(path)
+            state["updated_at"] = 1
+            second = save_queue_manager_state(state, privacy_enabled=True, path=path)
+            second_payload, second_updated_at = stored_queue_state_row(path)
+
+            state["queue"][0]["title"] = "edited secret workflow"
+            save_queue_manager_state(state, privacy_enabled=True, path=path)
+            changed_payload, changed_updated_at = stored_queue_state_row(path)
+            raw = path.read_bytes()
+
+        self.assertEqual(second_payload, first_payload)
+        self.assertEqual(second_updated_at, first_updated_at)
+        self.assertEqual(second["state"]["updated_at"], first["state"]["updated_at"])
+        self.assertNotEqual(changed_payload, first_payload)
+        self.assertGreaterEqual(changed_updated_at, first_updated_at)
+        self.assertNotIn(b"stable secret workflow", raw)
+        self.assertNotIn(b"edited secret workflow", raw)
 
     def test_privacy_toggle_rewrites_plaintext_database_as_encrypted(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -80,6 +80,16 @@ def _payload_for_state(state: Mapping[str, Any], *, encrypted: bool) -> bytes:
     return encrypt_bytes(payload) if encrypted else payload
 
 
+def _semantic_state(state: Mapping[str, Any]) -> dict[str, Any]:
+    semantic = normalize_queue_manager_state(state)
+    semantic.pop("updated_at", None)
+    return semantic
+
+
+def _same_semantic_state(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
+    return _state_to_bytes(_semantic_state(left)) == _state_to_bytes(_semantic_state(right))
+
+
 def _connect(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
@@ -326,11 +336,36 @@ def save_queue_manager_state(
     normalized = normalize_queue_manager_state(state)
     if privacy_enabled is not None:
         normalized["privacy_enabled"] = bool(privacy_enabled)
-    normalized["updated_at"] = int(time.time() * 1000)
 
     conn = _connect(path)
     try:
         _ensure_schema(conn)
+        row = _read_state_row(conn)
+        if row is not None:
+            stored_privacy_enabled = bool(row["privacy_enabled"])
+            stored_encrypted_at_rest = bool(row["encrypted_at_rest"])
+            target_privacy_enabled = bool(normalized["privacy_enabled"])
+            if (
+                stored_privacy_enabled == target_privacy_enabled
+                and stored_encrypted_at_rest == target_privacy_enabled
+            ):
+                try:
+                    stored_state = normalize_queue_manager_state(
+                        _state_from_bytes(row["payload"], encrypted=stored_encrypted_at_rest)
+                    )
+                    stored_state["privacy_enabled"] = stored_privacy_enabled
+                    if _same_semantic_state(stored_state, normalized):
+                        _remove_default_legacy_file(path)
+                        return _result(
+                            stored_state,
+                            privacy_enabled=stored_privacy_enabled,
+                            encrypted_at_rest=stored_encrypted_at_rest,
+                            stored_server_session_id=row["server_session_id"],
+                        )
+                except Exception:
+                    pass
+
+        normalized["updated_at"] = int(time.time() * 1000)
         _write_state_row(
             conn,
             normalized,
