@@ -11,6 +11,7 @@ import {
     SAVE_IMAGE_RELEASE_ROUTE,
     SAVE_VIDEO_RELEASE_ROUTE,
     buildPauseResumePrompt,
+    queueFilteredPrompt,
     restoreSerializedWidgetValues,
     sanitizeSerializedWidgetValues,
 } from "./pause_control_helpers.js";
@@ -363,6 +364,7 @@ function updatePauseControlWidget(node) {
         return;
     }
 
+    configurePauseControlWidget(node, widget);
     const state = pauseControlState(node);
     widget.name = pauseControlLabel(state);
     widget.disabled = !state.hasMedia || state.busy;
@@ -386,23 +388,23 @@ function moveWidgetToTop(node, widget) {
     widgets.unshift(widget);
 }
 
-function ensurePauseControlWidget(node) {
-    if (node[PAUSE_CONTROL_WIDGET]) {
-        updatePauseControlWidget(node);
-        return;
-    }
-
-    const existingWidget = node.widgets?.find((widget) => widget.name === "continue" || widget.name === "run again" || widget.name === "queueing");
-    const widget = existingWidget ?? node.addWidget?.("button", "continue", null, () => handlePauseControlButton(node));
-    if (!widget) {
-        return;
-    }
-
+function configurePauseControlWidget(node, widget) {
     widget.callback = () => handlePauseControlButton(node);
     widget.serialize = false;
     widget.options ??= {};
     widget.options.serialize = false;
     node[PAUSE_CONTROL_WIDGET] = widget;
+}
+
+function ensurePauseControlWidget(node) {
+    const existingWidget = node[PAUSE_CONTROL_WIDGET]
+        ?? node.widgets?.find((widget) => widget.name === "continue" || widget.name === "run again" || widget.name === "queueing");
+    const widget = existingWidget ?? node.addWidget?.("button", "continue", null, () => handlePauseControlButton(node));
+    if (!widget) {
+        return;
+    }
+
+    configurePauseControlWidget(node, widget);
     moveWidgetToTop(node, widget);
     updatePauseControlWidget(node);
     expandNodeToComputedSize(node);
@@ -439,7 +441,7 @@ async function queuePauseResumePrompt(node) {
     }
 
     await postPauseRelease(node);
-    return api.queuePrompt?.(-1, nextPrompt) ?? app.queuePrompt?.(0);
+    return queueFilteredPrompt(api, nextPrompt);
 }
 
 async function handlePauseControlButton(node) {

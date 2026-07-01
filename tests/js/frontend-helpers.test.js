@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -69,6 +70,7 @@ import {
     buildPauseResumePrompt,
     dependencyNodeIdsForPromptOutput,
     downstreamNodeIdsFromOutput,
+    queueFilteredPrompt,
     restoreSerializedWidgetValues,
     sanitizeSerializedWidgetValues,
     serializedWidgetValueMap,
@@ -1063,6 +1065,59 @@ test("pause control keeps downstream dependencies but removes save node input li
     assert.equal(resumePrompt.output["6"], undefined);
     assert.deepEqual(resumePrompt.workflow.nodes.map((node) => node.id).sort((a, b) => a - b), [2, 3, 4, 5]);
     assert.deepEqual(resumePrompt.workflow.links.map((link) => link[0]).sort((a, b) => a - b), [11, 12, 13]);
+});
+
+test("pause control queues filtered prompt through Comfy API only", async () => {
+    const filteredPrompt = {
+        output: {
+            "2": { class_type: "HeltoSaveImageAdvanced", inputs: { folder: "/tmp/out" } },
+            "4": { class_type: "UpscaleImage", inputs: { image: [2, 0] } },
+        },
+        workflow: {
+            nodes: [{ id: 2 }, { id: 4 }],
+            links: [[11, 2, 0, 4, 0, "IMAGE"]],
+        },
+    };
+    const calls = [];
+    const apiClient = {
+        queuePrompt(...args) {
+            calls.push(args);
+            return { prompt_id: "resume-prompt" };
+        },
+    };
+
+    const result = await queueFilteredPrompt(apiClient, filteredPrompt);
+
+    assert.deepEqual(calls, [[-1, filteredPrompt]]);
+    assert.deepEqual(result, { prompt_id: "resume-prompt" });
+});
+
+test("pause control refuses to queue without Comfy API queuePrompt", async () => {
+    let fullGraphQueued = false;
+    const appFallback = {
+        queuePrompt() {
+            fullGraphQueued = true;
+        },
+    };
+    assert.equal(typeof appFallback.queuePrompt, "function");
+
+    await assert.rejects(
+        queueFilteredPrompt(null, { output: {}, workflow: { nodes: [], links: [] } }),
+        /ComfyUI API queuePrompt is unavailable/,
+    );
+    assert.equal(fullGraphQueued, false);
+});
+
+test("pause control button handler uses filtered queue path only", () => {
+    const source = readFileSync(new URL("../../web/save_image_advanced_hide_mode.js", import.meta.url), "utf8");
+    const handlerStart = source.indexOf("async function queuePauseResumePrompt(node)");
+    const handlerEnd = source.indexOf("async function handlePauseControlButton(node)");
+    assert.ok(handlerStart >= 0);
+    assert.ok(handlerEnd > handlerStart);
+
+    const handlerSource = source.slice(handlerStart, handlerEnd);
+    assert.match(handlerSource, /return queueFilteredPrompt\(api, nextPrompt\);/);
+    assert.doesNotMatch(handlerSource, /app\.queuePrompt/);
 });
 
 test("pause control builds resume prompt from the save video images output", () => {

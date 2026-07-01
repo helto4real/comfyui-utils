@@ -145,6 +145,17 @@ export function buildPauseResumePrompt(prompt, startNodeId, outputName = "images
     };
 }
 
+export async function queueFilteredPrompt(apiClient, promptData) {
+    if (!promptData || typeof promptData !== "object" || !promptData.output || !promptData.workflow) {
+        throw new Error("Cannot queue resume without filtered prompt data.");
+    }
+    if (typeof apiClient?.queuePrompt !== "function") {
+        throw new Error("Cannot queue resume because ComfyUI API queuePrompt is unavailable.");
+    }
+
+    return apiClient.queuePrompt(-1, promptData);
+}
+
 export function isPauseControlRuntimeWidget(widget, runtimeNames = PAUSE_CONTROL_RUNTIME_WIDGET_NAMES) {
     return runtimeNames.has(widget?.name);
 }
