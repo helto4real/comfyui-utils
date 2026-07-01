@@ -390,7 +390,7 @@ Inputs:
 | `filename_prefix` | String | `img` | Prefix for numbered files. |
 | `privacy_mode` | Boolean | `True` | When true, preview images are written through the encrypted private-media path. |
 
-Output: `images`.
+Outputs: `images`, `width`, `height`.
 
 Files are saved as `filename_prefix_00001.png`, `filename_prefix_00002.png`, and so on. The counter continues from matching files already in the destination folder. The node requires an absolute base folder, rejects absolute subfolders, rejects subfolder path traversal, and stores workflow metadata in PNG output when ComfyUI metadata is enabled.
 

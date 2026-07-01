@@ -435,9 +435,10 @@ async function postPauseRelease(node) {
 
 async function queuePauseResumePrompt(node) {
     const prompt = await app.graphToPrompt();
-    const { prompt: nextPrompt, downstreamNodeIds } = buildPauseResumePrompt(prompt, node.id, "images");
+    const outputNames = getNodeClass(node) === VIDEO_NODE_CLASS ? "images" : ["images", "width", "height"];
+    const { prompt: nextPrompt, downstreamNodeIds } = buildPauseResumePrompt(prompt, node.id, outputNames);
     if (downstreamNodeIds.length === 0) {
-        throw new Error("No downstream nodes are connected to the images output.");
+        throw new Error("No downstream nodes are connected to the released outputs.");
     }
 
     await postPauseRelease(node);

@@ -56,6 +56,8 @@ class SaveImageAdvanced(io.ComfyNode):
             ],
             outputs=[
                 io.Image.Output("images"),
+                io.Int.Output("width"),
+                io.Int.Output("height"),
             ],
             hidden=[
                 io.Hidden.unique_id,
@@ -90,14 +92,19 @@ class SaveImageAdvanced(io.ComfyNode):
             stored = cls.state["media"].get(node_id)
             if stored is not None:
                 stored["paused"] = False
+                width, height = cls._image_dimensions(stored["images"])
                 control = cls._pause_control_payload(node_id, mode="released", released=True)
                 return io.NodeOutput(
                     stored["images"],
+                    width,
+                    height,
                     ui=cls._with_pause_control(cached_preview, control),
                 )
 
         if images is None:
             return io.NodeOutput(
+                None,
+                None,
                 None,
                 ui=cls._with_pause_control(
                     cached_preview,
@@ -171,9 +178,15 @@ class SaveImageAdvanced(io.ComfyNode):
             )
 
             if pause_mode:
-                return io.NodeOutput(ExecutionBlocker(None), ui=preview)
+                return io.NodeOutput(
+                    ExecutionBlocker(None),
+                    ExecutionBlocker(None),
+                    ExecutionBlocker(None),
+                    ui=preview,
+                )
 
-            return io.NodeOutput(images, ui=preview)
+            width, height = cls._image_dimensions(images)
+            return io.NodeOutput(images, width, height, ui=preview)
         except Exception as exc:
             helto_progress.error(str(exc), phase="error", node_id=node_id)
             raise
@@ -194,6 +207,16 @@ class SaveImageAdvanced(io.ComfyNode):
             "paused": paused,
         }
         return revision
+
+    @staticmethod
+    def _image_dimensions(images) -> tuple[int | None, int | None]:
+        shape = getattr(images, "shape", None)
+        try:
+            if shape is None or len(shape) < 3:
+                return None, None
+            return int(shape[2]), int(shape[1])
+        except (TypeError, ValueError, IndexError):
+            return None, None
 
     @classmethod
     def request_release(cls, node_id: str, revision=None) -> dict:

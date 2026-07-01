@@ -12,6 +12,25 @@ function outputSlotIndex(workflowNode, outputName) {
     return index >= 0 ? index : 0;
 }
 
+function outputSlotIndexes(workflowNode, outputNames) {
+    const outputs = Array.isArray(workflowNode?.outputs) ? workflowNode.outputs : [];
+    const names = Array.isArray(outputNames) ? outputNames : [outputNames];
+    const indexes = new Set();
+
+    for (const name of names) {
+        const index = outputs.findIndex((output) => output?.name === name);
+        if (index >= 0) {
+            indexes.add(index);
+        }
+    }
+
+    if (indexes.size === 0) {
+        indexes.add(outputSlotIndex(workflowNode, names[0]));
+    }
+
+    return indexes;
+}
+
 function workflowLinks(prompt) {
     return Array.isArray(prompt?.workflow?.links) ? prompt.workflow.links : [];
 }
@@ -39,9 +58,9 @@ export function downstreamNodeIdsFromOutput(prompt, startNodeId, outputName = "i
     const startId = Number(startNodeId);
     const nodesById = workflowNodesById(prompt);
     const startNode = nodesById.get(startId);
-    const startSlot = outputSlotIndex(startNode, outputName);
+    const startSlots = outputSlotIndexes(startNode, outputName);
     const links = workflowLinks(prompt).filter((link) => {
-        return Number(link?.[1]) === startId && Number(link?.[2]) === startSlot;
+        return Number(link?.[1]) === startId && startSlots.has(Number(link?.[2]));
     });
     const downstream = new Set();
     const queue = links.map((link) => Number(link?.[3])).filter(Number.isFinite);

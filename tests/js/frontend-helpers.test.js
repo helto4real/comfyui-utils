@@ -1067,6 +1067,50 @@ test("pause control keeps downstream dependencies but removes save node input li
     assert.deepEqual(resumePrompt.workflow.links.map((link) => link[0]).sort((a, b) => a - b), [11, 12, 13]);
 });
 
+test("pause control includes save image dimension output branches", () => {
+    const prompt = {
+        output: {
+            "1": { class_type: "Generator", inputs: { seed: 123 } },
+            "2": { class_type: "HeltoSaveImageAdvanced", inputs: { images: [1, 0], folder: "/tmp/out" } },
+            "3": { class_type: "PreviewImage", inputs: { images: [2, 0] } },
+            "4": { class_type: "NumberPreview", inputs: { value: [2, 1] } },
+            "5": { class_type: "NumberPreview", inputs: { value: [2, 2] } },
+            "6": { class_type: "OtherOutput", inputs: { images: [1, 0] } },
+        },
+        workflow: {
+            nodes: [
+                { id: 1, outputs: [{ name: "images" }] },
+                { id: 2, outputs: [{ name: "images" }, { name: "width" }, { name: "height" }] },
+                { id: 3, outputs: [] },
+                { id: 4, outputs: [] },
+                { id: 5, outputs: [] },
+                { id: 6, outputs: [] },
+            ],
+            links: [
+                [10, 1, 0, 2, 0, "IMAGE"],
+                [11, 2, 0, 3, 0, "IMAGE"],
+                [12, 2, 1, 4, 0, "INT"],
+                [13, 2, 2, 5, 0, "INT"],
+                [14, 1, 0, 6, 0, "IMAGE"],
+            ],
+        },
+    };
+
+    const { prompt: resumePrompt, downstreamNodeIds, keptNodeIds } = buildPauseResumePrompt(
+        prompt,
+        2,
+        ["images", "width", "height"],
+    );
+
+    assert.deepEqual(downstreamNodeIds, [3, 4, 5]);
+    assert.deepEqual(keptNodeIds.sort((a, b) => a - b), [2, 3, 4, 5]);
+    assert.deepEqual(resumePrompt.output["2"].inputs, { folder: "/tmp/out" });
+    assert.equal(resumePrompt.output["1"], undefined);
+    assert.equal(resumePrompt.output["6"], undefined);
+    assert.deepEqual(resumePrompt.workflow.nodes.map((node) => node.id).sort((a, b) => a - b), [2, 3, 4, 5]);
+    assert.deepEqual(resumePrompt.workflow.links.map((link) => link[0]).sort((a, b) => a - b), [11, 12, 13]);
+});
+
 test("pause control queues filtered prompt through Comfy API only", async () => {
     const filteredPrompt = {
         output: {

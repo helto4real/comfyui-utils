@@ -1356,6 +1356,7 @@ class NodeSchemaContractTests(unittest.TestCase):
         save_image_input = schema.inputs[-1]
         self.assertEqual(save_image_input.display_name, "save image")
         self.assertTrue(save_image_input.kwargs["default"])
+        self.assertEqual([output_def.id for output_def in schema.outputs], ["images", "width", "height"])
 
     def test_image_comparer_accepts_optional_images_and_masks(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()
@@ -2400,6 +2401,34 @@ Second beat moves toward the doorway. @image1:end
         self.assertFalse(control["paused"])
         self.assertEqual(control["mode"], "ready")
 
+    def test_save_image_outputs_dimensions_with_image(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        node_cls = extension_module.SaveImageAdvanced
+        original_save_images = node_cls.__dict__["_save_images"]
+        original_private_records = node_cls.__dict__["_private_preview_records"]
+        original_hidden = getattr(node_cls, "hidden", None)
+        saved_calls = []
+
+        node_cls._save_images = classmethod(lambda cls, images, save_dir, filename_prefix: saved_calls.append(images) or [])
+        node_cls._private_preview_records = classmethod(lambda cls, images, filename_prefix: [])
+        node_cls.hidden = types.SimpleNamespace(unique_id="dimensions-node")
+        node_cls.state["previews"].clear()
+        node_cls.state["media"].clear()
+        node_cls.state["releases"].clear()
+        try:
+            images = torch.zeros((2, 17, 23, 3), dtype=torch.float32)
+            result = node_cls.execute(images=images)
+        finally:
+            node_cls._save_images = original_save_images
+            node_cls._private_preview_records = original_private_records
+            node_cls.hidden = original_hidden
+
+        self.assertIs(result[0], images)
+        self.assertEqual(result[1], 23)
+        self.assertEqual(result[2], 17)
+        self.assertEqual(len(saved_calls), 1)
+        self.assertIs(saved_calls[0], images)
+
     def test_save_image_reports_per_image_progress(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()
         node_cls = extension_module.SaveImageAdvanced
@@ -2463,6 +2492,8 @@ Second beat moves toward the doorway. @image1:end
             node_cls.hidden = original_hidden
 
         self.assertIsInstance(result[0], execution_blocker)
+        self.assertIsInstance(result[1], execution_blocker)
+        self.assertIsInstance(result[2], execution_blocker)
         self.assertEqual(saved_calls, [images])
         self.assertEqual(node_cls.state["media"]["pause-node"]["images"], images)
         self.assertTrue(node_cls.state["media"]["pause-node"]["paused"])
@@ -2486,7 +2517,7 @@ Second beat moves toward the doorway. @image1:end
         node_cls.state["media"].clear()
         node_cls.state["releases"].clear()
         try:
-            images = ["image-tensor"]
+            images = torch.zeros((1, 19, 31, 3), dtype=torch.float32)
             first = node_cls.execute(images=images, pause_mode=False)
             revision = first.kwargs["ui"]["helto_pause_control"][0]["revision"]
             release = node_cls.request_release("release-node", revision)
@@ -2497,10 +2528,52 @@ Second beat moves toward the doorway. @image1:end
             node_cls.hidden = original_hidden
 
         self.assertTrue(release["ok"])
-        self.assertEqual(second[0], images)
-        self.assertEqual(saved_calls, [images])
+        self.assertIs(second[0], images)
+        self.assertEqual(second[1], 31)
+        self.assertEqual(second[2], 19)
+        self.assertEqual(len(saved_calls), 1)
+        self.assertIs(saved_calls[0], images)
         self.assertFalse(node_cls.state["media"]["release-node"]["paused"])
         self.assertNotIn("release-node", node_cls.state["releases"])
+        control = second.kwargs["ui"]["helto_pause_control"][0]
+        self.assertEqual(control["mode"], "released")
+        self.assertTrue(control["released"])
+        self.assertFalse(control["paused"])
+
+    def test_save_image_paused_release_reemits_dimensions_without_saving_again(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        node_cls = extension_module.SaveImageAdvanced
+        original_save_images = node_cls.__dict__["_save_images"]
+        original_private_records = node_cls.__dict__["_private_preview_records"]
+        original_hidden = getattr(node_cls, "hidden", None)
+        saved_calls = []
+
+        node_cls._save_images = classmethod(lambda cls, images, save_dir, filename_prefix: saved_calls.append(images) or [])
+        node_cls._private_preview_records = classmethod(lambda cls, images, filename_prefix: [])
+        node_cls.hidden = types.SimpleNamespace(unique_id="paused-release-node")
+        node_cls.state["previews"].clear()
+        node_cls.state["media"].clear()
+        node_cls.state["releases"].clear()
+        try:
+            images = torch.zeros((1, 21, 33, 3), dtype=torch.float32)
+            first = node_cls.execute(images=images, pause_mode=True)
+            revision = first.kwargs["ui"]["helto_pause_control"][0]["revision"]
+            release = node_cls.request_release("paused-release-node", revision)
+            second = node_cls.execute(images=None, pause_mode=True)
+        finally:
+            node_cls._save_images = original_save_images
+            node_cls._private_preview_records = original_private_records
+            node_cls.hidden = original_hidden
+
+        self.assertTrue(release["ok"])
+        self.assertTrue(release["paused"])
+        self.assertIs(second[0], images)
+        self.assertEqual(second[1], 33)
+        self.assertEqual(second[2], 21)
+        self.assertEqual(len(saved_calls), 1)
+        self.assertIs(saved_calls[0], images)
+        self.assertFalse(node_cls.state["media"]["paused-release-node"]["paused"])
+        self.assertNotIn("paused-release-node", node_cls.state["releases"])
         control = second.kwargs["ui"]["helto_pause_control"][0]
         self.assertEqual(control["mode"], "released")
         self.assertTrue(control["released"])
