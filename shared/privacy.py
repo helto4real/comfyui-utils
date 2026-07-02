@@ -8,6 +8,7 @@ import mimetypes
 import os
 import secrets
 import shutil
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -28,21 +29,43 @@ ENC_MAGIC_V2 = b"HELTO_PRIV2:"
 ENC_MAGIC_V3 = b"HELTO_PRIV3:"
 ENC_MAGIC = ENC_MAGIC_V1
 TOKEN_VERSION = 1
+# Signed private-media tokens grant read access to a file path, so cap their
+# lifetime. Generous by default because previews may be reopened later, but no
+# longer effectively permanent.
+MEDIA_TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60
 AESGCM_MAX_BYTES = (2 ** 31) - 1
 AESGCM_CHUNK_SIZE = 64 * 1024 * 1024
 
 
 def ensure_privacy_dirs() -> None:
     CONFIG_DIR.mkdir(exist_ok=True)
+    _chmod_silent(CONFIG_DIR, 0o700)
+
+
+def _chmod_silent(path: Path, mode: int) -> None:
+    try:
+        os.chmod(path, mode)
+    except OSError:
+        pass
 
 
 def load_encryption_key() -> bytes:
     ensure_privacy_dirs()
     if not KEY_PATH.exists():
-        KEY_PATH.write_bytes(secrets.token_bytes(32))
+        # O_EXCL + 0600 so the key is never world-readable and a concurrent
+        # first run can't race two different keys into place.
+        try:
+            fd = os.open(KEY_PATH, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                os.write(fd, secrets.token_bytes(32))
+            finally:
+                os.close(fd)
+        except FileExistsError:
+            pass
     key = KEY_PATH.read_bytes()
     if len(key) < 32:
         raise ValueError("Helto privacy key is invalid.")
+    _chmod_silent(KEY_PATH, 0o600)
     return key[:32]
 
 
@@ -192,9 +215,18 @@ def _unb64url(data: str) -> bytes:
     return base64.urlsafe_b64decode((data + padding).encode("ascii"))
 
 
-def sign_media_token(payload: dict[str, Any], key: bytes | None = None) -> str:
+def sign_media_token(
+    payload: dict[str, Any],
+    key: bytes | None = None,
+    *,
+    ttl_seconds: int | None = MEDIA_TOKEN_TTL_SECONDS,
+) -> str:
     key = key or _key()
     payload = {"v": TOKEN_VERSION, **payload}
+    if ttl_seconds is not None and "exp" not in payload:
+        now = int(time.time())
+        payload["iat"] = now
+        payload["exp"] = now + int(ttl_seconds)
     payload_bytes = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     signature = hmac.new(key, payload_bytes, hashlib.sha256).digest()
     return f"{_b64url(payload_bytes)}.{_b64url(signature)}"
@@ -216,6 +248,9 @@ def verify_media_token(token: str, key: bytes | None = None) -> dict[str, Any]:
     payload = json.loads(payload_bytes.decode("utf-8"))
     if payload.get("v") != TOKEN_VERSION:
         raise ValueError("Unsupported private media token version.")
+    expiry = payload.get("exp")
+    if expiry is not None and time.time() > float(expiry):
+        raise ValueError("Private media token has expired.")
     return payload
 
 

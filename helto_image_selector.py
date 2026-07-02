@@ -1,20 +1,10 @@
 from __future__ import annotations
 
-from comfy_api.latest import ComfyExtension, io
-
+# Compatibility shim. The selector node class lives in helto_selector_backend,
+# and the package entry point in __init__.py is what ComfyUI actually loads.
+# Importing this module re-exports the node class and, as a side effect,
+# registers the selector's HTTP routes.
 from .helto_selector_backend.node import HeltoImageSelector
-from .helto_selector_backend import routes as _routes  # noqa: F401 - import registers routes
+from .helto_selector_backend import routes as _routes  # noqa: F401 - registers routes
 
-
-class HeltoImageSelectorExtension(ComfyExtension):
-    async def get_node_list(self) -> list[type[io.ComfyNode]]:
-        return [HeltoImageSelector]
-
-
-async def comfy_entrypoint() -> HeltoImageSelectorExtension:
-    return HeltoImageSelectorExtension()
-
-
-WEB_DIRECTORY = "./web"
-
-__all__ = ["comfy_entrypoint", "WEB_DIRECTORY"]
+__all__ = ["HeltoImageSelector"]

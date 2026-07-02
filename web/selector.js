@@ -648,11 +648,20 @@ app.registerExtension({
             } catch (e) {
                 console.error("Scanning folders failed:", e);
                 if (gridEl) {
-                    gridEl.innerHTML = `<div class="helto-grid-empty" style="color: var(--danger, #ec5a6b); padding: 20px; font-style: normal; text-align: center; width: 100%;">
-                        <strong>Scan Error:</strong><br>
-                        ${e.message || e}<br>
-                        <span style="font-size: 11px; opacity: 0.7;">Check browser console.</span>
-                    </div>`;
+                    gridEl.innerHTML = "";
+                    const errorEl = document.createElement("div");
+                    errorEl.className = "helto-grid-empty helto-grid-error";
+                    const title = document.createElement("strong");
+                    title.textContent = "Scan Error:";
+                    const message = document.createElement("div");
+                    // textContent, not innerHTML: error text can contain server
+                    // strings and must never be parsed as HTML.
+                    message.textContent = String(e?.message || e);
+                    const hint = document.createElement("span");
+                    hint.className = "helto-grid-error-hint";
+                    hint.textContent = "Check browser console.";
+                    errorEl.append(title, message, hint);
+                    gridEl.appendChild(errorEl);
                 }
             }
         };

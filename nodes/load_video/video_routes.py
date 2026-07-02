@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import urllib.parse
 
@@ -117,7 +118,8 @@ async def get_preview(request):
         path = resolve_video_path(alias, filename)
         if path.suffix.lower() not in VIDEO_EXTENSIONS:
             return web.json_response({"error": "Unsupported video type"}, status=400)
-        return web.json_response({"images": [preview_result(path, privacy_mode=privacy_mode)], "animated": [True]})
+        preview = await asyncio.to_thread(preview_result, path, privacy_mode=privacy_mode)
+        return web.json_response({"images": [preview], "animated": [True]})
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=400)
 
@@ -129,8 +131,9 @@ async def get_thumb(request):
         privacy_mode = request.query.get("privacy", "true").lower() in {"1", "true", "yes"}
         filename = urllib.parse.unquote(request.query.get("filename", ""))
         path = resolve_video_path(alias, filename)
+        body = await asyncio.to_thread(thumbnail_bytes, path, privacy_mode)
         return web.Response(
-            body=thumbnail_bytes(path, privacy_mode),
+            body=body,
             headers={"Cache-Control": "public, max-age=86400"},
             content_type="image/webp",
         )

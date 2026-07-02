@@ -101,8 +101,10 @@ def _json_request(url: str, payload: dict[str, Any] | None, timeout: int) -> Any
         with urllib.request.urlopen(request, timeout=max(1, int(timeout))) as response:
             body = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
-        message = exc.read().decode("utf-8", errors="replace") or str(exc)
-        raise RuntimeError(f"Ollama request failed with HTTP {exc.code}: {message}") from exc
+        # Deliberately do not echo the remote response body back to the client:
+        # if the url was pointed at an unintended host, its body could leak.
+        LOGGER.warning("Ollama request failed with HTTP %s: %s", exc.code, exc.read()[:512])
+        raise RuntimeError(f"Ollama request failed with HTTP {exc.code}.") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Ollama request failed: {exc.reason}") from exc
 
@@ -137,8 +139,10 @@ def _json_stream_request(url: str, payload: dict[str, Any], timeout: int) -> Ite
                 if isinstance(item, dict):
                     yield item
     except urllib.error.HTTPError as exc:
-        message = exc.read().decode("utf-8", errors="replace") or str(exc)
-        raise RuntimeError(f"Ollama request failed with HTTP {exc.code}: {message}") from exc
+        # Deliberately do not echo the remote response body back to the client:
+        # if the url was pointed at an unintended host, its body could leak.
+        LOGGER.warning("Ollama request failed with HTTP %s: %s", exc.code, exc.read()[:512])
+        raise RuntimeError(f"Ollama request failed with HTTP {exc.code}.") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Ollama request failed: {exc.reason}") from exc
 
@@ -165,7 +169,13 @@ def _release_ollama_model(endpoint: str, model: str, timeout: int, progress: Pro
 
 def normalize_ollama_url(url: str | None) -> str:
     normalized = (url or DEFAULT_OLLAMA_URL).strip().rstrip("/")
-    return normalized or DEFAULT_OLLAMA_URL
+    normalized = normalized or DEFAULT_OLLAMA_URL
+    parsed = urllib.parse.urlparse(normalized)
+    # Only ever talk to a real HTTP(S) endpoint. Blocks the client from steering
+    # server-side requests at file://, gopher://, etc. (SSRF) via the url field.
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise RuntimeError("Ollama URL must be an http(s) address.")
+    return normalized
 
 
 def ollama_keep_alive(value: int | str | None, unit: str | None) -> str:

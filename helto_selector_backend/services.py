@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 from io import BytesIO
@@ -11,7 +12,7 @@ from typing import Any
 import folder_paths
 from PIL import Image, ImageOps
 
-from .constants import SUPPORTED_EXTENSIONS
+from .constants import CONFIG_DIR, SUPPORTED_EXTENSIONS
 from .crypto import decrypt_selection, encrypt_selection
 from .mask_storage import delete_mask, load_mask_bytes, migrate_mask_privacy, save_mask_data_url
 from .scanning import delete_image_files, discover_image_folders, scan_image_folders
@@ -84,12 +85,55 @@ def _is_supported_image_path(path: str) -> bool:
     return os.path.splitext(path)[1].lower() in SUPPORTED_EXTENSIONS
 
 
+SELECTOR_ROOTS_FILE = os.path.join(CONFIG_DIR, "selector_roots.json")
+SELECTOR_ROOTS_ENV = "HELTO_SELECTOR_ROOTS"
+
+
 def _default_authorized_root_paths() -> list[str]:
     return [
         folder_paths.get_input_directory(),
         folder_paths.get_output_directory(),
         folder_paths.get_temp_directory(),
     ]
+
+
+def _configured_allowlist_roots() -> list[str]:
+    """Server-side allowlist of extra selector roots (opt-in lockdown).
+
+    Read from the HELTO_SELECTOR_ROOTS env var (os.pathsep-separated) and/or
+    config/selector_roots.json (a JSON list of paths). Both are editable only
+    on the server's disk, never from a request.
+    """
+    roots: list[str] = []
+    env_value = os.environ.get(SELECTOR_ROOTS_ENV, "")
+    if env_value.strip():
+        roots.extend(part for part in env_value.split(os.pathsep) if part.strip())
+    try:
+        with open(SELECTOR_ROOTS_FILE, encoding="utf-8") as handle:
+            data = json.load(handle)
+        if isinstance(data, list):
+            roots.extend(item for item in data if isinstance(item, str) and item.strip())
+    except (OSError, ValueError):
+        pass
+    return roots
+
+
+def selector_lockdown_enabled() -> bool:
+    """True when an allowlist is configured; client folders stop self-authorizing."""
+    return bool(_configured_allowlist_roots())
+
+
+def effective_authorized_roots() -> list[str] | None:
+    """Server roots to enforce, or None to keep the permissive default behavior.
+
+    When no allowlist is configured this returns None so the selector keeps
+    trusting client-supplied folders (ComfyUI's local-operator model). Once an
+    operator sets an allowlist, requests are confined to input/output/temp plus
+    those roots.
+    """
+    if not selector_lockdown_enabled():
+        return None
+    return _default_authorized_root_paths() + _configured_allowlist_roots()
 
 
 def _configured_root_paths(configured_folders: list[str] | tuple[str, ...] | None = None) -> list[str]:

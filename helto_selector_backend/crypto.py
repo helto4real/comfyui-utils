@@ -129,5 +129,11 @@ def decrypt_selection(encrypted_text: str, key: bytes | None = None) -> str:
     try:
         return decrypt_string(key, encrypted_part)
     except Exception as e:
+        # A prefixed payload that will not decrypt means real corruption or a
+        # key mismatch. Surfacing it as a node error is far better than silently
+        # degrading to an empty selection, which looks like "nothing selected".
         print(f"[HeltoSelector] Error decrypting selection state: {e}")
-        return "[]"
+        raise ValueError(
+            "Failed to decrypt Helto selector state; the data may be corrupt "
+            "or was encrypted with a different privacy key."
+        ) from e

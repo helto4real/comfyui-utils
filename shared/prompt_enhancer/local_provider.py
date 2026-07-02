@@ -67,6 +67,9 @@ class LocalModelSpec:
     file_urls: tuple[str, ...] = ()
     supports_images: bool = False
     generator_supported: bool = True
+    # Hugging Face revision to fetch. Prefer pinning to an immutable commit SHA
+    # so a repo cannot swap in new code/weights under you between downloads.
+    revision: str = "main"
 
 
 @dataclass(frozen=True)
@@ -430,6 +433,7 @@ def ensure_model_downloaded(spec: LocalModelSpec, progress: PromptEnhancerProgre
     _check_interrupted(progress)
     snapshot_download(
         repo_id=spec.repo_id,
+        revision=spec.revision,
         local_dir=str(path),
         local_dir_use_symlinks=False,
         token=hf_auth_token(),
@@ -697,7 +701,9 @@ def _load_qwen_model(spec: LocalModelSpec, path: Path) -> dict[str, Any]:
         device_map="auto",
         attn_implementation="sdpa",
     ).eval()
-    processor = AutoProcessor.from_pretrained(str(path), trust_remote_code=True)
+    # Qwen3-VL is natively supported by transformers, so we do not need to
+    # execute arbitrary repo code to load its processor.
+    processor = AutoProcessor.from_pretrained(str(path))
     loaded = {"model": model, "processor": processor, "torch": torch}
     _LOADED_MODELS[spec.alias] = loaded
     return loaded
@@ -752,6 +758,8 @@ def _load_florence_model(spec: LocalModelSpec, path: Path) -> dict[str, Any]:
     import torch
     from transformers import AutoModelForCausalLM, AutoProcessor
 
+    # Florence-2 ships custom modeling code, so trust_remote_code is required
+    # here; the repo is pinned via LocalModelSpec.revision to bound that trust.
     model = AutoModelForCausalLM.from_pretrained(str(path), trust_remote_code=True, torch_dtype="auto").eval()
     if torch.cuda.is_available():
         model = model.to("cuda")

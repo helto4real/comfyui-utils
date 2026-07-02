@@ -19,6 +19,7 @@ CONFIG_DIR = NODE_DIR / "config"
 FOLDERS_FILE = CONFIG_DIR / "video_folders.json"
 THUMB_CACHE_DIR: Path | None = None
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
+LOAD_VIDEO_ROOTS_ENV = "HELTO_LOAD_VIDEO_ROOTS"
 
 
 @dataclass(frozen=True)
@@ -115,11 +116,41 @@ def resolve_video_path(alias: str, filename: str) -> Path:
     return candidate
 
 
+def _load_video_allowlist_roots() -> list[str]:
+    """Opt-in server-side allowlist for folders that may be registered.
+
+    Set HELTO_LOAD_VIDEO_ROOTS (os.pathsep-separated) to confine added folders
+    to input/output/temp plus those roots. Unset keeps the permissive default.
+    """
+    env_value = os.environ.get(LOAD_VIDEO_ROOTS_ENV, "")
+    return [part for part in env_value.split(os.pathsep) if part.strip()]
+
+
+def _assert_folder_allowed(path: str) -> None:
+    extra_roots = _load_video_allowlist_roots()
+    if not extra_roots:
+        return
+    allowed = [
+        os.path.realpath(os.path.expanduser(root))
+        for root in ([folder_paths.get_input_directory(), folder_paths.get_output_directory(),
+                      folder_paths.get_temp_directory()] + extra_roots)
+    ]
+    real = os.path.realpath(path)
+    for root in allowed:
+        try:
+            if os.path.commonpath([real, root]) == root:
+                return
+        except ValueError:
+            continue
+    raise ValueError("Folder is outside the configured HELTO_LOAD_VIDEO_ROOTS allowlist.")
+
+
 def add_folder(alias: str, path: str) -> list[VideoFolder]:
     alias = safe_alias(alias)
     path = os.path.normpath(os.path.expanduser(str(path or "")))
     if not os.path.isdir(path):
         raise ValueError(f"Folder does not exist: {path}")
+    _assert_folder_allowed(path)
 
     folders = load_folders()
     if any(folder.alias == alias for folder in folders):

@@ -80,7 +80,11 @@ def decrypt_prompt_text(raw_prompt: Any) -> str:
     prompt = str(raw_prompt)
     if not prompt.startswith(ENC_PREFIX):
         return prompt
-    decrypted = decrypt_selection(prompt)
+    try:
+        decrypted = decrypt_selection(prompt)
+    except ValueError:
+        # An unreadable optional prompt should not fail the whole run.
+        return ""
     return "" if decrypted == "[]" else decrypted
 
 
@@ -94,7 +98,10 @@ def _decode_variables_payload(raw_variables: Any) -> Any:
 
     payload = raw_variables.strip()
     if payload.startswith(ENC_PREFIX):
-        payload = decrypt_selection(payload)
+        try:
+            payload = decrypt_selection(payload)
+        except ValueError:
+            return []
     try:
         return json.loads(payload)
     except (TypeError, json.JSONDecodeError):

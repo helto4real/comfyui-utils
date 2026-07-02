@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
+
 from aiohttp import web
 from server import PromptServer
 
 from .queue_manager_store import load_queue_manager_state, save_queue_manager_state
 
 
+LOGGER = logging.getLogger(__name__)
 routes = PromptServer.instance.routes
 
 
@@ -14,7 +17,8 @@ async def get_queue_manager_state(request):
     try:
         return web.json_response(load_queue_manager_state())
     except Exception as exc:
-        return web.json_response({"ok": False, "error": str(exc)}, status=500)
+        LOGGER.warning("Queue manager load failed: %s", exc)
+        return web.json_response({"ok": False, "error": "Failed to load queue state."}, status=500)
 
 
 @routes.post("/helto_queue_manager/state")
@@ -29,4 +33,5 @@ async def post_queue_manager_state(request):
             privacy_enabled = bool(privacy_enabled)
         return web.json_response(save_queue_manager_state(state, privacy_enabled=privacy_enabled))
     except Exception as exc:
-        return web.json_response({"ok": False, "error": str(exc)}, status=500)
+        LOGGER.warning("Queue manager save failed: %s", exc)
+        return web.json_response({"ok": False, "error": "Failed to save queue state."}, status=500)

@@ -441,6 +441,18 @@
     font-size: 13px;
     font-style: italic;
 }
+.helto-grid-error {
+    color: var(--danger);
+    padding: 20px;
+    font-style: normal;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.helto-grid-error-hint {
+    font-size: 11px;
+    opacity: 0.7;
+}
 
 /* Custom Scrollbar */
 .helto-grid::-webkit-scrollbar {

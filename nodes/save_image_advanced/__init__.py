@@ -16,6 +16,10 @@ from ...shared.privacy import private_media_record, write_encrypted_temp_bytes
 
 
 _COUNTER_RE_TEMPLATE = r"^{prefix}_(?P<counter>\d+)_?\.png$"
+# Cap how many nodes' image batches / previews we hold in memory at once. Each
+# entry can be a large tensor, and without a bound the state dicts grew forever
+# as distinct node ids accumulated over a long session.
+_MAX_RETAINED_NODES = 16
 
 
 def _item_count(value) -> int | None:
@@ -169,7 +173,7 @@ class SaveImageAdvanced(io.ComfyNode):
                 revision=revision,
             )
             preview = cls._with_pause_control(preview, control)
-            cls.state["previews"][node_id] = preview
+            cls._remember_preview(node_id, preview)
             helto_progress.done(
                 "Image output ready",
                 phase="complete",
@@ -201,12 +205,31 @@ class SaveImageAdvanced(io.ComfyNode):
     def _store_media(cls, node_id: str, images, paused: bool) -> int:
         existing = cls.state["media"].get(node_id) or {}
         revision = int(existing.get("revision", 0)) + 1
+        # Pop then re-insert so this node becomes the most-recently-used entry
+        # (dicts preserve insertion order, which drives LRU eviction below).
+        cls.state["media"].pop(node_id, None)
         cls.state["media"][node_id] = {
             "images": images,
             "revision": revision,
             "paused": paused,
         }
+        cls._enforce_state_limit()
         return revision
+
+    @classmethod
+    def _remember_preview(cls, node_id: str, preview: dict) -> None:
+        cls.state["previews"].pop(node_id, None)
+        cls.state["previews"][node_id] = preview
+        cls._enforce_state_limit()
+
+    @classmethod
+    def _enforce_state_limit(cls) -> None:
+        for bucket in ("media", "previews"):
+            store = cls.state[bucket]
+            while len(store) > _MAX_RETAINED_NODES:
+                oldest = next(iter(store))
+                store.pop(oldest, None)
+                cls.state["releases"].pop(oldest, None)
 
     @staticmethod
     def _image_dimensions(images) -> tuple[int | None, int | None]:
