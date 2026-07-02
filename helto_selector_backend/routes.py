@@ -5,6 +5,7 @@ import json
 import logging
 
 from aiohttp import web
+from helto_privacy import aiohttp_check_privacy_token
 
 import folder_paths
 from server import PromptServer
@@ -34,6 +35,7 @@ from .services import (
     save_mask_payload,
     thumbnail_payload,
 )
+from .crypto import shared_privacy
 
 routes = PromptServer.instance.routes
 
@@ -79,10 +81,16 @@ def _selector_json_error(error: SelectorPathError):
 
 
 def _selector_internal_error(handler: str, exc: Exception):
+    if "PRIVACY_" in str(exc):
+        return web.json_response({"ok": False, "error": shared_privacy.privacy_unavailable_error(exc)}, status=401)
     # Log the detail server-side; return a generic message so raw exception text
     # (file paths, internals) never reaches the client.
     LOGGER.warning("Selector %s failed: %s", handler, exc)
     return web.json_response({"error": "Selector request failed."}, status=500)
+
+
+def _privacy_guard(request):
+    return aiohttp_check_privacy_token(request)
 
 
 @routes.get("/helto_selector/input_dir")
@@ -108,6 +116,9 @@ async def scan_folders(request):
 @routes.get("/helto_selector/thumbnail")
 async def get_thumbnail(request):
     try:
+        denied = _privacy_guard(request)
+        if denied is not None:
+            return denied
         image_path = _authorize_request_image(request)
         privacy_mode = request.query.get("privacy", "false").lower() == "true"
 
@@ -122,6 +133,9 @@ async def get_thumbnail(request):
 @routes.get("/helto_selector/view_image")
 async def view_image(request):
     try:
+        denied = _privacy_guard(request)
+        if denied is not None:
+            return denied
         image_path = _authorize_request_image(request)
         return web.FileResponse(image_path)
     except SelectorPathError as e:
@@ -133,6 +147,9 @@ async def view_image(request):
 @routes.get("/helto_selector/mask")
 async def get_mask(request):
     try:
+        denied = _privacy_guard(request)
+        if denied is not None:
+            return denied
         image_path = _authorize_request_image(request)
         png_bytes = await asyncio.to_thread(mask_image_payload, image_path)
         return web.Response(body=png_bytes, content_type="image/png")
@@ -181,6 +198,9 @@ async def api_paste_image(request):
 @routes.post("/helto_selector/encrypt")
 async def api_encrypt(request):
     try:
+        denied = _privacy_guard(request)
+        if denied is not None:
+            return denied
         data = await request.json()
         return web.json_response(encrypt_payload(data))
     except Exception as e:
@@ -190,6 +210,9 @@ async def api_encrypt(request):
 @routes.post("/helto_selector/decrypt")
 async def api_decrypt(request):
     try:
+        denied = _privacy_guard(request)
+        if denied is not None:
+            return denied
         data = await request.json()
         return web.json_response(decrypt_payload(data))
     except Exception as e:
@@ -199,6 +222,9 @@ async def api_decrypt(request):
 @routes.post("/helto_selector/save_mask")
 async def api_save_mask(request):
     try:
+        denied = _privacy_guard(request)
+        if denied is not None:
+            return denied
         data = await request.json()
         payload = SaveMaskPayload.from_request_data(data)
         return web.json_response(save_mask_payload(payload, **_roots_kwargs()))
@@ -215,6 +241,9 @@ async def api_save_mask(request):
 @routes.post("/helto_selector/delete_mask")
 async def api_delete_mask(request):
     try:
+        denied = _privacy_guard(request)
+        if denied is not None:
+            return denied
         data = await request.json()
         payload = DeleteMaskPayload.from_request_data(data)
         return web.json_response(delete_mask_payload(payload, **_roots_kwargs()))
@@ -229,6 +258,9 @@ async def api_delete_mask(request):
 @routes.post("/helto_selector/migrate_masks")
 async def api_migrate_masks(request):
     try:
+        denied = _privacy_guard(request)
+        if denied is not None:
+            return denied
         data = await request.json()
         payload = MigrateMasksPayload.from_request_data(data)
         return web.json_response(migrate_masks_payload(payload, **_roots_kwargs()))

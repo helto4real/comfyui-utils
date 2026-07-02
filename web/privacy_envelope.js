@@ -1,4 +1,7 @@
-export const ENCRYPTED_PREFIX = "__HELTO_ENC__:";
+export const PRIVACY_ENVELOPE_SCHEMA = "helto.comfyui-utils";
+export const PRIVACY_ENVELOPE_ALGORITHM = "AES-256-GCM";
+export const ENCRYPTED_PREFIX = `{"algorithm":"${PRIVACY_ENVELOPE_ALGORITHM}"`;
+export const LEGACY_ENCRYPTED_PREFIX = "__HELTO_ENC__:";
 
 const OWNER_MEMOS = new WeakMap();
 const FALLBACK_OWNER = {};
@@ -62,12 +65,43 @@ export function canonicalPrivacyValue(value) {
     return String(value);
 }
 
+export function parsePrivacyEnvelope(value) {
+    if (typeof value === "string") {
+        try {
+            return JSON.parse(value);
+        } catch {
+            return null;
+        }
+    }
+    return value && typeof value === "object" ? value : null;
+}
+
+export function serializePrivacyEnvelope(value) {
+    if (typeof value === "string") {
+        return value;
+    }
+    if (!value || typeof value !== "object") {
+        return "";
+    }
+    return stablePrivacyJsonStringify(value) || "";
+}
+
 export function isPrivacyEnvelope(value) {
-    return typeof value === "string" && value.startsWith(ENCRYPTED_PREFIX);
+    const payload = parsePrivacyEnvelope(value);
+    return (
+        !!payload
+        && payload.encrypted === true
+        && payload.schema === PRIVACY_ENVELOPE_SCHEMA
+        && payload.algorithm === PRIVACY_ENVELOPE_ALGORITHM
+    );
+}
+
+export function isLegacyPrivacyEnvelope(value) {
+    return typeof value === "string" && value.startsWith(LEGACY_ENCRYPTED_PREFIX);
 }
 
 export function rememberPrivacyEnvelope(owner, fieldName, plaintext, envelope) {
-    const encrypted = String(envelope || "");
+    const encrypted = serializePrivacyEnvelope(envelope);
     if (!isPrivacyEnvelope(encrypted)) {
         return "";
     }
@@ -93,7 +127,7 @@ export function forgetPrivacyEnvelope(owner, fieldName) {
 }
 
 export async function decryptAndRememberPrivacyValue(owner, fieldName, envelope, selectorApi, fallback = "") {
-    const encrypted = String(envelope || "");
+    const encrypted = serializePrivacyEnvelope(envelope);
     if (!isPrivacyEnvelope(encrypted)) {
         return fallback;
     }

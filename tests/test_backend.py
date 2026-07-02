@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import importlib
 import asyncio
-import base64
 import json
 import os
 import sys
 import tempfile
 import types
 import unittest
+from contextlib import contextmanager
 from collections.abc import Mapping
 from io import BytesIO
 from pathlib import Path
@@ -76,6 +76,29 @@ def image_bytes(size: tuple[int, int] = (4, 4), color: tuple[int, int, int] = (2
 def thumbnail_pixel(webp_bytes: bytes) -> tuple[int, int, int]:
     with Image.open(BytesIO(webp_bytes)) as thumb:
         return thumb.convert("RGB").getpixel((0, 0))
+
+
+@contextmanager
+def isolated_privacy_keystore():
+    old_env = {
+        "HELTO_PRIVACY_KEYSTORE": os.environ.get("HELTO_PRIVACY_KEYSTORE"),
+        "HELTO_PRIVACY_SESSION_DIR": os.environ.get("HELTO_PRIVACY_SESSION_DIR"),
+    }
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        os.environ["HELTO_PRIVACY_KEYSTORE"] = str(root / "privacy_keystore.json")
+        os.environ["HELTO_PRIVACY_SESSION_DIR"] = str(root / "session")
+        from helto_privacy import initialize_keystore
+
+        initialize_keystore("correct horse battery staple")
+        try:
+            yield root
+        finally:
+            for key, value in old_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
 
 class ImageProcessingTests(unittest.TestCase):
@@ -205,26 +228,23 @@ class ImageProcessingTests(unittest.TestCase):
             ])
 
     def test_edited_bbox_state_parses_encrypted_map(self):
-        key = b"9" * 32
         plain = json.dumps({"/tmp/a.png": [{"x": 1, "y": 2, "width": 3, "height": 4}]})
-        encrypted = encrypt_selection(plain, key=key)
-
-        parsed = parse_edited_bboxes(encrypted, decrypt_func=lambda text: decrypt_selection(text, key=key))
+        with isolated_privacy_keystore():
+            encrypted = encrypt_selection(plain)
+            parsed = parse_edited_bboxes(encrypted, decrypt_func=decrypt_selection)
 
         self.assertEqual(parsed, {"/tmp/a.png": [{"x": 1.0, "y": 2.0, "width": 3.0, "height": 4.0}]})
 
     def test_edited_mask_state_parses_encrypted_map(self):
-        key = b"7" * 32
         plain = json.dumps({"/tmp/a.png": {"key": "abc"}})
-        encrypted = encrypt_selection(plain, key=key)
-
-        parsed = parse_edited_masks(encrypted, decrypt_func=lambda text: decrypt_selection(text, key=key))
+        with isolated_privacy_keystore():
+            encrypted = encrypt_selection(plain)
+            parsed = parse_edited_masks(encrypted, decrypt_func=decrypt_selection)
 
         self.assertEqual(parsed, {"/tmp/a.png": {"key": "abc"}})
 
     def test_encrypted_mask_file_roundtrips(self):
-        key = b"8" * 32
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with isolated_privacy_keystore(), tempfile.TemporaryDirectory() as tmpdir:
             image_path = os.path.join(tmpdir, "image.png")
             cache_dir = os.path.join(tmpdir, "masks")
             write_image(image_path, (4, 4), (255, 0, 0))
@@ -232,13 +252,13 @@ class ImageProcessingTests(unittest.TestCase):
             buffer = BytesIO()
             mask.save(buffer, format="PNG")
 
-            save_mask_bytes(image_path, buffer.getvalue(), True, mask_cache_dir=cache_dir, key=key)
+            save_mask_bytes(image_path, buffer.getvalue(), True, mask_cache_dir=cache_dir)
             plain_path, encrypted_path = mask_cache_paths(image_path, cache_dir)
 
             self.assertFalse(os.path.exists(plain_path))
             self.assertTrue(os.path.exists(encrypted_path))
             self.assertNotIn(b"PNG", Path(encrypted_path).read_bytes()[:16])
-            self.assertTrue(load_mask_bytes(image_path, cache_dir, key).startswith(b"\x89PNG"))
+            self.assertTrue(load_mask_bytes(image_path, cache_dir).startswith(b"\x89PNG"))
 
     def test_delete_mask_removes_plain_and_encrypted_cache_files(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -269,97 +289,52 @@ class ImageProcessingTests(unittest.TestCase):
             self.assertEqual(result["deleted_count"], 0)
 
     def test_encrypted_selection_parses_with_same_key(self):
-        key = b"1" * 32
         plain = json.dumps(["/tmp/a.png"])
-        encrypted = encrypt_selection(plain, key=key)
-
-        parsed = parse_selected_paths(encrypted, decrypt_func=lambda text: decrypt_selection(text, key=key))
+        with isolated_privacy_keystore():
+            encrypted = encrypt_selection(plain)
+            parsed = parse_selected_paths(encrypted, decrypt_func=decrypt_selection)
 
         self.assertEqual(parsed, ["/tmp/a.png"])
 
-    def test_encrypted_selection_uses_fast_privacy_payload_when_available(self):
-        if selector_crypto.shared_privacy.AESGCM is None:
-            self.skipTest("cryptography is not available")
+    def test_encrypted_selection_uses_helto_privacy_envelope(self):
+        plain = json.dumps(["/tmp/a.png"])
+        with isolated_privacy_keystore():
+            encrypted = encrypt_selection(plain)
+            payload = json.loads(encrypted)
 
-        key = b"3" * 32
-        encrypted = encrypt_selection(json.dumps(["/tmp/a.png"]), key=key)
-        payload = base64.b64decode(encrypted[len(selector_crypto.ENC_PREFIX):].encode("utf-8"))
+            self.assertEqual(payload["schema"], "helto.comfyui-utils")
+            self.assertTrue(payload["encrypted"])
+            self.assertEqual(decrypt_selection(encrypted), plain)
 
-        self.assertTrue(payload.startswith(selector_crypto.shared_privacy.ENC_MAGIC_V2))
-        self.assertEqual(decrypt_selection(encrypted, key=key), json.dumps(["/tmp/a.png"]))
+    def test_legacy_selector_payloads_fail_closed(self):
+        with self.assertRaisesRegex(ValueError, "Legacy Helto selector encrypted payloads"):
+            decrypt_selection("__HELTO_ENC__:legacy")
 
-    def test_encrypted_selection_reads_legacy_no_header_payloads(self):
-        key = b"4" * 32
-        plain = json.dumps(["/tmp/legacy.png"])
-        legacy_payload = selector_crypto._legacy_encrypt_bytes(key, plain.encode("utf-8"))
-        encrypted = selector_crypto.ENC_PREFIX + base64.b64encode(legacy_payload).decode("utf-8")
-
-        self.assertFalse(legacy_payload.startswith(selector_crypto.shared_privacy.ENC_MAGIC_V1))
-        self.assertEqual(decrypt_selection(encrypted, key=key), plain)
-
-    def test_selector_default_encryption_uses_shared_privacy_key_file(self):
-        original_config_dir = selector_crypto.shared_privacy.CONFIG_DIR
-        original_key_path = selector_crypto.shared_privacy.KEY_PATH
-        original_selector_key_path = selector_crypto.KEY_PATH
-        original_legacy_key_path = selector_crypto.LEGACY_KEY_PATH
-        original_encryption_key = selector_crypto.ENCRYPTION_KEY
-        plain = json.dumps(["/tmp/shared-key.png"])
+    def test_selector_default_encryption_requires_shared_keystore(self):
+        old_env = {
+            "HELTO_PRIVACY_KEYSTORE": os.environ.get("HELTO_PRIVACY_KEYSTORE"),
+            "HELTO_PRIVACY_SESSION_DIR": os.environ.get("HELTO_PRIVACY_SESSION_DIR"),
+        }
         with tempfile.TemporaryDirectory() as tmpdir:
+            os.environ["HELTO_PRIVACY_KEYSTORE"] = str(Path(tmpdir) / "missing_keystore.json")
+            os.environ["HELTO_PRIVACY_SESSION_DIR"] = str(Path(tmpdir) / "session")
             try:
-                config_dir = Path(tmpdir) / "config"
-                key_path = config_dir / "privacy_key.bin"
-                selector_crypto.shared_privacy.CONFIG_DIR = config_dir
-                selector_crypto.shared_privacy.KEY_PATH = key_path
-                selector_crypto.KEY_PATH = key_path
-                selector_crypto.LEGACY_KEY_PATH = os.path.join(config_dir, "key.bin")
-                selector_crypto.ENCRYPTION_KEY = selector_crypto.load_encryption_key()
-
-                encrypted = selector_crypto.encrypt_selection(plain)
-
-                self.assertTrue(key_path.exists())
-                self.assertFalse(os.path.exists(selector_crypto.LEGACY_KEY_PATH))
-                self.assertEqual(selector_crypto.decrypt_selection(encrypted), plain)
+                with self.assertRaisesRegex(Exception, "PRIVACY_KEYSTORE_UNINITIALIZED"):
+                    selector_crypto.encrypt_selection(json.dumps(["/tmp/shared-key.png"]))
             finally:
-                selector_crypto.shared_privacy.CONFIG_DIR = original_config_dir
-                selector_crypto.shared_privacy.KEY_PATH = original_key_path
-                selector_crypto.KEY_PATH = original_selector_key_path
-                selector_crypto.LEGACY_KEY_PATH = original_legacy_key_path
-                selector_crypto.ENCRYPTION_KEY = original_encryption_key
+                for key, value in old_env.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
 
-    def test_selector_default_decryption_can_read_existing_legacy_key_file(self):
-        original_legacy_key_path = selector_crypto.LEGACY_KEY_PATH
-        original_encryption_key = selector_crypto.ENCRYPTION_KEY
-        shared_key = b"s" * 32
-        legacy_key = b"l" * 32
-        plain = json.dumps(["/tmp/legacy-key-file.png"])
-        with tempfile.TemporaryDirectory() as tmpdir:
-            try:
-                selector_crypto.LEGACY_KEY_PATH = os.path.join(tmpdir, "key.bin")
-                selector_crypto.ENCRYPTION_KEY = shared_key
-                with open(selector_crypto.LEGACY_KEY_PATH, "wb") as f:
-                    f.write(legacy_key)
+    def test_selector_byte_helpers_use_explicit_purpose(self):
+        with isolated_privacy_keystore():
+            encrypted = selector_crypto.encrypt_bytes(b"selector payload", purpose="selector-unit")
+            payload = json.loads(encrypted.decode("utf-8"))
 
-                legacy_payload = selector_crypto._legacy_encrypt_bytes(legacy_key, plain.encode("utf-8"))
-                encrypted = selector_crypto.ENC_PREFIX + base64.b64encode(legacy_payload).decode("utf-8")
-                privacy_payload = selector_crypto.shared_privacy.encrypt_bytes(plain.encode("utf-8"), key=legacy_key)
-                encrypted_privacy_payload = selector_crypto.ENC_PREFIX + base64.b64encode(privacy_payload).decode("utf-8")
-
-                self.assertEqual(selector_crypto.decrypt_selection(encrypted), plain)
-                self.assertEqual(selector_crypto.decrypt_selection(encrypted_privacy_payload), plain)
-            finally:
-                selector_crypto.LEGACY_KEY_PATH = original_legacy_key_path
-                selector_crypto.ENCRYPTION_KEY = original_encryption_key
-
-    def test_selector_encrypt_bytes_falls_back_to_shared_v1_without_fast_crypto(self):
-        key = b"5" * 32
-        original_aesgcm = selector_crypto.shared_privacy.AESGCM
-        try:
-            selector_crypto.shared_privacy.AESGCM = None
-            encrypted = selector_crypto.encrypt_bytes(key, b"selector payload")
-            self.assertTrue(encrypted.startswith(selector_crypto.shared_privacy.ENC_MAGIC_V1))
-            self.assertEqual(selector_crypto.decrypt_bytes(key, encrypted), b"selector payload")
-        finally:
-            selector_crypto.shared_privacy.AESGCM = original_aesgcm
+            self.assertEqual(payload["purpose"], "selector-unit")
+            self.assertEqual(selector_crypto.decrypt_bytes(encrypted, purpose="selector-unit"), b"selector payload")
 
 
 class ScanningAndThumbnailTests(unittest.TestCase):
@@ -417,27 +392,27 @@ class ScanningAndThumbnailTests(unittest.TestCase):
             self.assertEqual(results[0]["image_folder"], child_dir)
 
     def test_thumbnail_cache_migrates_between_plain_and_encrypted(self):
-        key = b"2" * 32
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with isolated_privacy_keystore(), tempfile.TemporaryDirectory() as tmpdir:
             image_path = os.path.join(tmpdir, "image.png")
             cache_dir = os.path.join(tmpdir, "cache")
             os.makedirs(cache_dir)
             write_image(image_path, (16, 16), (123, 45, 67))
 
-            plain_bytes = get_thumbnail_bytes(image_path, False, cache_dir=cache_dir, key=key)
+            plain_bytes = get_thumbnail_bytes(image_path, False, cache_dir=cache_dir)
             plain_cache, encrypted_cache = thumbnail_cache_paths(image_path, cache_dir)
             self.assertTrue(os.path.exists(plain_cache))
             self.assertFalse(os.path.exists(encrypted_cache))
 
-            encrypted_mode_bytes = get_thumbnail_bytes(image_path, True, cache_dir=cache_dir, key=key)
+            encrypted_mode_bytes = get_thumbnail_bytes(image_path, True, cache_dir=cache_dir)
             self.assertEqual(plain_bytes, encrypted_mode_bytes)
             self.assertFalse(os.path.exists(plain_cache))
             self.assertTrue(os.path.exists(encrypted_cache))
-            if selector_crypto.shared_privacy.AESGCM is not None:
-                with open(encrypted_cache, "rb") as f:
-                    self.assertTrue(f.read().startswith(selector_crypto.shared_privacy.ENC_MAGIC_V2))
+            with open(encrypted_cache, "rb") as f:
+                payload = json.loads(f.read().decode("utf-8"))
+            self.assertEqual(payload["schema"], "helto.comfyui-utils.bytes")
+            self.assertEqual(payload["purpose"], "selector-thumbnail")
 
-            plain_again_bytes = get_thumbnail_bytes(image_path, False, cache_dir=cache_dir, key=key)
+            plain_again_bytes = get_thumbnail_bytes(image_path, False, cache_dir=cache_dir)
             self.assertEqual(plain_bytes, plain_again_bytes)
             self.assertTrue(os.path.exists(plain_cache))
             self.assertFalse(os.path.exists(encrypted_cache))
@@ -503,20 +478,19 @@ class ScanningAndThumbnailTests(unittest.TestCase):
             self.assertGreater(second_pixel[2], 200)
 
     def test_encrypted_thumbnail_cache_regenerates_when_source_file_changes(self):
-        key = b"5" * 32
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with isolated_privacy_keystore(), tempfile.TemporaryDirectory() as tmpdir:
             image_path = os.path.join(tmpdir, "image.png")
             cache_dir = os.path.join(tmpdir, "cache")
             os.makedirs(cache_dir)
             write_image(image_path, (16, 16), (255, 0, 0))
 
-            first_bytes = get_thumbnail_bytes(image_path, True, cache_dir=cache_dir, key=key)
+            first_bytes = get_thumbnail_bytes(image_path, True, cache_dir=cache_dir)
             _, encrypted_cache = thumbnail_cache_paths(image_path, cache_dir)
             write_image(image_path, (16, 16), (0, 0, 255))
             newer_mtime = os.path.getmtime(encrypted_cache) + 1
             os.utime(image_path, (newer_mtime, newer_mtime))
 
-            second_bytes = get_thumbnail_bytes(image_path, True, cache_dir=cache_dir, key=key)
+            second_bytes = get_thumbnail_bytes(image_path, True, cache_dir=cache_dir)
 
             self.assertNotEqual(first_bytes, second_bytes)
             first_pixel = thumbnail_pixel(first_bytes)
@@ -526,24 +500,21 @@ class ScanningAndThumbnailTests(unittest.TestCase):
             self.assertLess(second_pixel[0], 80)
             self.assertGreater(second_pixel[2], 200)
 
-    def test_thumbnail_cache_reads_and_migrates_legacy_encrypted_payload(self):
-        key = b"6" * 32
-        with tempfile.TemporaryDirectory() as tmpdir:
+    def test_thumbnail_cache_legacy_encrypted_payload_fails_closed(self):
+        with isolated_privacy_keystore(), tempfile.TemporaryDirectory() as tmpdir:
             image_path = os.path.join(tmpdir, "image.png")
             cache_dir = os.path.join(tmpdir, "cache")
             os.makedirs(cache_dir)
             write_image(image_path, (16, 16), (123, 45, 67))
             plain_cache, encrypted_cache = thumbnail_cache_paths(image_path, cache_dir)
-            legacy_bytes = b"legacy webp bytes"
 
             with open(encrypted_cache, "wb") as f:
-                f.write(selector_crypto._legacy_encrypt_bytes(key, legacy_bytes))
+                f.write(b"legacy webp bytes")
 
-            self.assertEqual(get_thumbnail_bytes(image_path, False, cache_dir=cache_dir, key=key), legacy_bytes)
-            self.assertTrue(os.path.exists(plain_cache))
-            self.assertFalse(os.path.exists(encrypted_cache))
-            with open(plain_cache, "rb") as f:
-                self.assertEqual(f.read(), legacy_bytes)
+            with self.assertRaises(Exception):
+                get_thumbnail_bytes(image_path, False, cache_dir=cache_dir)
+            self.assertFalse(os.path.exists(plain_cache))
+            self.assertTrue(os.path.exists(encrypted_cache))
 
     def test_delete_thumbnail_cache_for_paths_removes_plain_and_encrypted_variants(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -763,8 +734,9 @@ class ServiceLayerTests(unittest.TestCase):
         self.assertEqual(delete_payload.folders, ["/home/thhel/comfy/input"])
 
     def test_encrypt_decrypt_and_clear_cache_payload_helpers(self):
-        encrypted = encrypt_payload({"data": json.dumps(["/tmp/a.png"])})["encrypted"]
-        decrypted = decrypt_payload({"encrypted": encrypted})["data"]
+        with isolated_privacy_keystore():
+            encrypted = encrypt_payload({"data": json.dumps(["/tmp/a.png"])})["encrypted"]
+            decrypted = decrypt_payload({"encrypted": encrypted})["data"]
         cleared: list[bool] = []
 
         self.assertEqual(json.loads(decrypted), ["/tmp/a.png"])
@@ -1006,6 +978,14 @@ class SelectorRouteTests(unittest.TestCase):
         self._server_module = sys.modules.get("server")
         self._aiohttp_module = sys.modules.get("aiohttp")
         self._aiohttp_web_module = sys.modules.get("aiohttp.web")
+        self._old_privacy_env = {
+            "HELTO_PRIVACY_KEYSTORE": os.environ.get("HELTO_PRIVACY_KEYSTORE"),
+            "HELTO_PRIVACY_SESSION_DIR": os.environ.get("HELTO_PRIVACY_SESSION_DIR"),
+        }
+        self._privacy_tmp = tempfile.TemporaryDirectory()
+        privacy_root = Path(self._privacy_tmp.name)
+        os.environ["HELTO_PRIVACY_KEYSTORE"] = str(privacy_root / "missing_keystore.json")
+        os.environ["HELTO_PRIVACY_SESSION_DIR"] = str(privacy_root / "session")
         fake_routes = types.SimpleNamespace(
             get=lambda _path: (lambda fn: fn),
             post=lambda _path: (lambda fn: fn),
@@ -1035,6 +1015,12 @@ class SelectorRouteTests(unittest.TestCase):
             sys.modules.pop("aiohttp.web", None)
         else:
             sys.modules["aiohttp.web"] = self._aiohttp_web_module
+        for key, value in self._old_privacy_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        self._privacy_tmp.cleanup()
 
     @staticmethod
     def _response(text=None, status=200, body=None, content_type=None, headers=None):
@@ -1049,11 +1035,17 @@ class SelectorRouteTests(unittest.TestCase):
         return types.SimpleNamespace(status=status, payload=payload, text=json.dumps(payload))
 
     @staticmethod
-    def _request(path: str, privacy: str = "false", folders: list[str] | None = None):
+    def _request(
+        path: str,
+        privacy: str = "false",
+        folders: list[str] | None = None,
+        headers: dict[str, str] | None = None,
+        cookies: dict[str, str] | None = None,
+    ):
         query = {"path": path, "privacy": privacy}
         if folders is not None:
             query["folders"] = json.dumps(folders)
-        return types.SimpleNamespace(query=query)
+        return types.SimpleNamespace(query=query, headers=headers or {}, cookies=cookies or {})
 
     def _patch_authorized_roots(self, roots):
         original = self.routes.authorize_selector_image_path
@@ -1080,8 +1072,16 @@ class SelectorRouteTests(unittest.TestCase):
 
             original_authorize = self._patch_authorized_roots([root_dir])
             original_thumbnail_payload = self.routes.thumbnail_payload
+            original_mask_image_payload = self.routes.mask_image_payload
+            original_to_thread = self.routes.asyncio.to_thread
             thumbnail_cache_dir = os.path.join(tmpdir, "thumbs")
             self.routes.thumbnail_payload = lambda path, privacy: get_thumbnail_bytes(path, privacy, cache_dir=thumbnail_cache_dir)
+            self.routes.mask_image_payload = lambda _path: b"mask"
+
+            async def immediate_to_thread(func, *args, **kwargs):
+                return func(*args, **kwargs)
+
+            self.routes.asyncio.to_thread = immediate_to_thread
             try:
                 for handler_name in ("view_image", "get_thumbnail", "get_mask"):
                     response = asyncio.run(getattr(self.routes, handler_name)(self._request(outside_path)))
@@ -1114,6 +1114,53 @@ class SelectorRouteTests(unittest.TestCase):
             finally:
                 self.routes.authorize_selector_image_path = original_authorize
                 self.routes.thumbnail_payload = original_thumbnail_payload
+                self.routes.mask_image_payload = original_mask_image_payload
+                self.routes.asyncio.to_thread = original_to_thread
+
+    def test_selector_private_routes_require_shared_privacy_token(self):
+        from helto_privacy import PRIVACY_TOKEN_HEADER, initialize_keystore
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_env = {
+                "HELTO_PRIVACY_KEYSTORE": os.environ.get("HELTO_PRIVACY_KEYSTORE"),
+                "HELTO_PRIVACY_SESSION_DIR": os.environ.get("HELTO_PRIVACY_SESSION_DIR"),
+            }
+            os.environ["HELTO_PRIVACY_KEYSTORE"] = str(Path(tmpdir) / "privacy_keystore.json")
+            os.environ["HELTO_PRIVACY_SESSION_DIR"] = str(Path(tmpdir) / "privacy_session")
+            root_dir = os.path.join(tmpdir, "root")
+            os.makedirs(root_dir)
+            image_path = os.path.join(root_dir, "image.png")
+            write_image(image_path, (8, 8), (0, 0, 255))
+            token = initialize_keystore("correct horse battery staple")["token"]
+
+            original_authorize = self._patch_authorized_roots([root_dir])
+            original_thumbnail_payload = self.routes.thumbnail_payload
+            original_to_thread = self.routes.asyncio.to_thread
+            self.routes.thumbnail_payload = lambda _path, _privacy: b"thumb"
+
+            async def immediate_to_thread(func, *args, **kwargs):
+                return func(*args, **kwargs)
+
+            self.routes.asyncio.to_thread = immediate_to_thread
+            try:
+                locked = asyncio.run(self.routes.get_thumbnail(self._request(image_path, privacy="true")))
+                unlocked = asyncio.run(self.routes.get_thumbnail(
+                    self._request(image_path, privacy="true", headers={PRIVACY_TOKEN_HEADER: token})
+                ))
+
+                self.assertEqual(locked.status, 401)
+                self.assertIn("PRIVACY_TOKEN_REQUIRED", locked.payload["error"])
+                self.assertEqual(unlocked.status, 200)
+                self.assertEqual(unlocked.content_type, "image/webp")
+            finally:
+                self.routes.authorize_selector_image_path = original_authorize
+                self.routes.thumbnail_payload = original_thumbnail_payload
+                self.routes.asyncio.to_thread = original_to_thread
+                for key, value in old_env.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
 
 
 class NodeSchemaContractTests(unittest.TestCase):
@@ -1472,18 +1519,20 @@ class NodeSchemaContractTests(unittest.TestCase):
 
         globals_["PromptProviderRegistry"] = FakeRegistry
         try:
-            result = prompt_node.execute(
-                seed=11,
-                generation_max_tokens=77,
-                prompt_type="image",
-                active_segment_index=999,
-                segment_generation_mode="single segment",
-                script=encrypt_selection("A {{style}} portrait"),
-                external_prompt="   ",
-                variables=json.dumps([
-                    {"name": "style", "mode": "fixed", "values": ["documentary"], "fixed_index": 0}
-                ]),
-            )
+            with isolated_privacy_keystore():
+                encrypted_script = encrypt_selection("A {{style}} portrait")
+                result = prompt_node.execute(
+                    seed=11,
+                    generation_max_tokens=77,
+                    prompt_type="image",
+                    active_segment_index=999,
+                    segment_generation_mode="single segment",
+                    script=encrypted_script,
+                    external_prompt="   ",
+                    variables=json.dumps([
+                        {"name": "style", "mode": "fixed", "values": ["documentary"], "fixed_index": 0}
+                    ]),
+                )
         finally:
             globals_["PromptProviderRegistry"] = original_provider
 
@@ -1510,15 +1559,17 @@ class NodeSchemaContractTests(unittest.TestCase):
 
         globals_["PromptProviderRegistry"] = FakeRegistry
         try:
-            result = prompt_node.execute(
-                seed=11,
-                prompt_type="image",
-                script=encrypt_selection("Internal {{style}} portrait"),
-                external_prompt=" External {{style}} storyboard ",
-                variables=json.dumps([
-                    {"name": "style", "mode": "fixed", "values": ["documentary"], "fixed_index": 0}
-                ]),
-            )
+            with isolated_privacy_keystore():
+                encrypted_script = encrypt_selection("Internal {{style}} portrait")
+                result = prompt_node.execute(
+                    seed=11,
+                    prompt_type="image",
+                    script=encrypted_script,
+                    external_prompt=" External {{style}} storyboard ",
+                    variables=json.dumps([
+                        {"name": "style", "mode": "fixed", "values": ["documentary"], "fixed_index": 0}
+                    ]),
+                )
         finally:
             globals_["PromptProviderRegistry"] = original_provider
 
@@ -2636,7 +2687,10 @@ Second beat moves toward the doorway. @image1:end
                 Path(tmpdir) / "helto_private" / "HeltoSaveVideoAdvanced" / "replay",
             )
 
-            plaintext = privacy_globals["decrypt_bytes"](bundle_path.read_bytes())
+            plaintext = privacy_globals["decrypt_bytes"](
+                bundle_path.read_bytes(),
+                purpose=privacy_globals["SAVE_VIDEO_REPLAY_PURPOSE"],
+            )
             bundle = torch.load(BytesIO(plaintext), map_location="cpu")
             self.assertTrue(torch.equal(bundle["images"], images))
             self.assertTrue(torch.equal(bundle["audio"]["waveform"], audio["waveform"]))
@@ -3187,8 +3241,11 @@ Second beat moves toward the doorway. @image1:end
 
         privacy_globals = module_globals["write_encrypted_temp_file"].__globals__
         privacy_globals["folder_paths"].get_temp_directory = lambda: tmpdir
-        privacy_globals["CONFIG_DIR"] = Path(tmpdir) / "config"
-        privacy_globals["KEY_PATH"] = privacy_globals["CONFIG_DIR"] / "privacy_key.bin"
+        os.environ["HELTO_PRIVACY_KEYSTORE"] = str(Path(tmpdir) / "privacy_keystore.json")
+        os.environ["HELTO_PRIVACY_SESSION_DIR"] = str(Path(tmpdir) / "privacy_session")
+        from helto_privacy import initialize_keystore
+
+        initialize_keystore("correct horse battery staple")
         return privacy_globals
 
     @staticmethod

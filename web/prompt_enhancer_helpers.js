@@ -3,6 +3,7 @@ import {
     encryptedOrReusePrivacyValue,
     forgetPrivacyEnvelope,
     isPrivacyEnvelope,
+    isLegacyPrivacyEnvelope,
     rememberPrivacyEnvelope,
 } from "./privacy_envelope.js";
 
@@ -325,6 +326,9 @@ export function isEncryptedText(value) {
 
 export async function decryptPromptText(value, selectorApi) {
     const serialized = String(value || "");
+    if (isLegacyPrivacyEnvelope(serialized)) {
+        return "";
+    }
     if (!isEncryptedText(serialized)) {
         return serialized;
     }

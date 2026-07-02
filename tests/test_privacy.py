@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+import os
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -11,103 +14,95 @@ from PIL import Image
 class PrivacyTests(unittest.TestCase):
     def setUp(self):
         self._old_folder_paths = sys.modules.get("folder_paths")
+        self._old_env = {
+            "HELTO_PRIVACY_KEYSTORE": os.environ.get("HELTO_PRIVACY_KEYSTORE"),
+            "HELTO_PRIVACY_SESSION_DIR": os.environ.get("HELTO_PRIVACY_SESSION_DIR"),
+        }
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        os.environ["HELTO_PRIVACY_KEYSTORE"] = str(self.root / "privacy_keystore.json")
+        os.environ["HELTO_PRIVACY_SESSION_DIR"] = str(self.root / "session")
         folder_paths = types.ModuleType("folder_paths")
-        self.temp_dir = Path(self._testMethodName)
-        self.temp_dir.mkdir(exist_ok=True)
+        self.temp_dir = self.root / "temp"
+        self.temp_dir.mkdir()
         folder_paths.get_temp_directory = lambda: str(self.temp_dir)
         sys.modules["folder_paths"] = folder_paths
         if "shared.privacy" in sys.modules:
             sys.modules["shared.privacy"].folder_paths = folder_paths
 
     def tearDown(self):
-        for path in sorted(self.temp_dir.rglob("*"), reverse=True):
-            if path.is_file():
-                path.unlink()
-            elif path.is_dir():
-                path.rmdir()
-        if self.temp_dir.exists():
-            self.temp_dir.rmdir()
+        for key, value in self._old_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
         if self._old_folder_paths is None:
             sys.modules.pop("folder_paths", None)
         else:
             sys.modules["folder_paths"] = self._old_folder_paths
+        self._tmp.cleanup()
 
-    def test_crypto_roundtrip_and_token_validation(self):
+    def _initialize_keystore(self):
+        from helto_privacy import initialize_keystore
+
+        initialize_keystore("correct horse battery staple")
+
+    def test_crypto_roundtrip_and_encrypted_token_validation(self):
         from shared import privacy
 
-        key = b"1" * 32
-        encrypted = privacy.encrypt_bytes(b"secret preview", key=key)
-        self.assertNotIn(b"secret preview", encrypted)
-        self.assertEqual(privacy.decrypt_bytes(encrypted, key=key), b"secret preview")
+        self._initialize_keystore()
+        encrypted = privacy.encrypt_bytes(b"secret preview", purpose="unit-test")
+        envelope = json.loads(encrypted.decode("utf-8"))
 
-        token = privacy.sign_media_token({"path": "/tmp/example.png", "encrypted": True}, key=key)
-        payload = privacy.verify_media_token(token, key=key)
+        self.assertNotIn(b"secret preview", encrypted)
+        self.assertEqual(envelope["schema"], "helto.comfyui-utils.bytes")
+        self.assertEqual(envelope["purpose"], "unit-test")
+        self.assertEqual(privacy.decrypt_bytes(encrypted, purpose="unit-test"), b"secret preview")
+
+        token = privacy.sign_media_token({"path": "/tmp/example.png", "encrypted": True})
+        self.assertNotIn("/tmp/example.png", token)
+        payload = privacy.verify_media_token(token)
         self.assertEqual(payload["path"], "/tmp/example.png")
         self.assertTrue(payload["encrypted"])
-        with self.assertRaises(ValueError):
-            privacy.verify_media_token(token + "x", key=key)
+        with self.assertRaises(Exception):
+            privacy.verify_media_token(token + "x")
 
-    def test_fast_crypto_writes_v2_payload_when_available(self):
+    def test_encrypt_requires_shared_keystore_instead_of_key_file_fallback(self):
         from shared import privacy
 
-        if privacy.AESGCM is None:
-            self.skipTest("cryptography is not available")
+        with self.assertRaisesRegex(Exception, "PRIVACY_KEYSTORE_UNINITIALIZED"):
+            privacy.encrypt_bytes(b"no fallback", purpose="unit-test")
+        self.assertFalse((self.root / "config" / "privacy_key.json").exists())
 
-        key = b"2" * 32
-        encrypted = privacy.encrypt_bytes(b"large private payload", key=key)
-
-        self.assertTrue(encrypted.startswith(privacy.ENC_MAGIC_V2))
-        self.assertEqual(privacy.decrypt_bytes(encrypted, key=key), b"large private payload")
-
-    def test_fast_crypto_uses_chunked_v3_for_large_payloads(self):
+    def test_fast_crypto_uses_chunked_byte_envelope_for_large_payloads(self):
+        import helto_privacy.envelope as envelope_module
         from shared import privacy
 
-        if privacy.AESGCM is None:
-            self.skipTest("cryptography is not available")
-
-        key = b"5" * 32
-        original_max_bytes = privacy.AESGCM_MAX_BYTES
-        original_chunk_size = privacy.AESGCM_CHUNK_SIZE
+        self._initialize_keystore()
+        original_chunk_size = envelope_module.BYTE_CHUNK_SIZE
         try:
-            privacy.AESGCM_MAX_BYTES = 8
-            privacy.AESGCM_CHUNK_SIZE = 7
+            envelope_module.BYTE_CHUNK_SIZE = 7
             plaintext = b"chunked private payload"
-            encrypted = privacy.encrypt_bytes(plaintext, key=key)
-            self.assertTrue(encrypted.startswith(privacy.ENC_MAGIC_V3))
-            self.assertEqual(privacy.decrypt_bytes(encrypted, key=key), plaintext)
+            encrypted = privacy.encrypt_bytes(plaintext, purpose="chunk-test")
+            payload = json.loads(encrypted.decode("utf-8"))
+            self.assertEqual(payload["schema"], "helto.comfyui-utils.bytes.chunked")
+            self.assertEqual(privacy.decrypt_bytes(encrypted, purpose="chunk-test"), plaintext)
         finally:
-            privacy.AESGCM_MAX_BYTES = original_max_bytes
-            privacy.AESGCM_CHUNK_SIZE = original_chunk_size
+            envelope_module.BYTE_CHUNK_SIZE = original_chunk_size
 
-    def test_decrypt_bytes_keeps_v1_payloads_readable(self):
+    def test_legacy_byte_payloads_fail_closed(self):
         from shared import privacy
 
-        key = b"3" * 32
-        encrypted = privacy._encrypt_bytes_v1(b"old private payload", key)
-
-        self.assertTrue(encrypted.startswith(privacy.ENC_MAGIC_V1))
-        self.assertEqual(privacy.decrypt_bytes(encrypted, key=key), b"old private payload")
-
-    def test_encrypt_bytes_falls_back_to_v1_without_fast_crypto(self):
-        from shared import privacy
-
-        key = b"4" * 32
-        original_aesgcm = privacy.AESGCM
-        try:
-            privacy.AESGCM = None
-            encrypted = privacy.encrypt_bytes(b"fallback private payload", key=key)
-            self.assertTrue(encrypted.startswith(privacy.ENC_MAGIC_V1))
-            self.assertEqual(privacy.decrypt_bytes(encrypted, key=key), b"fallback private payload")
-        finally:
-            privacy.AESGCM = original_aesgcm
+        self._initialize_keystore()
+        with self.assertRaises(Exception):
+            privacy.decrypt_bytes(b"HELTO_PRIV1:not-a-json-envelope", purpose="unit-test")
 
     def test_encrypted_preview_file_decrypts_to_png(self):
         from io import BytesIO
 
         from shared import privacy
 
-        privacy.CONFIG_DIR = self.temp_dir / "config"
-        privacy.KEY_PATH = privacy.CONFIG_DIR / "privacy_key.bin"
+        self._initialize_keystore()
 
         image = Image.new("RGB", (2, 2), "red")
         buffer = BytesIO()
@@ -123,8 +118,7 @@ class PrivacyTests(unittest.TestCase):
     def test_encrypted_temp_file_decrypts_to_source_bytes(self):
         from shared import privacy
 
-        privacy.CONFIG_DIR = self.temp_dir / "config"
-        privacy.KEY_PATH = privacy.CONFIG_DIR / "privacy_key.bin"
+        self._initialize_keystore()
 
         source_path = self.temp_dir / "preview.mp4"
         source_path.write_bytes(b"fake mp4 preview bytes")

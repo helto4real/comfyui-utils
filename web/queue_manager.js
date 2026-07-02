@@ -1,5 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { privacyFetchJson } from "./privacy_common.js";
 import {
     attachHeltoMediaPreviewHover,
     hideHeltoMediaPreviewThumbnail,
@@ -67,6 +68,9 @@ function routeUrl(route) {
 }
 
 async function jsonFetch(route, options = {}) {
+    if (String(route || "").startsWith("/helto_queue_manager/")) {
+        return privacyFetchJson(routeUrl(route), options);
+    }
     const response = await fetch(routeUrl(route), options);
     const payload = await response.json().catch(() => ({}));
     if (!response.ok || payload?.ok === false) {

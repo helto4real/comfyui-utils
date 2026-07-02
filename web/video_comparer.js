@@ -1,5 +1,6 @@
 import { app } from "/scripts/app.js";
 import { api } from "/scripts/api.js";
+import { ensurePrivacyTokenCookieSoon } from "./privacy_common.js";
 
 const NODE_CLASS = "HeltoVideoComparer";
 const DISPLAY_NAME = "Video Comparer";
@@ -229,6 +230,7 @@ function isHideModeEnabled(node) {
 
 function recordToUrl(record) {
     if (record?.private && record?.token) {
+        ensurePrivacyTokenCookieSoon();
         const params = new URLSearchParams({ token: record.token });
         return api.apiURL(`/helto_utils/private_media?${params.toString()}${app.getRandParam?.() ?? ""}`);
     }

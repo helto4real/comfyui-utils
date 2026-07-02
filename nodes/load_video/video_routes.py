@@ -5,6 +5,7 @@ import os
 import urllib.parse
 
 from aiohttp import web
+from helto_privacy import aiohttp_check_privacy_token
 import server
 
 from .video_config import (
@@ -115,6 +116,10 @@ async def get_preview(request):
         alias = request.query.get("alias", "input") or "input"
         filename = urllib.parse.unquote(request.query.get("filename", ""))
         privacy_mode = request.query.get("privacy", "true").lower() in {"1", "true", "yes"}
+        if privacy_mode:
+            denied = aiohttp_check_privacy_token(request)
+            if denied is not None:
+                return denied
         path = resolve_video_path(alias, filename)
         if path.suffix.lower() not in VIDEO_EXTENSIONS:
             return web.json_response({"error": "Unsupported video type"}, status=400)
@@ -129,6 +134,10 @@ async def get_thumb(request):
     try:
         alias = request.query.get("alias", "input") or "input"
         privacy_mode = request.query.get("privacy", "true").lower() in {"1", "true", "yes"}
+        if privacy_mode:
+            denied = aiohttp_check_privacy_token(request)
+            if denied is not None:
+                return denied
         filename = urllib.parse.unquote(request.query.get("filename", ""))
         path = resolve_video_path(alias, filename)
         body = await asyncio.to_thread(thumbnail_bytes, path, privacy_mode)

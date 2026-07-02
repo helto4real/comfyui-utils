@@ -1,15 +1,9 @@
 from __future__ import annotations
 
-import base64
-import hashlib
-import hmac
-import os
-import secrets
 import sys
 import tempfile
 import types
-
-from .constants import CONFIG_DIR, ENC_PREFIX
+from typing import Any
 
 def _install_folder_paths_stub() -> None:
     folder_paths = types.ModuleType("folder_paths")
@@ -39,101 +33,36 @@ def _import_shared_privacy():
 
 
 shared_privacy = _import_shared_privacy()
-
-KEY_PATH = shared_privacy.KEY_PATH
-LEGACY_KEY_PATH = os.path.join(CONFIG_DIR, "key.bin")
+_UNSUPPORTED_LEGACY_PREFIX = "__HELTO_ENC__:"
 
 
-def load_encryption_key() -> bytes:
-    return shared_privacy.load_encryption_key()
+def encrypt_bytes(plaintext: bytes, *, purpose: str) -> bytes:
+    return shared_privacy.encrypt_bytes(plaintext, purpose=purpose)
 
 
-def _load_legacy_encryption_key() -> bytes | None:
-    if not os.path.exists(LEGACY_KEY_PATH):
-        return None
-    with open(LEGACY_KEY_PATH, "rb") as f:
-        key = f.read()
-    return key or None
+def decrypt_bytes(ciphertext: bytes, *, purpose: str) -> bytes:
+    return shared_privacy.decrypt_bytes(ciphertext, purpose=purpose)
 
 
-ENCRYPTION_KEY = load_encryption_key()
+def _reject_legacy_payload(value: Any) -> None:
+    if isinstance(value, str) and value.startswith(_UNSUPPORTED_LEGACY_PREFIX):
+        raise ValueError("Legacy Helto selector encrypted payloads are no longer supported.")
 
 
-def _derive_keystream(key: bytes, iv: bytes, length: int) -> bytes:
-    keystream = bytearray()
-    counter = 0
-    while len(keystream) < length:
-        h = hmac.new(key, iv + counter.to_bytes(4, "big"), hashlib.sha256)
-        keystream.extend(h.digest())
-        counter += 1
-    return bytes(keystream[:length])
+def encrypt_selection(plain_json: str) -> str:
+    return shared_privacy.encrypt_state_string({"data": str(plain_json or "")})
 
 
-def _legacy_encrypt_bytes(key: bytes, plaintext: bytes) -> bytes:
-    iv = secrets.token_bytes(16)
-    keystream = _derive_keystream(key, iv, len(plaintext))
-    ciphertext = bytes(a ^ b for a, b in zip(plaintext, keystream))
-    return iv + ciphertext
-
-
-def _legacy_decrypt_bytes(key: bytes, ciphertext: bytes) -> bytes:
-    if len(ciphertext) < 16:
-        raise ValueError("Ciphertext too short")
-    iv = ciphertext[:16]
-    encrypted = ciphertext[16:]
-    keystream = _derive_keystream(key, iv, len(encrypted))
-    return bytes(a ^ b for a, b in zip(encrypted, keystream))
-
-
-def encrypt_bytes(key: bytes, plaintext: bytes) -> bytes:
-    return shared_privacy.encrypt_bytes(plaintext, key=key)
-
-
-def decrypt_bytes(key: bytes, ciphertext: bytes) -> bytes:
-    legacy_key = _load_legacy_encryption_key() if key == ENCRYPTION_KEY else None
-    privacy_headers = (shared_privacy.ENC_MAGIC_V1, shared_privacy.ENC_MAGIC_V2, shared_privacy.ENC_MAGIC_V3)
-    if not ciphertext.startswith(privacy_headers):
-        if legacy_key and legacy_key != key:
-            return _legacy_decrypt_bytes(legacy_key, ciphertext)
-        return _legacy_decrypt_bytes(key, ciphertext)
-
+def decrypt_selection(encrypted_text: Any) -> str:
+    _reject_legacy_payload(encrypted_text)
+    if not shared_privacy.is_encrypted_state(encrypted_text):
+        return str(encrypted_text or "")
     try:
-        return shared_privacy.decrypt_bytes(ciphertext, key=key)
-    except ValueError:
-        if legacy_key and legacy_key != key:
-            return shared_privacy.decrypt_bytes(ciphertext, key=legacy_key)
-        raise
-
-
-def encrypt_string(key: bytes, text: str) -> str:
-    encrypted = encrypt_bytes(key, text.encode("utf-8"))
-    return base64.b64encode(encrypted).decode("utf-8")
-
-
-def decrypt_string(key: bytes, encrypted_b64: str) -> str:
-    encrypted = base64.b64decode(encrypted_b64.encode("utf-8"))
-    decrypted = decrypt_bytes(key, encrypted)
-    return decrypted.decode("utf-8")
-
-
-def encrypt_selection(plain_json: str, key: bytes | None = None) -> str:
-    key = key if key is not None else ENCRYPTION_KEY
-    return ENC_PREFIX + encrypt_string(key, plain_json)
-
-
-def decrypt_selection(encrypted_text: str, key: bytes | None = None) -> str:
-    key = key if key is not None else ENCRYPTION_KEY
-    if not encrypted_text.startswith(ENC_PREFIX):
-        return encrypted_text
-    encrypted_part = encrypted_text[len(ENC_PREFIX):]
-    try:
-        return decrypt_string(key, encrypted_part)
+        state = shared_privacy.decrypt_state_string(encrypted_text)
     except Exception as e:
-        # A prefixed payload that will not decrypt means real corruption or a
-        # key mismatch. Surfacing it as a node error is far better than silently
-        # degrading to an empty selection, which looks like "nothing selected".
         print(f"[HeltoSelector] Error decrypting selection state: {e}")
         raise ValueError(
             "Failed to decrypt Helto selector state; the data may be corrupt "
-            "or was encrypted with a different privacy key."
+            "or the privacy keystore is locked."
         ) from e
+    return str(state.get("data") or "")

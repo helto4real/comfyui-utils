@@ -12,7 +12,12 @@ try:
 except ImportError:
     from shared.temp_cache import public_temp_cache_dir
 
-from .crypto import ENCRYPTION_KEY, decrypt_bytes, encrypt_bytes
+from .crypto import decrypt_bytes, encrypt_bytes
+
+try:
+    from ..shared.privacy import SELECTOR_THUMBNAIL_PURPOSE
+except ImportError:
+    from shared.privacy import SELECTOR_THUMBNAIL_PURPOSE
 
 THUMBNAIL_MAX_SIZE = 512
 THUMBNAIL_CACHE_VERSION = "v2"
@@ -64,7 +69,6 @@ def get_thumbnail_bytes(
     image_path: str,
     privacy_mode: bool,
     cache_dir: str | os.PathLike[str] | None = None,
-    key: bytes = ENCRYPTION_KEY,
 ) -> bytes:
     cache_dir = _resolve_cache_dir(cache_dir)
     os.makedirs(cache_dir, exist_ok=True)
@@ -73,14 +77,14 @@ def get_thumbnail_bytes(
     if privacy_mode:
         encrypted_bytes = _read_fresh_cache(enc_cache_path, image_path)
         if encrypted_bytes is not None:
-            return decrypt_bytes(key, encrypted_bytes)
+            return decrypt_bytes(encrypted_bytes, purpose=SELECTOR_THUMBNAIL_PURPOSE)
 
         webp_bytes = _read_fresh_cache(plain_cache_path, image_path)
         if webp_bytes is None:
             webp_bytes = generate_thumbnail_bytes(image_path)
 
         with open(enc_cache_path, "wb") as f:
-            f.write(encrypt_bytes(key, webp_bytes))
+            f.write(encrypt_bytes(webp_bytes, purpose=SELECTOR_THUMBNAIL_PURPOSE))
         try:
             os.remove(plain_cache_path)
         except Exception:
@@ -93,7 +97,7 @@ def get_thumbnail_bytes(
 
     encrypted_bytes = _read_fresh_cache(enc_cache_path, image_path)
     if encrypted_bytes is not None:
-        webp_bytes = decrypt_bytes(key, encrypted_bytes)
+        webp_bytes = decrypt_bytes(encrypted_bytes, purpose=SELECTOR_THUMBNAIL_PURPOSE)
     else:
         webp_bytes = generate_thumbnail_bytes(image_path)
 

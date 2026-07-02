@@ -16,6 +16,7 @@ from typing import Any
 
 from aiohttp import web
 import folder_paths
+from helto_privacy import aiohttp_check_privacy_token
 import numpy as np
 import server
 import torch
@@ -28,6 +29,7 @@ from PIL.PngImagePlugin import PngInfo
 
 from ...shared import progress_api as helto_progress
 from ...shared.privacy import (
+    SAVE_VIDEO_REPLAY_PURPOSE,
     content_type_for_path,
     decrypt_bytes,
     encrypt_bytes,
@@ -620,7 +622,7 @@ class SaveVideoAdvanced(io.ComfyNode):
         torch.save(payload, buffer)
         if encrypted:
             output_path = private_temp_cache_dir("HeltoSaveVideoAdvanced", "replay") / f"{uuid.uuid4().hex}.pt.enc"
-            output_path.write_bytes(encrypt_bytes(buffer.getvalue()))
+            output_path.write_bytes(encrypt_bytes(buffer.getvalue(), purpose=SAVE_VIDEO_REPLAY_PURPOSE))
             return output_path
 
         output_dir = public_temp_cache_dir("HeltoSaveVideoAdvanced", "replay")
@@ -641,7 +643,7 @@ class SaveVideoAdvanced(io.ComfyNode):
         try:
             data = path.read_bytes()
             if stored.get("encrypted"):
-                data = decrypt_bytes(data)
+                data = decrypt_bytes(data, purpose=SAVE_VIDEO_REPLAY_PURPOSE)
 
             buffer = BytesIO(data)
             return torch.load(buffer, map_location="cpu", weights_only=True)
@@ -1255,6 +1257,9 @@ class SaveVideoAdvanced(io.ComfyNode):
 @server.PromptServer.instance.routes.post("/helto_save_video_advanced/release")
 async def release_save_video_advanced(request):
     try:
+        denied = aiohttp_check_privacy_token(request)
+        if denied is not None:
+            return denied
         data = await request.json()
         node_id = str(data.get("node_id", ""))
         result = SaveVideoAdvanced.request_release(node_id, data.get("revision"))

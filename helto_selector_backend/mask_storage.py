@@ -9,7 +9,12 @@ from typing import Any
 from PIL import Image, ImageOps
 
 from .constants import CACHE_DIR, ensure_runtime_dirs
-from .crypto import ENCRYPTION_KEY, decrypt_bytes, encrypt_bytes
+from .crypto import decrypt_bytes, encrypt_bytes
+
+try:
+    from ..shared.privacy import SELECTOR_MASK_PURPOSE
+except ImportError:
+    from shared.privacy import SELECTOR_MASK_PURPOSE
 
 MASK_CACHE_DIR = os.path.join(CACHE_DIR, "masks")
 
@@ -61,10 +66,9 @@ def save_mask_data_url(
     data_url: str,
     privacy_mode: bool,
     mask_cache_dir: str = MASK_CACHE_DIR,
-    key: bytes = ENCRYPTION_KEY,
 ) -> dict[str, str]:
     png_bytes = _normalize_mask_png(_decode_data_url(data_url))
-    return save_mask_bytes(image_path, png_bytes, privacy_mode, mask_cache_dir, key)
+    return save_mask_bytes(image_path, png_bytes, privacy_mode, mask_cache_dir)
 
 
 def save_mask_bytes(
@@ -72,14 +76,13 @@ def save_mask_bytes(
     png_bytes: bytes,
     privacy_mode: bool,
     mask_cache_dir: str = MASK_CACHE_DIR,
-    key: bytes = ENCRYPTION_KEY,
 ) -> dict[str, str]:
     _ensure_mask_cache_dir(mask_cache_dir)
     plain_path, encrypted_path = mask_cache_paths(image_path, mask_cache_dir)
 
     if privacy_mode:
         with open(encrypted_path, "wb") as f:
-            f.write(encrypt_bytes(key, png_bytes))
+            f.write(encrypt_bytes(png_bytes, purpose=SELECTOR_MASK_PURPOSE))
         if os.path.exists(plain_path):
             os.remove(plain_path)
     else:
@@ -107,7 +110,6 @@ def delete_mask(
 def load_mask_bytes(
     image_path: str,
     mask_cache_dir: str = MASK_CACHE_DIR,
-    key: bytes = ENCRYPTION_KEY,
 ) -> bytes | None:
     plain_path, encrypted_path = mask_cache_paths(image_path, mask_cache_dir)
 
@@ -117,7 +119,7 @@ def load_mask_bytes(
 
     if os.path.exists(encrypted_path):
         with open(encrypted_path, "rb") as f:
-            return decrypt_bytes(key, f.read())
+            return decrypt_bytes(f.read(), purpose=SELECTOR_MASK_PURPOSE)
 
     return None
 
@@ -125,9 +127,8 @@ def load_mask_bytes(
 def load_mask_image(
     image_path: str,
     mask_cache_dir: str = MASK_CACHE_DIR,
-    key: bytes = ENCRYPTION_KEY,
 ) -> Image.Image | None:
-    mask_bytes = load_mask_bytes(image_path, mask_cache_dir, key)
+    mask_bytes = load_mask_bytes(image_path, mask_cache_dir)
     if mask_bytes is None:
         return None
     with Image.open(BytesIO(mask_bytes)) as img:
@@ -138,13 +139,12 @@ def migrate_mask_privacy(
     image_paths: list[str],
     privacy_mode: bool,
     mask_cache_dir: str = MASK_CACHE_DIR,
-    key: bytes = ENCRYPTION_KEY,
 ) -> int:
     migrated = 0
     for image_path in image_paths:
-        mask_bytes = load_mask_bytes(image_path, mask_cache_dir, key)
+        mask_bytes = load_mask_bytes(image_path, mask_cache_dir)
         if mask_bytes is None:
             continue
-        save_mask_bytes(image_path, mask_bytes, privacy_mode, mask_cache_dir, key)
+        save_mask_bytes(image_path, mask_bytes, privacy_mode, mask_cache_dir)
         migrated += 1
     return migrated

@@ -1,3 +1,5 @@
+import { ensurePrivacyTokenCookieSoon } from "./privacy_common.js";
+
 export const QUEUE_STATUS_PENDING = "pending";
 export const QUEUE_STATUS_SUBMITTING = "submitting";
 export const QUEUE_STATUS_RUNNING = "running";
@@ -766,6 +768,7 @@ export function mediaRecordToPreviewUrl(preview, options = {}) {
     const apiURL = typeof options.apiURL === "function" ? options.apiURL : (route) => route;
     const randParam = typeof options.getRandParam === "function" ? options.getRandParam() : "";
     if (record.private && record.token) {
+        ensurePrivacyTokenCookieSoon();
         const params = new URLSearchParams({ token: record.token });
         return apiURL(appendOptionalParams(`/helto_utils/private_media?${params.toString()}`, randParam));
     }

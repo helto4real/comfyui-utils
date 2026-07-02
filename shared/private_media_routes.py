@@ -4,6 +4,7 @@ import asyncio
 import logging
 
 from aiohttp import web
+from helto_privacy import aiohttp_check_privacy_token
 import server
 
 from .privacy import read_private_media_token
@@ -16,6 +17,9 @@ ROUTE_PREFIX = "/helto_utils"
 @server.PromptServer.instance.routes.get(f"{ROUTE_PREFIX}/private_media")
 async def get_private_media(request):
     try:
+        denied = aiohttp_check_privacy_token(request)
+        if denied is not None:
+            return denied
         token = request.query.get("token", "")
         # File read + decrypt can be large; keep it off the event loop.
         data, content_type, filename = await asyncio.to_thread(read_private_media_token, token)

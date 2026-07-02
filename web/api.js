@@ -1,3 +1,5 @@
+import { ensurePrivacyTokenCookieSoon, privacyFetchJson } from "./privacy_common.js";
+
 export function selectorImageVersionToken(image) {
     const modified = Number(image?.date_modified);
     const size = Number(image?.size_bytes);
@@ -46,21 +48,19 @@ export const selectorApi = {
     },
 
     async encrypt(data) {
-        const response = await fetch("/helto_selector/encrypt", {
+        return privacyFetchJson("/helto_selector/encrypt", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ data })
         });
-        return response.json();
     },
 
     async decrypt(encrypted) {
-        const response = await fetch("/helto_selector/decrypt", {
+        return privacyFetchJson("/helto_selector/decrypt", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ encrypted })
         });
-        return response.json();
     },
 
     async deleteSelectedImages(paths, folders, recursive) {
@@ -126,6 +126,7 @@ export const selectorApi = {
     },
 
     thumbnailUrl(path, privacyMode, image = null, folders = []) {
+        ensurePrivacyTokenCookieSoon();
         const version = selectorImageVersionToken(image);
         return `/helto_selector/thumbnail${selectorImageUrl(path, {
             privacy: selectorPrivacyQueryValue(privacyMode),
@@ -135,6 +136,7 @@ export const selectorApi = {
     },
 
     viewImageUrl(path, image = null, folders = []) {
+        ensurePrivacyTokenCookieSoon();
         const version = selectorImageVersionToken(image);
         return `/helto_selector/view_image${selectorImageUrl(path, {
             v: version,
@@ -143,66 +145,34 @@ export const selectorApi = {
     },
 
     maskUrl(path, folders = []) {
+        ensurePrivacyTokenCookieSoon();
         return `/helto_selector/mask${selectorImageUrl(path, {
             folders: selectorFoldersQueryValue(folders),
         })}`;
     },
 
     async saveMask(path, maskData, privacyMode, folders = []) {
-        const response = await fetch("/helto_selector/save_mask", {
+        return privacyFetchJson("/helto_selector/save_mask", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ path, mask_data: maskData, privacy: privacyMode, folders })
         });
-        if (!response.ok) {
-            let message = "Failed to save edited mask.";
-            try {
-                const data = await response.json();
-                if (data.error) message = data.error;
-            } catch (err) {
-                // Keep the generic message if the server did not return JSON.
-            }
-            throw new Error(message);
-        }
-        return response.json();
     },
 
     async deleteMask(path, folders = []) {
-        const response = await fetch("/helto_selector/delete_mask", {
+        return privacyFetchJson("/helto_selector/delete_mask", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ path, folders })
         });
-        if (!response.ok) {
-            let message = "Failed to clear edited mask.";
-            try {
-                const data = await response.json();
-                if (data.error) message = data.error;
-            } catch (err) {
-                // Keep the generic message if the server did not return JSON.
-            }
-            throw new Error(message);
-        }
-        return response.json();
     },
 
     async migrateMasks(paths, privacyMode, folders = []) {
-        const response = await fetch("/helto_selector/migrate_masks", {
+        return privacyFetchJson("/helto_selector/migrate_masks", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ paths, privacy: privacyMode, folders })
         });
-        if (!response.ok) {
-            let message = "Failed to migrate edited masks.";
-            try {
-                const data = await response.json();
-                if (data.error) message = data.error;
-            } catch (err) {
-                // Keep the generic message if the server did not return JSON.
-            }
-            throw new Error(message);
-        }
-        return response.json();
     },
 
     async clearCache() {

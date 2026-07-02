@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import json
 import sqlite3
 import time
@@ -9,12 +8,11 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Mapping
 
-from .privacy import CONFIG_DIR, decrypt_bytes, encrypt_bytes
+from .privacy import CONFIG_DIR, QUEUE_MANAGER_PURPOSE, decrypt_bytes, decrypt_state_string, encrypt_bytes, encrypt_state_string
 
 
 STATE_VERSION = 1
 DB_SCHEMA_VERSION = 1
-ENCRYPTED_PREFIX = "HELTO_QUEUE_MANAGER_STATE_V1:"
 SERVER_SESSION_ID = uuid.uuid4().hex
 STATE_DB_PATH = CONFIG_DIR / "queue_manager_state.sqlite3"
 LEGACY_STATE_PATH = CONFIG_DIR / "queue_manager_state.json"
@@ -50,18 +48,14 @@ def normalize_queue_manager_state(state: Mapping[str, Any] | None) -> dict[str, 
 
 
 def encrypted_state_payload(state: Mapping[str, Any]) -> str:
-    plaintext = _state_to_bytes(state)
-    encrypted = encrypt_bytes(plaintext)
-    encoded = base64.b64encode(encrypted).decode("ascii")
-    return f"{ENCRYPTED_PREFIX}{encoded}"
+    return encrypt_state_string({"state": dict(state)})
 
 
 def decrypt_state_payload(payload: str) -> dict[str, Any]:
-    if not str(payload).startswith(ENCRYPTED_PREFIX):
-        raise ValueError("Queue manager payload is not encrypted.")
-    encoded = payload[len(ENCRYPTED_PREFIX):]
-    encrypted = base64.b64decode(encoded.encode("ascii"))
-    return json.loads(decrypt_bytes(encrypted).decode("utf-8"))
+    state = decrypt_state_string(payload).get("state")
+    if not isinstance(state, Mapping):
+        raise ValueError("Queue manager payload did not contain state.")
+    return dict(state)
 
 
 def _state_to_bytes(state: Mapping[str, Any]) -> bytes:
@@ -71,13 +65,13 @@ def _state_to_bytes(state: Mapping[str, Any]) -> bytes:
 def _state_from_bytes(payload: bytes | memoryview, *, encrypted: bool) -> dict[str, Any]:
     data = bytes(payload)
     if encrypted:
-        data = decrypt_bytes(data)
+        data = decrypt_bytes(data, purpose=QUEUE_MANAGER_PURPOSE)
     return json.loads(data.decode("utf-8"))
 
 
 def _payload_for_state(state: Mapping[str, Any], *, encrypted: bool) -> bytes:
     payload = _state_to_bytes(state)
-    return encrypt_bytes(payload) if encrypted else payload
+    return encrypt_bytes(payload, purpose=QUEUE_MANAGER_PURPOSE) if encrypted else payload
 
 
 def _semantic_state(state: Mapping[str, Any]) -> dict[str, Any]:

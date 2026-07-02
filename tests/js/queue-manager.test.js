@@ -34,6 +34,18 @@ import {
     encryptedOrReusePrivacyValue,
 } from "../../web/privacy_envelope.js";
 
+function privacyEnvelopeText(text, keyId = "test-key") {
+    return JSON.stringify({
+        algorithm: "AES-256-GCM",
+        ciphertext: Buffer.from(String(text ?? "")).toString("base64"),
+        encrypted: true,
+        keyId,
+        nonce: "test-nonce",
+        schema: "helto.comfyui-utils",
+        version: 1,
+    });
+}
+
 function countingPrivacyApi() {
     let encryptCount = 0;
     return {
@@ -42,7 +54,7 @@ function countingPrivacyApi() {
         },
         async encrypt(text) {
             encryptCount += 1;
-            return { encrypted: `__HELTO_ENC__:${encryptCount}:${Buffer.from(text).toString("base64")}` };
+            return { encrypted: privacyEnvelopeText(text, `test-key-${encryptCount}`) };
         },
     };
 }

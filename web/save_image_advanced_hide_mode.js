@@ -15,6 +15,7 @@ import {
     restoreSerializedWidgetValues,
     sanitizeSerializedWidgetValues,
 } from "./pause_control_helpers.js";
+import { ensurePrivacyTokenCookieSoon, privacyFetch } from "./privacy_common.js";
 
 const NODE_CLASSES = new Map([
     ["HeltoSaveImageAdvanced", "Save Image Advanced"],
@@ -153,6 +154,7 @@ function privateRecordToUrl(record) {
     if (!record?.private || !record?.token) {
         return null;
     }
+    ensurePrivacyTokenCookieSoon();
     const params = new URLSearchParams({ token: record.token });
     return api.apiURL(`/helto_utils/private_media?${params.toString()}${app.getRandParam?.() ?? ""}`);
 }
@@ -417,15 +419,13 @@ async function postPauseRelease(node) {
         node_id: String(node.id),
         revision: state.revision,
     });
-    const response = await (api.fetchApi?.(route, {
+    const fetcher = api.fetchApi ? (path, options) => api.fetchApi(path, options) : fetch;
+    const response = await privacyFetch(route, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body,
-    }) ?? fetch(route, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body,
-    }));
+        fetcher,
+    });
     const payload = await response.json();
     if (!response.ok || payload?.ok === false) {
         throw new Error(payload?.error || "Failed to release stored media.");

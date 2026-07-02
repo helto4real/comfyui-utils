@@ -1,5 +1,6 @@
 import { app } from "/scripts/app.js";
 import { api } from "/scripts/api.js";
+import { ensurePrivacyTokenCookieSoon, privacyFetch } from "./privacy_common.js";
 
 const NODE_CLASS = "HeltoLoadVideo";
 const DISPLAY_NAME = "Load Video";
@@ -237,6 +238,9 @@ function ensureVideoPreviewMediaType(node) {
 }
 
 function routeUrl(path) {
+    if (String(path || "").includes("privacy=1")) {
+        ensurePrivacyTokenCookieSoon();
+    }
     return api.apiURL(path);
 }
 
@@ -244,12 +248,16 @@ function privateRecordToUrl(record) {
     if (!record?.private || !record?.token) {
         return null;
     }
+    ensurePrivacyTokenCookieSoon();
     const params = new URLSearchParams({ token: record.token });
     return api.apiURL(`/helto_utils/private_media?${params.toString()}${app.getRandParam?.() ?? ""}`);
 }
 
 async function fetchJson(path, options = {}) {
-    const response = await api.fetchApi(path, options);
+    const isPrivacyPreview = String(path || "").startsWith(`${ROUTE_PREFIX}/preview`) && String(path || "").includes("privacy=1");
+    const response = isPrivacyPreview
+        ? await privacyFetch(path, { ...options, fetcher: (route, init) => api.fetchApi(route, init) })
+        : await api.fetchApi(path, options);
     const data = await response.json();
     if (!response.ok || data?.error) {
         throw new Error(data?.error || response.statusText);

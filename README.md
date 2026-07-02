@@ -365,7 +365,7 @@ When no valid image is selected, the node returns a 512x512 black placeholder. `
 
 `Helto Privacy Show Any` is an output node for inspecting arbitrary values. It accepts an `*` input, converts safe values to text, displays the result in a read-only node panel, exposes a copy button, and outputs the same text as a string.
 
-Plain display text is not serialized into the workflow. The frontend stores the last displayed value only in the hidden `encrypted_text_state` widget using the same `__HELTO_ENC__:` encryption route as the multi-image selector.
+Plain display text is not serialized into the workflow. The frontend stores the last displayed value only in the hidden `encrypted_text_state` widget as a Helto privacy JSON envelope using the same shared privacy encryption route as the multi-image selector.
 
 Scalar values, strings, bytes that decode as UTF-8, lists, tuples, sets, and dictionaries convert directly to text or JSON. Tensor-like and array-like values are summarized by shape, dtype, and device unless they are tiny. Runtime-heavy objects such as models, CLIP, VAE, samplers, and other opaque Python instances are reported as unsupported because their internal state is not meaningful or safe to stringify.
 

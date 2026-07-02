@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 
 from shared.queue_manager_store import (
@@ -11,6 +13,29 @@ from shared.queue_manager_store import (
     load_queue_manager_state,
     save_queue_manager_state,
 )
+
+
+@contextmanager
+def isolated_privacy_keystore():
+    old_env = {
+        "HELTO_PRIVACY_KEYSTORE": os.environ.get("HELTO_PRIVACY_KEYSTORE"),
+        "HELTO_PRIVACY_SESSION_DIR": os.environ.get("HELTO_PRIVACY_SESSION_DIR"),
+    }
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        os.environ["HELTO_PRIVACY_KEYSTORE"] = str(root / "privacy_keystore.json")
+        os.environ["HELTO_PRIVACY_SESSION_DIR"] = str(root / "session")
+        from helto_privacy import initialize_keystore
+
+        initialize_keystore("correct horse battery staple")
+        try:
+            yield
+        finally:
+            for key, value in old_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
 
 def stored_queue_state_row(path: Path) -> tuple[bytes, int]:
@@ -54,7 +79,7 @@ class QueueManagerStoreTests(unittest.TestCase):
         self.assertFalse(result["encrypted_at_rest"])
 
     def test_private_state_encrypts_payload_at_rest(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with isolated_privacy_keystore(), tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "state.sqlite3"
             state = default_queue_manager_state()
             state["privacy_enabled"] = True
@@ -75,7 +100,7 @@ class QueueManagerStoreTests(unittest.TestCase):
         self.assertTrue(result["encrypted_at_rest"])
 
     def test_private_state_reuses_encrypted_payload_when_unchanged(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with isolated_privacy_keystore(), tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "state.sqlite3"
             state = default_queue_manager_state()
             state["privacy_enabled"] = True
@@ -106,7 +131,7 @@ class QueueManagerStoreTests(unittest.TestCase):
         self.assertNotIn(b"edited secret workflow", raw)
 
     def test_privacy_toggle_rewrites_plaintext_database_as_encrypted(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with isolated_privacy_keystore(), tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "state.sqlite3"
             state = default_queue_manager_state()
             state["privacy_enabled"] = False
@@ -131,7 +156,7 @@ class QueueManagerStoreTests(unittest.TestCase):
         self.assertTrue(result["encrypted_at_rest"])
 
     def test_privacy_toggle_decrypts_database_when_disabled(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with isolated_privacy_keystore(), tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "state.sqlite3"
             state = default_queue_manager_state()
             state["privacy_enabled"] = True

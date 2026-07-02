@@ -7,6 +7,7 @@ from datetime import date
 
 from aiohttp import web
 import folder_paths
+from helto_privacy import aiohttp_check_privacy_token
 import server
 from comfy_api.latest import io, ui
 from comfy_execution.graph import ExecutionBlocker
@@ -455,6 +456,9 @@ class SaveImageAdvanced(io.ComfyNode):
 @server.PromptServer.instance.routes.post("/helto_save_image_advanced/release")
 async def release_save_image_advanced(request):
     try:
+        denied = aiohttp_check_privacy_token(request)
+        if denied is not None:
+            return denied
         data = await request.json()
         node_id = str(data.get("node_id", ""))
         result = SaveImageAdvanced.request_release(node_id, data.get("revision"))

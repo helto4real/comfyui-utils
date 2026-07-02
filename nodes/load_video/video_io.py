@@ -19,10 +19,10 @@ except ImportError:
 
 try:
     from .video_config import VIDEO_EXTENSIONS, thumbnail_cache_dir
-    from ...shared.privacy import decrypt_bytes, encrypt_bytes, private_media_record, remove_plain_file_silent
+    from ...shared.privacy import LOAD_VIDEO_CACHE_PURPOSE, decrypt_bytes, encrypt_bytes, private_media_record, remove_plain_file_silent
 except ImportError:
     from video_config import VIDEO_EXTENSIONS, thumbnail_cache_dir
-    from shared.privacy import decrypt_bytes, encrypt_bytes, private_media_record, remove_plain_file_silent
+    from shared.privacy import LOAD_VIDEO_CACHE_PURPOSE, decrypt_bytes, encrypt_bytes, private_media_record, remove_plain_file_silent
 
 
 def _fraction_to_float(value: Any) -> float:
@@ -116,19 +116,19 @@ def thumbnail_bytes(video_path: Path, privacy_mode: bool, max_size: int = 360) -
 
     if privacy_mode:
         if encrypted_path.exists():
-            return decrypt_bytes(encrypted_path.read_bytes())
+            return decrypt_bytes(encrypted_path.read_bytes(), purpose=LOAD_VIDEO_CACHE_PURPOSE)
         if plain_path.exists():
             data = plain_path.read_bytes()
         else:
             data = generate_thumbnail_bytes(video_path, max_size=max_size)
-        encrypted_path.write_bytes(encrypt_bytes(data))
+        encrypted_path.write_bytes(encrypt_bytes(data, purpose=LOAD_VIDEO_CACHE_PURPOSE))
         remove_plain_file_silent(plain_path)
         return data
 
     if plain_path.exists():
         return plain_path.read_bytes()
     if encrypted_path.exists():
-        data = decrypt_bytes(encrypted_path.read_bytes())
+        data = decrypt_bytes(encrypted_path.read_bytes(), purpose=LOAD_VIDEO_CACHE_PURPOSE)
     else:
         data = generate_thumbnail_bytes(video_path, max_size=max_size)
     plain_path.write_bytes(data)

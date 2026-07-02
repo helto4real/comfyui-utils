@@ -197,6 +197,23 @@ function jsonResponse(payload, ok = true) {
     };
 }
 
+function privacyEnvelopeText(text, keyId = "test-key") {
+    return JSON.stringify({
+        algorithm: "AES-256-GCM",
+        ciphertext: Buffer.from(String(text ?? "")).toString("base64"),
+        encrypted: true,
+        keyId,
+        nonce: "test-nonce",
+        schema: "helto.comfyui-utils",
+        version: 1,
+    });
+}
+
+function privacyEnvelopePlaintext(encrypted) {
+    const payload = JSON.parse(String(encrypted || "{}"));
+    return Buffer.from(String(payload.ciphertext || ""), "base64").toString("utf8");
+}
+
 function countingPrivacyApi() {
     let encryptCount = 0;
     return {
@@ -205,11 +222,10 @@ function countingPrivacyApi() {
         },
         async encrypt(text) {
             encryptCount += 1;
-            return { encrypted: `__HELTO_ENC__:${encryptCount}:${Buffer.from(text).toString("base64")}` };
+            return { encrypted: privacyEnvelopeText(text, `test-key-${encryptCount}`) };
         },
         async decrypt(encrypted) {
-            const encoded = String(encrypted).split(":").pop() || "";
-            return { data: Buffer.from(encoded, "base64").toString("utf8") };
+            return { data: privacyEnvelopePlaintext(encrypted) };
         },
     };
 }
@@ -294,7 +310,7 @@ test("privacy envelope helper leaves public and already encrypted values unchang
         privacyMode: false,
         selectorApi,
     });
-    const encrypted = "__HELTO_ENC__:loaded";
+    const encrypted = privacyEnvelopeText("loaded");
     const alreadyEncrypted = await encryptedOrReusePrivacyValue(owner, "field", encrypted, {
         privacyMode: true,
         selectorApi,
@@ -308,7 +324,7 @@ test("privacy envelope helper leaves public and already encrypted values unchang
 test("privacy envelope helper reuses envelopes remembered from restore", async () => {
     const selectorApi = countingPrivacyApi();
     const owner = {};
-    const loaded = "__HELTO_ENC__:loaded";
+    const loaded = privacyEnvelopeText("loaded");
 
     rememberPrivacyEnvelope(owner, "field", { z: 1, a: 2 }, loaded);
 
@@ -2333,10 +2349,10 @@ test("prompt enhancer prompt config encrypts only when privacy mode is enabled",
                     resolveEncryption = resolve;
                 });
             }
-            return { encrypted: `__HELTO_ENC__:${Buffer.from(text).toString("base64")}` };
+            return { encrypted: privacyEnvelopeText(text) };
         },
         async decrypt(encrypted) {
-            return { data: Buffer.from(encrypted.slice("__HELTO_ENC__:".length), "base64").toString("utf8") };
+            return { data: privacyEnvelopePlaintext(encrypted) };
         },
     };
     const node = {
@@ -2615,7 +2631,7 @@ test("privacy show any extracts output text and hides encrypted state widget", (
     const output = { helto_privacy_show_any: [{ text: "secret text" }] };
     const node = {
         widgets: [
-            { name: PRIVACY_SHOW_ANY_STATE_WIDGET, value: "__HELTO_ENC__:abc" },
+            { name: PRIVACY_SHOW_ANY_STATE_WIDGET, value: privacyEnvelopeText("abc") },
             { name: "other" },
         ],
     };
@@ -2632,10 +2648,10 @@ test("privacy show any extracts output text and hides encrypted state widget", (
 test("privacy show any serializes only encrypted text state", async () => {
     const selectorApi = {
         async encrypt(text) {
-            return { encrypted: `__HELTO_ENC__:${Buffer.from(text).toString("base64")}` };
+            return { encrypted: privacyEnvelopeText(text) };
         },
         async decrypt(encrypted) {
-            return { data: Buffer.from(encrypted.slice("__HELTO_ENC__:".length), "base64").toString("utf8") };
+            return { data: privacyEnvelopePlaintext(encrypted) };
         },
     };
 
@@ -2673,11 +2689,12 @@ test("privacy show any owner-aware state reuses envelopes until text changes", a
 test("privacy show any writes encrypted state to widget and property only", () => {
     const node = { properties: {} };
     const widget = { name: PRIVACY_SHOW_ANY_STATE_WIDGET, value: "" };
+    const encrypted = privacyEnvelopeText("abc");
 
-    assert.equal(setEncryptedPrivacyShowAnyState(node, widget, "__HELTO_ENC__:abc"), "__HELTO_ENC__:abc");
-    assert.equal(widget.value, "__HELTO_ENC__:abc");
-    assert.equal(node.properties[PRIVACY_SHOW_ANY_STATE_PROPERTY], "__HELTO_ENC__:abc");
-    assert.equal(serializedEncryptedPropertyValue(node), "__HELTO_ENC__:abc");
+    assert.equal(setEncryptedPrivacyShowAnyState(node, widget, encrypted), encrypted);
+    assert.equal(widget.value, encrypted);
+    assert.equal(node.properties[PRIVACY_SHOW_ANY_STATE_PROPERTY], encrypted);
+    assert.equal(serializedEncryptedPropertyValue(node), encrypted);
 
     assert.equal(setEncryptedPrivacyShowAnyState(node, widget, "plain text"), "");
     assert.equal(widget.value, "");
@@ -2686,13 +2703,13 @@ test("privacy show any writes encrypted state to widget and property only", () =
 
 test("privacy show any restore state prefers encrypted widget then encrypted property", () => {
     const node = {
-        properties: { [PRIVACY_SHOW_ANY_STATE_PROPERTY]: "__HELTO_ENC__:property" },
-        widgets: [{ name: PRIVACY_SHOW_ANY_STATE_WIDGET, value: "__HELTO_ENC__:widget" }],
+        properties: { [PRIVACY_SHOW_ANY_STATE_PROPERTY]: privacyEnvelopeText("property") },
+        widgets: [{ name: PRIVACY_SHOW_ANY_STATE_WIDGET, value: privacyEnvelopeText("widget") }],
     };
 
-    assert.equal(encryptedPrivacyShowAnyState(node), "__HELTO_ENC__:widget");
+    assert.equal(encryptedPrivacyShowAnyState(node), privacyEnvelopeText("widget"));
     node.widgets[0].value = "";
-    assert.equal(encryptedPrivacyShowAnyState(node), "__HELTO_ENC__:property");
+    assert.equal(encryptedPrivacyShowAnyState(node), privacyEnvelopeText("property"));
     node.properties[PRIVACY_SHOW_ANY_STATE_PROPERTY] = "plain text";
     assert.equal(encryptedPrivacyShowAnyState(node), "");
 });
@@ -2701,10 +2718,11 @@ test("privacy show any serialized properties keep only encrypted state", () => {
     const info = {
         properties: { [PRIVACY_SHOW_ANY_STATE_PROPERTY]: "plain text", other: "kept" },
     };
+    const encrypted = privacyEnvelopeText("abc");
 
-    assert.equal(sanitizePrivacyShowAnySerializedProperties(info, "__HELTO_ENC__:abc"), "__HELTO_ENC__:abc");
+    assert.equal(sanitizePrivacyShowAnySerializedProperties(info, encrypted), encrypted);
     assert.deepEqual(info.properties, {
-        [PRIVACY_SHOW_ANY_STATE_PROPERTY]: "__HELTO_ENC__:abc",
+        [PRIVACY_SHOW_ANY_STATE_PROPERTY]: encrypted,
         other: "kept",
     });
 
@@ -2744,7 +2762,7 @@ test("privacy show any waits for pending encryption and fails closed on rejectio
         comfyClass: "HeltoPrivacyShowAny",
         [pendingKey]: new Promise((resolve) => setTimeout(() => {
             events.push("encrypted");
-            resolve("__HELTO_ENC__:ok");
+            resolve(privacyEnvelopeText("ok"));
         }, 0)),
     };
     const failedNode = {

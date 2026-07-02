@@ -6,12 +6,10 @@ import re
 from typing import Any
 
 try:
-    from ...helto_selector_backend.constants import ENC_PREFIX
     from ...helto_selector_backend.crypto import decrypt_selection
 except ImportError as exc:
     if str(exc) != "attempted relative import beyond top-level package":
         raise
-    from helto_selector_backend.constants import ENC_PREFIX
     from helto_selector_backend.crypto import decrypt_selection
 
 
@@ -78,8 +76,6 @@ def decrypt_prompt_text(raw_prompt: Any) -> str:
     if raw_prompt is None:
         return ""
     prompt = str(raw_prompt)
-    if not prompt.startswith(ENC_PREFIX):
-        return prompt
     try:
         decrypted = decrypt_selection(prompt)
     except ValueError:
@@ -97,11 +93,10 @@ def _decode_variables_payload(raw_variables: Any) -> Any:
         return []
 
     payload = raw_variables.strip()
-    if payload.startswith(ENC_PREFIX):
-        try:
-            payload = decrypt_selection(payload)
-        except ValueError:
-            return []
+    try:
+        payload = decrypt_selection(payload)
+    except ValueError:
+        return []
     try:
         return json.loads(payload)
     except (TypeError, json.JSONDecodeError):

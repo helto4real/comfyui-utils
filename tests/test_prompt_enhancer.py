@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import os
 import random
 import sys
 import tempfile
 import types
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -35,6 +37,29 @@ from shared.prompt_enhancer.video_script import (
     parse_video_prompt_script,
 )
 from helto_selector_backend.crypto import encrypt_selection
+
+
+@contextmanager
+def isolated_privacy_keystore():
+    old_env = {
+        "HELTO_PRIVACY_KEYSTORE": os.environ.get("HELTO_PRIVACY_KEYSTORE"),
+        "HELTO_PRIVACY_SESSION_DIR": os.environ.get("HELTO_PRIVACY_SESSION_DIR"),
+    }
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        os.environ["HELTO_PRIVACY_KEYSTORE"] = str(root / "privacy_keystore.json")
+        os.environ["HELTO_PRIVACY_SESSION_DIR"] = str(root / "session")
+        from helto_privacy import initialize_keystore
+
+        initialize_keystore("correct horse battery staple")
+        try:
+            yield
+        finally:
+            for key, value in old_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
 
 class PromptEnhancerProviderTests(unittest.TestCase):
@@ -427,19 +452,20 @@ class PromptEnhancerProviderTests(unittest.TestCase):
             {"name": "style", "mode": "random", "values": ["cinematic", "documentary"], "fixed_index": 4},
             {"name": "bad-name", "values": ["ignored"]},
         ])
-        encrypted = encrypt_selection(plain)
+        with isolated_privacy_keystore():
+            encrypted = encrypt_selection(plain)
 
-        expected = [
-            {
-                "name": "style",
-                "mode": "random",
-                "values": ["cinematic", "documentary"],
-                "fixed_index": 1,
-            }
-        ]
+            expected = [
+                {
+                    "name": "style",
+                    "mode": "random",
+                    "values": ["cinematic", "documentary"],
+                    "fixed_index": 1,
+                }
+            ]
 
-        self.assertEqual(parse_prompt_variables(plain), expected)
-        self.assertEqual(parse_prompt_variables(encrypted), expected)
+            self.assertEqual(parse_prompt_variables(plain), expected)
+            self.assertEqual(parse_prompt_variables(encrypted), expected)
 
     def test_prompt_variables_substitute_fixed_random_and_unknown_tokens(self):
         variables = [
@@ -462,11 +488,12 @@ class PromptEnhancerProviderTests(unittest.TestCase):
         self.assertEqual(substitute_prompt_variables("keep {{style}}", "not-json", 1), "keep {{style}}")
 
     def test_encrypted_prompt_text_decrypts_and_invalid_values_fail_closed(self):
-        encrypted = encrypt_selection("secret prompt")
+        with isolated_privacy_keystore():
+            encrypted = encrypt_selection("secret prompt")
 
-        self.assertEqual(decrypt_prompt_text("plain prompt"), "plain prompt")
-        self.assertEqual(decrypt_prompt_text(encrypted), "secret prompt")
-        self.assertEqual(decrypt_prompt_text("__HELTO_ENC__:not-valid"), "")
+            self.assertEqual(decrypt_prompt_text("plain prompt"), "plain prompt")
+            self.assertEqual(decrypt_prompt_text(encrypted), "secret prompt")
+            self.assertEqual(decrypt_prompt_text("__HELTO_ENC__:not-valid"), "")
 
     def test_video_script_parser_builds_segment_variables(self):
         script = """[rating=SFW]
