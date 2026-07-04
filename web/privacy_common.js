@@ -32,6 +32,14 @@ export function isPrivacyTriggerError(error) {
     return PRIVACY_ERROR_CODES.some((code) => message.includes(code));
 }
 
+export async function isPrivacyUnlockRequiredError(error) {
+    const privacy = await loadHeltoPrivacyModule();
+    if (typeof privacy?.isPrivacyUnlockRequiredError === "function") {
+        return privacy.isPrivacyUnlockRequiredError(error);
+    }
+    return privacy?.isPrivacyLockedError?.(error) || isPrivacyTriggerError(error);
+}
+
 export function ensurePrivacyTokenCookieSoon() {
     void loadHeltoPrivacyModule().then((privacy) => {
         privacy?.ensureStoredPrivacyTokenCookie?.();
@@ -65,7 +73,9 @@ export async function withPrivacyUnlock(operation) {
         return await operation();
     } catch (error) {
         const privacy = await loadHeltoPrivacyModule();
-        const locked = privacy?.isPrivacyLockedError?.(error) || isPrivacyTriggerError(error);
+        const locked = typeof privacy?.isPrivacyUnlockRequiredError === "function"
+            ? privacy.isPrivacyUnlockRequiredError(error)
+            : privacy?.isPrivacyLockedError?.(error) || isPrivacyTriggerError(error);
         if (!locked) {
             throw error;
         }
@@ -97,4 +107,46 @@ export async function privacyFetchJson(input, options = {}) {
         throw new Error(payload?.error || "Privacy request failed.");
     }
     return payload;
+}
+
+export async function ensureEncryptedPrivacyValue(options = {}) {
+    const privacy = await loadHeltoPrivacyModule();
+    if (typeof privacy?.ensureEncryptedPrivacyValue !== "function") {
+        throw new Error("PRIVACY_ENCRYPTION_UNAVAILABLE: shared privacy recovery helper is unavailable.");
+    }
+    return privacy.ensureEncryptedPrivacyValue(options);
+}
+
+export async function registerPrivacyRecoveryDescriptors(sourceId, descriptors) {
+    const privacy = await loadHeltoPrivacyModule();
+    if (typeof privacy?.registerPrivacyRecoveryDescriptors !== "function") {
+        return { sourceId, descriptorCount: 0, totalDescriptors: 0 };
+    }
+    return privacy.registerPrivacyRecoveryDescriptors(sourceId, descriptors);
+}
+
+export async function registeredPrivacyRecoveryDescriptors() {
+    const privacy = await loadHeltoPrivacyModule();
+    return privacy?.registeredPrivacyRecoveryDescriptors?.() ?? [];
+}
+
+export async function scanPrivacyRecoveryIssues(graph = undefined) {
+    const privacy = await loadHeltoPrivacyModule();
+    return privacy?.scanPrivacyRecoveryIssues?.(graph) ?? [];
+}
+
+export async function recoverPrivacyIssues(options = {}) {
+    const privacy = await loadHeltoPrivacyModule();
+    if (typeof privacy?.recoverPrivacyIssues !== "function") {
+        return { ok: true, action: options.action || "all_safe_defaults", appliedCount: 0, skippedCount: 0, failedCount: 0 };
+    }
+    return privacy.recoverPrivacyIssues(options);
+}
+
+export async function showPrivacyRecoveryDialog(options = {}) {
+    const privacy = await loadHeltoPrivacyModule();
+    if (typeof privacy?.showPrivacyRecoveryDialog !== "function") {
+        return { model: { totalIssues: 0, counts: {}, nodes: [] }, result: null };
+    }
+    return privacy.showPrivacyRecoveryDialog(options);
 }

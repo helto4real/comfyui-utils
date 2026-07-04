@@ -337,6 +337,24 @@ test("privacy envelope helper reuses envelopes remembered from restore", async (
     assert.equal(selectorApi.encryptCount, 0);
 });
 
+test("privacy envelope helper fails closed when encryption is unavailable or invalid", async () => {
+    await assert.rejects(
+        () => encryptedOrReusePrivacyValue({}, "field", "private text", {
+            selectorApi: {},
+            defaultValue: "private text",
+        }),
+        /PRIVACY_ENCRYPTION_UNAVAILABLE/,
+    );
+
+    await assert.rejects(
+        () => encryptedOrReusePrivacyValue({}, "field", "private text", {
+            selectorApi: { encrypt: async () => ({ encrypted: "private text" }) },
+            defaultValue: "private text",
+        }),
+        /PRIVACY_ENCRYPTION_FAILED/,
+    );
+});
+
 test("selector image urls include metadata version tokens and keep legacy calls working", () => {
     const image = { date_modified: 1712345678.123, size_bytes: 4096 };
     assert.equal(selectorImageVersionToken(image), "m1712345678.123-s4096");
@@ -2379,6 +2397,10 @@ test("prompt enhancer prompt config encrypts only when privacy mode is enabled",
     const pending = writePromptText(node, "pending secret", true, selectorApi);
 
     assert.equal(node.widgets[0].value, "");
+    for (let attempt = 0; attempt < 20 && typeof resolveEncryption !== "function"; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    assert.equal(typeof resolveEncryption, "function");
     resolveEncryption();
     assert.equal(isEncryptedText(await pending), true);
 });

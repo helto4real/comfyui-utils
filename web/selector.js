@@ -39,6 +39,10 @@ import {
     isPrivacyEnvelope,
     rememberPrivacyEnvelope,
 } from "./privacy_envelope.js";
+import {
+    ensurePrivacyRecoveryRegistered,
+    showAutoPrivacyRecoveryIfIssues,
+} from "./privacy_recovery.js";
 
 // Load Stylesheet dynamically using modern ES modules URL resolving
 if (!document.getElementById("helto-utils-styles")) {
@@ -60,21 +64,38 @@ function getSelectorNodes(graph) {
     return nodes.filter((node) => node?.comfyClass === HELTO_SELECTOR_NODE_CLASS);
 }
 
+async function requireRecoveredSelectorField(node, fieldName, defaultValue) {
+    const widget = node?.widgets?.find((item) => item?.name === fieldName);
+    const value = widget?.value;
+    if (
+        !node?.properties?.privacyMode
+        || !value
+        || String(value) === String(defaultValue)
+        || isPrivacyEnvelope(value)
+    ) {
+        return;
+    }
+    await showAutoPrivacyRecoveryIfIssues(node.graph ?? app.graph);
+    const recoveredValue = widget?.value;
+    if (recoveredValue && String(recoveredValue) !== String(defaultValue) && !isPrivacyEnvelope(recoveredValue)) {
+        throw new Error(`PRIVACY_RECOVERY_REQUIRED: ${fieldName} contains unrecovered plaintext or legacy privacy data.`);
+    }
+}
+
 async function serializeSelectedImagesForPrompt(node) {
+    if (node.properties?.privacyMode) {
+        await requireRecoveredSelectorField(node, SELECTOR_SELECTED_IMAGES_FIELD, "[]");
+    }
     const selectedPaths = Array.isArray(node.selectedPaths) ? node.selectedPaths : [];
     const plainString = JSON.stringify(selectedPaths);
 
     if (node.properties?.privacyMode) {
-        try {
-            return await encryptedOrReusePrivacyValue(node, SELECTOR_SELECTED_IMAGES_FIELD, plainString, {
-                privacyMode: true,
-                selectorApi,
-                defaultValue: plainString,
-                canonicalValue: selectedPaths,
-            });
-        } catch (e) {
-            console.error("Encryption API failed:", e);
-        }
+        return encryptedOrReusePrivacyValue(node, SELECTOR_SELECTED_IMAGES_FIELD, plainString, {
+            privacyMode: true,
+            selectorApi,
+            defaultValue: plainString,
+            canonicalValue: selectedPaths,
+        });
     }
 
     forgetPrivacyEnvelope(node, SELECTOR_SELECTED_IMAGES_FIELD);
@@ -82,20 +103,19 @@ async function serializeSelectedImagesForPrompt(node) {
 }
 
 async function serializeEditedMasksForPrompt(node) {
+    if (node.properties?.privacyMode) {
+        await requireRecoveredSelectorField(node, SELECTOR_EDITED_MASKS_FIELD, "{}");
+    }
     const editedMasks = node.editedMasks && typeof node.editedMasks === "object" ? node.editedMasks : {};
     const plainString = JSON.stringify(editedMasks);
 
     if (node.properties?.privacyMode) {
-        try {
-            return await encryptedOrReusePrivacyValue(node, SELECTOR_EDITED_MASKS_FIELD, plainString, {
-                privacyMode: true,
-                selectorApi,
-                defaultValue: plainString,
-                canonicalValue: editedMasks,
-            });
-        } catch (e) {
-            console.error("Encryption API failed:", e);
-        }
+        return encryptedOrReusePrivacyValue(node, SELECTOR_EDITED_MASKS_FIELD, plainString, {
+            privacyMode: true,
+            selectorApi,
+            defaultValue: plainString,
+            canonicalValue: editedMasks,
+        });
     }
 
     forgetPrivacyEnvelope(node, SELECTOR_EDITED_MASKS_FIELD);
@@ -103,20 +123,19 @@ async function serializeEditedMasksForPrompt(node) {
 }
 
 async function serializeEditedBboxesForPrompt(node) {
+    if (node.properties?.privacyMode) {
+        await requireRecoveredSelectorField(node, SELECTOR_EDITED_BBOXES_FIELD, "{}");
+    }
     const editedBboxes = node.editedBboxes && typeof node.editedBboxes === "object" ? node.editedBboxes : {};
     const plainString = JSON.stringify(editedBboxes);
 
     if (node.properties?.privacyMode) {
-        try {
-            return await encryptedOrReusePrivacyValue(node, SELECTOR_EDITED_BBOXES_FIELD, plainString, {
-                privacyMode: true,
-                selectorApi,
-                defaultValue: plainString,
-                canonicalValue: editedBboxes,
-            });
-        } catch (e) {
-            console.error("Encryption API failed:", e);
-        }
+        return encryptedOrReusePrivacyValue(node, SELECTOR_EDITED_BBOXES_FIELD, plainString, {
+            privacyMode: true,
+            selectorApi,
+            defaultValue: plainString,
+            canonicalValue: editedBboxes,
+        });
     }
 
     forgetPrivacyEnvelope(node, SELECTOR_EDITED_BBOXES_FIELD);
@@ -152,6 +171,7 @@ function installGraphToPromptPatch() {
 }
 
 installGraphToPromptPatch();
+ensurePrivacyRecoveryRegistered();
 
 app.registerExtension({
     name: "HeltoImageSelectorExtension",
@@ -452,20 +472,25 @@ app.registerExtension({
 
         async function serializeHiddenJsonWidget(widget, plainValue, defaultValue, fieldName) {
             if (!widget) return defaultValue;
-            const plainString = JSON.stringify(plainValue);
+            let canonicalValue = plainValue;
+            let plainString = JSON.stringify(canonicalValue);
 
             if (node.properties.privacyMode) {
-                try {
-                    widget.value = await encryptedOrReusePrivacyValue(node, fieldName, plainString, {
-                        privacyMode: true,
-                        selectorApi,
-                        defaultValue: plainString,
-                        canonicalValue: plainValue,
-                    });
-                } catch (e) {
-                    console.error("Encryption API failed:", e);
-                    widget.value = plainString;
+                await requireRecoveredSelectorField(node, fieldName, defaultValue);
+                if (fieldName === SELECTOR_SELECTED_IMAGES_FIELD) {
+                    canonicalValue = Array.isArray(node.selectedPaths) ? node.selectedPaths : [];
+                } else if (fieldName === SELECTOR_EDITED_MASKS_FIELD) {
+                    canonicalValue = node.editedMasks && typeof node.editedMasks === "object" ? node.editedMasks : {};
+                } else if (fieldName === SELECTOR_EDITED_BBOXES_FIELD) {
+                    canonicalValue = node.editedBboxes && typeof node.editedBboxes === "object" ? node.editedBboxes : {};
                 }
+                plainString = JSON.stringify(canonicalValue);
+                widget.value = await encryptedOrReusePrivacyValue(node, fieldName, plainString, {
+                    privacyMode: true,
+                    selectorApi,
+                    defaultValue: plainString,
+                    canonicalValue,
+                });
             } else {
                 forgetPrivacyEnvelope(node, fieldName);
                 widget.value = plainString;
@@ -538,12 +563,23 @@ app.registerExtension({
         };
 
         async function parseSerializedJson(value, fallback, fieldName) {
-            if (!value) return fallback;
-            if (isPrivacyEnvelope(value)) {
+            let serialized = value;
+            if (
+                node.properties?.privacyMode
+                && serialized
+                && String(serialized) !== JSON.stringify(fallback)
+                && !isPrivacyEnvelope(serialized)
+            ) {
+                await showAutoPrivacyRecoveryIfIssues(node.graph ?? app.graph);
+                const refreshedWidget = node.widgets ? node.widgets.find(w => w.name === fieldName) : null;
+                serialized = refreshedWidget?.value ?? serialized;
+            }
+            if (!serialized) return fallback;
+            if (isPrivacyEnvelope(serialized)) {
                 try {
-                    const res = await selectorApi.decrypt(value);
+                    const res = await selectorApi.decrypt(serialized);
                     const parsed = JSON.parse(res.data);
-                    rememberPrivacyEnvelope(node, fieldName, parsed, value);
+                    rememberPrivacyEnvelope(node, fieldName, parsed, serialized);
                     return parsed;
                 } catch (e) {
                     console.error("Decryption API failed:", e);
@@ -551,7 +587,7 @@ app.registerExtension({
                 }
             }
             try {
-                return JSON.parse(value);
+                return JSON.parse(serialized);
             } catch (e) {
                 return fallback;
             }

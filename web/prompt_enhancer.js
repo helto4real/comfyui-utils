@@ -16,6 +16,8 @@ import {
     deleteSystemPromptPreset,
     fetchSystemPromptPresets,
     hideSerializedSettingsWidgets,
+    isEncryptedText,
+    isEncryptedVariables,
     isPromptEnhancerNode,
     keepFixedPromptSeed,
     isPointInPromptWidget,
@@ -54,6 +56,10 @@ import {
     writePromptText,
     writePromptVariables,
 } from "./prompt_enhancer_helpers.js";
+import {
+    ensurePrivacyRecoveryRegistered,
+    showAutoPrivacyRecoveryIfIssues,
+} from "./privacy_recovery.js";
 
 const BUTTONS_ADDED = "__heltoPromptEnhancerButtonsAdded";
 const SETTINGS_BUTTON = "__heltoPromptEnhancerSettingsButton";
@@ -356,12 +362,23 @@ async function refreshPromptEditorVariables(node, force = false) {
 
     const loadId = (state.variablesLoadId ?? 0) + 1;
     state.variablesLoadId = loadId;
-    const variables = await readPromptVariables(node, selectorApi);
+    let variables = await readPromptVariables(node, selectorApi);
     if (state.variablesLoadId !== loadId) {
         return state.variables;
     }
+    if (
+        readPromptEnhancerSettings(node).privacyMode
+        && serializedValue
+        && serializedValue !== "[]"
+        && !isEncryptedVariables(serializedValue)
+    ) {
+        const recovery = await showAutoPrivacyRecoveryIfIssues(node.graph ?? app.graph);
+        if (recovery?.result?.appliedCount > 0) {
+            variables = await readPromptVariables(node, selectorApi);
+        }
+    }
     state.variables = variables;
-    state.variablesWidgetValue = serializedValue;
+    state.variablesWidgetValue = serializedPromptVariablesValue(node);
     return variables;
 }
 
@@ -375,18 +392,26 @@ async function loadPromptEditorText(node, force = false) {
 
     const loadId = (state.promptLoadId ?? 0) + 1;
     state.promptLoadId = loadId;
-    const text = await readPromptText(node, selectorApi);
+    let text = await readPromptText(node, selectorApi);
     if (state.promptLoadId !== loadId) {
         return state.promptText;
     }
 
+    const needsRecovery = readPromptEnhancerSettings(node).privacyMode
+        && text
+        && serializedValue === text
+        && !isEncryptedText(serializedValue);
+    if (needsRecovery) {
+        const recovery = await showAutoPrivacyRecoveryIfIssues(node.graph ?? app.graph);
+        if (recovery?.result?.appliedCount > 0) {
+            text = await readPromptText(node, selectorApi);
+        }
+    }
+
     state.promptText = text;
-    state.promptWidgetValue = serializedValue;
+    state.promptWidgetValue = serializedPromptValue(node);
     if (document.activeElement !== state.textarea && state.textarea.value !== text) {
         state.textarea.value = text;
-    }
-    if (readPromptEnhancerSettings(node).privacyMode && text && serializedValue === text) {
-        persistPromptEditorText(node, text, true);
     }
     return text;
 }
@@ -1670,6 +1695,7 @@ function ensurePromptEnhancerUi(node) {
 }
 
 schedulePromptEnhancerSeedQueuePatch();
+ensurePrivacyRecoveryRegistered();
 
 app.registerExtension({
     name: "Helto.PromptEnhancer",

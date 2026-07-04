@@ -1,3 +1,7 @@
+import {
+    ensureEncryptedPrivacyValue as sharedEnsureEncryptedPrivacyValue,
+} from "./privacy_common.js";
+
 export const PRIVACY_ENVELOPE_SCHEMA = "helto.comfyui-utils";
 export const PRIVACY_ENVELOPE_ALGORITHM = "AES-256-GCM";
 export const ENCRYPTED_PREFIX = `{"algorithm":"${PRIVACY_ENVELOPE_ALGORITHM}"`;
@@ -165,13 +169,32 @@ export async function encryptedOrReusePrivacyValue(owner, fieldName, currentValu
     }
 
     if (typeof selectorApi?.encrypt !== "function") {
-        return String(defaultValue ?? "");
+        throw new Error("PRIVACY_ENCRYPTION_UNAVAILABLE: no encryption handler is registered.");
     }
 
-    const response = await selectorApi.encrypt(serialized);
-    const encrypted = String(response?.encrypted || "");
+    let encrypted = "";
+    try {
+        encrypted = await sharedEnsureEncryptedPrivacyValue({
+            owner,
+            fieldName,
+            value: serialized,
+            canonicalValue,
+            privacyMode: true,
+            encrypt: (plaintext) => selectorApi.encrypt(plaintext),
+            defaultValue,
+            encryptEmpty,
+            schema: PRIVACY_ENVELOPE_SCHEMA,
+        });
+    } catch (error) {
+        if (!String(error?.message ?? error ?? "").includes("shared privacy recovery helper is unavailable")) {
+            throw error;
+        }
+        const response = await selectorApi.encrypt(serialized);
+        encrypted = String(response?.encrypted || "");
+    }
+
     if (!isPrivacyEnvelope(encrypted)) {
-        return String(defaultValue ?? "");
+        throw new Error("PRIVACY_ENCRYPTION_FAILED: encryption did not return a valid privacy envelope.");
     }
     rememberPrivacyEnvelope(owner, fieldName, canonicalValue, encrypted);
     return encrypted;

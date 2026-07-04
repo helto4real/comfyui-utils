@@ -7,6 +7,7 @@ import { collapseHiddenWidgetLayout } from "./ui.js";
 import {
     PRIVACY_SHOW_ANY_LAYOUT,
     PRIVACY_SHOW_ANY_NODE_CLASS,
+    PRIVACY_SHOW_ANY_STATE_PROPERTY,
     PRIVACY_SHOW_ANY_STATE_WIDGET,
     decryptTextStateForOwner,
     encryptTextStateForOwner,
@@ -20,6 +21,10 @@ import {
     setEncryptedPrivacyShowAnyState,
     serializedEncryptedWidgetValue,
 } from "./privacy_show_any_helpers.js";
+import {
+    ensurePrivacyRecoveryRegistered,
+    showAutoPrivacyRecoveryIfIssues,
+} from "./privacy_recovery.js";
 
 const DISPLAY_WIDGET_KEY = "__heltoPrivacyShowAnyWidget";
 const DISPLAY_TEXT_KEY = "__heltoPrivacyShowAnyText";
@@ -31,6 +36,7 @@ const COPY_BUTTON_GUARD_EVENTS = ["pointerdown", "pointerup", "mousedown", "mous
 
 ensureStylesheet();
 installPrivacyShowAnyLifecycleFlush();
+ensurePrivacyRecoveryRegistered();
 
 function ensureStylesheet() {
     if (document.getElementById("helto-utils-styles")) return;
@@ -166,7 +172,14 @@ function installPrivacyShowAnyLifecycleFlush() {
 
 async function restoreEncryptedState(node) {
     const stateWidget = getStateWidget(node);
-    const encrypted = encryptedPrivacyShowAnyState(node, stateWidget);
+    let encrypted = encryptedPrivacyShowAnyState(node, stateWidget);
+    const rawState = String(stateWidget?.value || node?.properties?.[PRIVACY_SHOW_ANY_STATE_PROPERTY] || "");
+    if (rawState && !encrypted) {
+        const recovery = await showAutoPrivacyRecoveryIfIssues(node.graph ?? app.graph);
+        if (recovery?.result?.appliedCount > 0) {
+            encrypted = encryptedPrivacyShowAnyState(node, stateWidget);
+        }
+    }
     if (!encrypted) {
         setDisplayText(node, "", false);
         return;
