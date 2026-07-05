@@ -1,43 +1,70 @@
-/* --- CSS Design System (Helto Director look & feel) --- */
-/* Shared across every Helto node and window: dark navy surfaces, a gold
-   accent for selection/active state, and a blue focus ring. Mirrors the
-   token vocabulary of the Video Timeline Director (`--htd-*`). */
+/* =========================================================================
+   Helto Design System — Design Tokens (Catppuccin Mocha, peach accent)
+   =========================================================================
+   Canonical design tokens copied verbatim from the Helto design system.
+   Single source of truth for every color and size. Shared across every
+   Helto node and window: gold (peach) = selection/active, blue = focus.
+
+   Color values follow the Catppuccin Mocha palette
+   (https://catppuccin.com/palette — flavor: Mocha). Palette names are noted
+   next to each value. Derived shades (accent borders, gradient wells) are
+   darkened mixes of the named palette colors.
+   ========================================================================= */
 :root {
-    /* Surfaces, deepest inset -> raised */
-    --bg-tertiary: #0d1320;   /* deepest: inputs, grids, viewports */
-    --bg-primary: #151c2a;    /* base panel / container */
-    --bg-secondary: #1b2333;  /* raised: buttons, list items, popovers */
-    --bg-raised: #232d3f;     /* button gradient highlight */
-    --bg-hover: #2c3850;      /* interactive hover surface */
+  /* ---- Surfaces (deepest → raised) ------------------------------------ */
+  --helto-bg: #181825;            /* mantle — input wells, grids, viewports */
+  --helto-surface: #1e1e2e;       /* base — panels */
+  --helto-surface-2: #313244;     /* surface0 — fields, list items */
+  --helto-surface-3: #45475a;     /* surface1 — button gradient top */
+  --helto-surface-hover: #585b70; /* surface2 — hovered controls */
 
-    /* Accent (gold) for selection / active emphasis */
-    --accent-primary: #f1c75c;
-    --accent-hover: #ffd873;
-    --accent-dim: rgba(241, 199, 92, 0.16);
-    --accent-border: rgba(241, 199, 92, 0.55);
+  /* ---- Borders ---------------------------------------------------------- */
+  --helto-border: #313244;        /* surface0 */
+  --helto-border-strong: #45475a; /* surface1 */
+  --helto-border-hover: #6c7086;  /* overlay0 */
 
-    /* Focus (blue) */
-    --focus: #5e9bff;
-    --focus-ring: 0 0 0 2px rgba(94, 155, 255, 0.5);
+  /* ---- Text (three tiers only) ------------------------------------------ */
+  --helto-text: #cdd6f4;          /* text */
+  --helto-text-dim: #a6adc8;      /* subtext0 */
+  --helto-text-faint: #7f849c;    /* overlay1 */
 
-    /* Borders */
-    --border-subtle: #2a3346;
-    --border-strong: #3a465c;
-    --border-active: #f1c75c;
+  /* ---- Accent (GOLD → mocha peach) — selection / active / primary ------- */
+  --helto-accent: #fab387;        /* peach */
+  --helto-accent-strong: #fddcc4; /* peach, lightened */
+  --helto-accent-border: #93664a; /* peach, darkened */
+  --helto-accent-bg: #46301f;     /* peach well (switch track on) */
 
-    /* Text */
-    --text-primary: #e7ebf3;
-    --text-secondary: #9aa6bd;
-    --text-dim: #6f7c95;
+  /* ---- Focus (BLUE) — focus rings only ----------------------------------- */
+  --helto-focus: #89b4fa;         /* blue */
+  --helto-focus-ring: 0 0 0 3px rgba(137, 180, 250, 0.28);
 
-    /* Status */
-    --danger: #ec5a6b;
+  /* ---- Status ------------------------------------------------------------ */
+  --helto-danger: #f38ba8;        /* red */
+  --helto-danger-border: #96526a; /* red, darkened */
+  --helto-ok: #a6e3a1;            /* green */
+  --helto-warn: #f9e2af;          /* yellow (peach is the accent) */
+  --helto-info: #74c7ec;          /* sapphire */
 
-    --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Roboto Mono", monospace;
+  /* ---- Radii -------------------------------------------------------------- */
+  --helto-radius-sm: 5px;  /* controls */
+  --helto-radius: 6px;     /* panels, inputs */
+  --helto-radius-lg: 10px; /* modals */
 
-    --shadow-main: 0 14px 36px rgba(0, 0, 0, 0.55);
-    --shadow-glow: 0 0 10px rgba(241, 199, 92, 0.35);
+  /* ---- Elevation ----------------------------------------------------------- */
+  --helto-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --helto-shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.5);
+  --helto-shadow-glow: 0 0 0 1px rgba(250, 179, 135, 0.35),
+                       0 0 12px rgba(250, 179, 135, 0.22);
+
+  /* ---- Motion --------------------------------------------------------------- */
+  --helto-transition: 0.12s ease;
+  --helto-ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* ---- Type ------------------------------------------------------------------ */
+  --helto-font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --helto-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --helto-font-size: 12px;
+  --helto-line: 1.4;
 }
 
 /* --- Container Core Layout --- */
@@ -63,12 +90,12 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
-    background: var(--bg-primary);
-    font-family: var(--font-sans);
-    color: var(--text-primary);
+    background: var(--helto-surface);
+    font-family: var(--helto-font-sans);
+    color: var(--helto-text);
     user-select: none;
     overflow: hidden;
-    border-radius: 8px;
+    border-radius: var(--helto-radius);
     min-width: 0;
     min-height: 0;
     pointer-events: auto;
@@ -81,18 +108,18 @@
     right: 28px;
     background: transparent;
     border: none;
-    color: var(--text-secondary);
+    color: var(--helto-text-dim);
     cursor: pointer;
     z-index: 10;
     padding: 2px;
-    border-radius: 4px;
+    border-radius: var(--helto-radius-sm);
     display: flex;
     align-items: center;
     justify-content: center;
     transition: color 0.2s, transform 0.2s;
 }
 .helto-gear-btn-overlay:hover {
-    color: var(--text-primary);
+    color: var(--helto-text);
     transform: rotate(45deg);
 }
 
@@ -106,11 +133,11 @@
 }
 
 .helto-btn-icon {
-    background: linear-gradient(180deg, var(--bg-raised), var(--bg-secondary));
-    border: 1px solid var(--border-strong);
-    color: var(--text-secondary);
+    background: linear-gradient(180deg, var(--helto-surface-3), var(--helto-surface-2));
+    border: 1px solid var(--helto-border-strong);
+    color: var(--helto-text-dim);
     padding: 6px;
-    border-radius: 6px;
+    border-radius: var(--helto-radius);
     cursor: pointer;
     display: inline-flex;
     align-items: center;
@@ -118,9 +145,9 @@
     transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .helto-btn-icon:hover {
-    background: linear-gradient(180deg, var(--bg-hover), var(--bg-raised));
-    border-color: #4c5970;
-    color: var(--text-primary);
+    background: linear-gradient(180deg, var(--helto-surface-hover), var(--helto-surface-3));
+    border-color: var(--helto-border-hover);
+    color: var(--helto-text);
     transform: translateY(-1px);
 }
 .helto-btn-icon:active {
@@ -132,16 +159,16 @@
     transform: none;
 }
 .helto-btn-icon:disabled:hover {
-    background: linear-gradient(180deg, var(--bg-raised), var(--bg-secondary));
-    border-color: var(--border-strong);
-    color: var(--text-secondary);
+    background: linear-gradient(180deg, var(--helto-surface-3), var(--helto-surface-2));
+    border-color: var(--helto-border-strong);
+    color: var(--helto-text-dim);
     transform: none;
 }
 .helto-btn-icon.active {
-    background: var(--accent-dim);
-    border-color: var(--border-active);
-    color: var(--accent-primary);
-    box-shadow: var(--shadow-glow);
+    background: linear-gradient(180deg, #4f3a2a, #3d2d20);
+    border-color: var(--helto-accent-border);
+    color: var(--helto-accent-strong);
+    box-shadow: inset 0 0 0 1px rgba(250, 179, 135, 0.18);
 }
 .helto-refresh-btn.is-refreshing svg {
     animation: heltoSpin 0.8s linear infinite;
@@ -160,7 +187,7 @@
 .helto-search-icon {
     position: absolute;
     left: 8px;
-    color: var(--text-dim);
+    color: var(--helto-text-faint);
     pointer-events: none;
     display: flex;
     align-items: center;
@@ -169,18 +196,18 @@
     width: 100%;
     box-sizing: border-box;
     padding: 6px 8px 6px 28px;
-    background: var(--bg-tertiary);
-    border: 1px solid var(--border-subtle);
-    color: var(--text-primary);
-    border-radius: 6px;
-    font-family: var(--font-sans);
+    background: var(--helto-bg);
+    border: 1px solid var(--helto-border);
+    color: var(--helto-text);
+    border-radius: var(--helto-radius);
+    font-family: var(--helto-font-sans);
     font-size: 13px;
     outline: none;
     transition: all 0.2s ease;
 }
 .helto-search-input:focus {
-    border-color: var(--focus);
-    box-shadow: var(--focus-ring);
+    border-color: var(--helto-focus);
+    box-shadow: var(--helto-focus-ring);
 }
 
 /* --- Privacy Show Any --- */
@@ -204,8 +231,8 @@
     flex-direction: column;
     gap: 8px;
     overflow: hidden;
-    color: var(--text-primary);
-    font-family: var(--font-sans);
+    color: var(--helto-text);
+    font-family: var(--helto-font-sans);
     pointer-events: auto;
 }
 
@@ -220,7 +247,7 @@
 .helto-show-any-status {
     min-width: 0;
     overflow: hidden;
-    color: var(--text-secondary);
+    color: var(--helto-text-dim);
     font-size: 12px;
     line-height: 1.2;
     text-overflow: ellipsis;
@@ -240,11 +267,11 @@
     box-sizing: border-box;
     resize: none;
     padding: 8px;
-    border: 1px solid var(--border-subtle);
-    border-radius: 6px;
-    background: var(--bg-tertiary);
-    color: var(--text-primary);
-    font-family: var(--font-mono);
+    border: 1px solid var(--helto-border);
+    border-radius: var(--helto-radius);
+    background: var(--helto-bg);
+    color: var(--helto-text);
+    font-family: var(--helto-font-mono);
     font-size: 12px;
     line-height: 1.45;
     outline: none;
@@ -255,8 +282,8 @@
 }
 
 .helto-show-any-text:focus {
-    border-color: var(--focus);
-    box-shadow: var(--focus-ring);
+    border-color: var(--helto-focus);
+    box-shadow: var(--helto-focus-ring);
 }
 
 .helto-show-any-native-wrap {
@@ -276,13 +303,13 @@
     width: 28px;
     height: 28px;
     padding: 5px;
-    background: color-mix(in srgb, var(--bg-secondary) 88%, transparent);
+    background: color-mix(in srgb, var(--helto-surface-2) 88%, transparent);
     backdrop-filter: blur(4px);
 }
 
 .helto-show-any-native-copy.is-copied {
-    color: var(--accent-primary);
-    border-color: var(--border-active);
+    color: var(--helto-accent);
+    border-color: var(--helto-accent);
 }
 
 /* --- Controls Slider & Sort Row --- */
@@ -293,7 +320,7 @@
     flex-wrap: nowrap;
     gap: 12px;
     font-size: 11px;
-    color: var(--text-secondary);
+    color: var(--helto-text-dim);
     padding: 0 2px;
     min-width: 0;
     overflow: hidden;
@@ -321,7 +348,7 @@
     font-weight: 500;
     text-transform: uppercase;
     letter-spacing: 0.5px;
-    color: var(--text-dim);
+    color: var(--helto-text-faint);
 }
 
 .helto-col-slider {
@@ -329,7 +356,7 @@
     flex: 0 0 70px;
     -webkit-appearance: none;
     appearance: none;
-    background: var(--border-subtle);
+    background: var(--helto-border);
     height: 4px;
     border-radius: 2px;
     outline: none;
@@ -341,28 +368,28 @@
     width: 12px;
     height: 12px;
     border-radius: 50%;
-    background: var(--accent-primary);
+    background: var(--helto-accent);
     cursor: pointer;
     transition: transform 0.1s;
 }
 .helto-col-slider::-webkit-slider-thumb:hover {
     transform: scale(1.25);
-    box-shadow: var(--shadow-glow);
+    box-shadow: var(--helto-shadow-glow);
 }
 .helto-slider-val {
-    font-family: var(--font-mono);
-    background: var(--bg-secondary);
+    font-family: var(--helto-font-mono);
+    background: var(--helto-surface-2);
     padding: 1px 4px;
-    border-radius: 4px;
+    border-radius: var(--helto-radius-sm);
     min-width: 12px;
     text-align: center;
-    border: 1px solid var(--border-subtle);
+    border: 1px solid var(--helto-border);
 }
 
 .helto-sort-link, .helto-folder-filter-link, .helto-subfolder-filter-link {
-    border-bottom: 1px dashed var(--text-dim);
+    border-bottom: 1px dashed var(--helto-text-faint);
     cursor: pointer;
-    color: var(--text-primary);
+    color: var(--helto-text);
     font-weight: 500;
     transition: all 0.2s;
     text-transform: capitalize;
@@ -377,21 +404,21 @@
     text-transform: none;
 }
 .helto-sort-link:hover, .helto-folder-filter-link:hover, .helto-subfolder-filter-link:hover {
-    color: var(--accent-primary);
-    border-bottom-color: var(--accent-primary);
+    color: var(--helto-accent);
+    border-bottom-color: var(--helto-accent);
 }
 
 /* --- Dropdown Selection Menu --- */
 .helto-dropdown {
     position: absolute;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-subtle);
-    border-radius: 6px;
-    box-shadow: var(--shadow-main);
+    background: var(--helto-surface-2);
+    border: 1px solid var(--helto-border);
+    border-radius: var(--helto-radius);
+    box-shadow: var(--helto-shadow-pop);
     z-index: 9999;
     padding: 4px 0;
     min-width: 100px;
-    font-family: var(--font-sans);
+    font-family: var(--helto-font-sans);
     font-size: 12px;
     animation: dropdownFade 0.15s cubic-bezier(0.4, 0, 0.2, 1);
 }
@@ -404,18 +431,19 @@
 }
 .helto-dropdown-item {
     padding: 6px 12px;
-    color: var(--text-secondary);
+    color: var(--helto-text-dim);
     cursor: pointer;
     transition: background 0.15s, color 0.15s;
     text-transform: capitalize;
 }
 .helto-dropdown-item:hover {
-    background: var(--accent-dim);
-    color: var(--accent-primary);
+    background: var(--helto-surface-hover);
+    color: #e6ebf9;
 }
 .helto-dropdown-item.active {
-    color: var(--accent-primary);
+    color: var(--helto-accent);
     font-weight: 600;
+    box-shadow: inset 2px 0 0 var(--helto-accent);
 }
 
 /* --- Thumbnail Grid Scrollbox --- */
@@ -426,9 +454,9 @@
     grid-template-columns: repeat(var(--cols, 4), 1fr);
     gap: 8px;
     padding: 4px;
-    background: var(--bg-tertiary);
-    border: 1px solid var(--border-subtle);
-    border-radius: 8px;
+    background: var(--helto-bg);
+    border: 1px solid var(--helto-border);
+    border-radius: var(--helto-radius);
     align-content: start;
     transition: opacity 0.3s ease, filter 0.3s ease, max-height 0.3s ease;
 }
@@ -437,12 +465,12 @@
     grid-column: 1 / -1;
     padding: 40px 0;
     text-align: center;
-    color: var(--text-dim);
+    color: var(--helto-text-faint);
     font-size: 13px;
     font-style: italic;
 }
 .helto-grid-error {
-    color: var(--danger);
+    color: var(--helto-danger);
     padding: 20px;
     font-style: normal;
     display: flex;
@@ -462,11 +490,11 @@
     background: transparent;
 }
 .helto-grid::-webkit-scrollbar-thumb {
-    background: var(--border-subtle);
+    background: var(--helto-border);
     border-radius: 3px;
 }
 .helto-grid::-webkit-scrollbar-thumb:hover {
-    background: var(--text-dim);
+    background: var(--helto-text-faint);
 }
 
 /* --- Grid Items (Thumbnails) --- */
@@ -475,21 +503,21 @@
     width: 100%;
     height: 0;
     padding-bottom: 100%;
-    border-radius: 6px;
+    border-radius: var(--helto-radius);
     overflow: hidden;
     border: 2px solid transparent;
-    background: #0a0e16;
+    background: #11111b;
     cursor: pointer;
     transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .helto-grid-item:hover {
     transform: scale(1.03);
-    border-color: var(--border-strong);
+    border-color: var(--helto-border-strong);
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
 }
 .helto-grid-item.selected {
-    border-color: var(--border-active);
-    box-shadow: var(--shadow-glow);
+    border-color: var(--helto-accent);
+    box-shadow: var(--helto-shadow-glow);
 }
 
 .helto-thumb {
@@ -508,7 +536,7 @@
 }
 .helto-thumb.aspect-original {
     object-fit: contain;
-    background: #070a11;
+    background: #11111b;
 }
 
 .helto-item-checkmark {
@@ -518,7 +546,7 @@
     width: 18px;
     height: 18px;
     border-radius: 50%;
-    background: var(--border-active);
+    background: var(--helto-accent);
     border: 1px solid rgba(255, 255, 255, 0.4);
     display: flex;
     align-items: center;
@@ -558,7 +586,7 @@
 }
 .helto-status-text {
     font-size: 12px;
-    color: var(--text-secondary);
+    color: var(--helto-text-dim);
     font-weight: 500;
     white-space: nowrap;
 }
@@ -573,9 +601,9 @@
     box-shadow: none;
 }
 .helto-selected-preview-btn:disabled:hover {
-    background: var(--bg-secondary);
-    border-color: var(--border-subtle);
-    color: var(--text-secondary);
+    background: var(--helto-surface-2);
+    border-color: var(--helto-border);
+    color: var(--helto-text-dim);
     transform: none;
 }
 .helto-footer-actions {
@@ -585,34 +613,34 @@
 }
 .helto-clear-btn,
 .helto-delete-selected-btn {
-    border-radius: 6px;
+    border-radius: var(--helto-radius);
     width: 28px;
     height: 28px;
     display: flex;
     align-items: center;
     justify-content: center;
     cursor: pointer;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-subtle);
-    color: var(--text-secondary);
+    background: var(--helto-surface-2);
+    border: 1px solid var(--helto-border);
+    color: var(--helto-text-dim);
     transition: all 0.2s;
 }
 .helto-clear-btn:hover {
-    background: linear-gradient(180deg, #5a2330, #471b25);
-    border-color: #8f3a44;
-    color: #ffd6dc;
+    background: linear-gradient(180deg, #5c2c3d, #482331);
+    border-color: var(--helto-danger-border);
+    color: #f9d4e0;
 }
 .helto-delete-selected-btn:hover {
-    background: linear-gradient(180deg, #6e2937, #57212c);
-    border-color: #d0505f;
-    color: #fff3f5;
+    background: linear-gradient(180deg, #6e3549, #5a2a3c);
+    border-color: #c56d8c;
+    color: #fdeef4;
 }
 .helto-delete-selected-btn.is-deleting svg {
     opacity: 0.7;
     transform: scale(0.92);
 }
 .delete-confirm-message {
-    color: var(--text-primary);
+    color: var(--helto-text);
     font-size: 14px;
     line-height: 1.5;
     padding: 4px 0;
@@ -625,12 +653,12 @@
     max-width: min(720px, calc(100vw - 24px));
     max-height: min(70vh, 520px);
     padding: 8px;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-subtle);
-    border-radius: 8px;
-    box-shadow: var(--shadow-main);
-    font-family: var(--font-sans);
-    color: var(--text-primary);
+    background: var(--helto-surface-2);
+    border: 1px solid var(--helto-border);
+    border-radius: var(--helto-radius);
+    box-shadow: var(--helto-shadow-pop);
+    font-family: var(--helto-font-sans);
+    color: var(--helto-text);
     pointer-events: auto;
     overflow: auto;
 }
@@ -644,15 +672,15 @@
 .helto-selected-preview-title {
     font-size: 12px;
     font-weight: 600;
-    color: var(--text-primary);
+    color: var(--helto-text);
 }
 .helto-selected-preview-close {
     width: 24px;
     height: 24px;
-    border: 1px solid var(--border-subtle);
-    border-radius: 6px;
-    background: var(--bg-tertiary);
-    color: var(--text-secondary);
+    border: 1px solid var(--helto-border);
+    border-radius: var(--helto-radius);
+    background: var(--helto-bg);
+    color: var(--helto-text-dim);
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -661,8 +689,8 @@
     transition: all 0.15s;
 }
 .helto-selected-preview-close:hover {
-    color: var(--text-primary);
-    border-color: var(--border-strong);
+    color: var(--helto-text);
+    border-color: var(--helto-border-strong);
 }
 .helto-selected-preview-grid {
     display: grid;
@@ -679,9 +707,9 @@
     max-width: 256px;
     aspect-ratio: 1 / 1;
     overflow: hidden;
-    border-radius: 6px;
-    background: #0a0e16;
-    border: 1px solid var(--border-subtle);
+    border-radius: var(--helto-radius);
+    background: #11111b;
+    border: 1px solid var(--helto-border);
 }
 .helto-selected-preview-thumb {
     width: 100%;
@@ -695,7 +723,7 @@
 }
 .helto-selected-preview-thumb.aspect-original {
     object-fit: contain;
-    background: #070a11;
+    background: #11111b;
 }
 .helto-selected-preview-remove {
     position: absolute;
@@ -706,8 +734,8 @@
     height: 24px;
     border: 1px solid rgba(255, 255, 255, 0.35);
     border-radius: 50%;
-    background: rgba(58, 23, 32, 0.92);
-    color: #ffd6dc;
+    background: rgba(92, 44, 61, 0.92);
+    color: #f9d4e0;
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -717,8 +745,8 @@
     transition: all 0.15s;
 }
 .helto-selected-preview-remove:hover {
-    background: var(--danger);
-    color: white;
+    background: linear-gradient(180deg, #6e3549, #5a2a3c);
+    color: #fdeef4;
     transform: scale(1.06);
 }
 .helto-selected-preview-label {
@@ -728,7 +756,7 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     font-size: 11px;
-    color: var(--text-secondary);
+    color: var(--helto-text-dim);
 }
 
 /* --- Dialog Modals System --- */
@@ -738,7 +766,7 @@
     left: 0;
     width: 100vw;
     height: 100vh;
-    background: rgba(8, 9, 12, 0.7);
+    background: rgba(17, 17, 27, 0.72);
     backdrop-filter: blur(5px);
     z-index: 10000;
     display: flex;
@@ -752,17 +780,17 @@
 }
 
 .helto-modal-card {
-    background: linear-gradient(135deg, rgba(27, 35, 51, 0.92), rgba(13, 19, 32, 0.96));
-    border: 1px solid var(--border-subtle);
-    border-radius: 12px;
+    background: linear-gradient(135deg, rgba(49, 50, 68, 0.92), rgba(24, 24, 37, 0.96));
+    border: 1px solid var(--helto-border);
+    border-radius: var(--helto-radius-lg);
     width: 440px;
     box-shadow: 0 20px 50px rgba(0, 0, 0, 0.7);
     backdrop-filter: blur(15px);
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    font-family: var(--font-sans);
-    color: var(--text-primary);
+    font-family: var(--helto-font-sans);
+    color: var(--helto-text);
     animation: modalSlideUp 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 @keyframes modalSlideUp {
@@ -775,18 +803,18 @@
     justify-content: space-between;
     align-items: center;
     padding: 16px 20px;
-    border-bottom: 1px solid var(--border-subtle);
+    border-bottom: 1px solid var(--helto-border);
 }
 .helto-modal-title {
     font-size: 16px;
     font-weight: 600;
     letter-spacing: 0.5px;
-    color: var(--text-primary);
+    color: var(--helto-text);
 }
 .helto-modal-close-btn {
     background: transparent;
     border: none;
-    color: var(--text-secondary);
+    color: var(--helto-text-dim);
     cursor: pointer;
     padding: 2px;
     display: flex;
@@ -794,7 +822,7 @@
     transition: color 0.15s;
 }
 .helto-modal-close-btn:hover {
-    color: var(--text-primary);
+    color: var(--helto-text);
 }
 
 .helto-modal-body {
@@ -809,7 +837,7 @@
     font-size: 11px;
     font-weight: 600;
     letter-spacing: 1px;
-    color: var(--text-dim);
+    color: var(--helto-text-faint);
     margin-bottom: 6px;
     display: block;
 }
@@ -825,25 +853,25 @@
 }
 .folder-add-input {
     flex: 1;
-    background: var(--bg-tertiary);
-    border: 1px solid var(--border-subtle);
-    border-radius: 6px;
+    background: var(--helto-bg);
+    border: 1px solid var(--helto-border);
+    border-radius: var(--helto-radius);
     padding: 8px 12px;
-    color: var(--text-primary);
+    color: var(--helto-text);
     outline: none;
-    font-family: var(--font-sans);
+    font-family: var(--helto-font-sans);
     font-size: 13px;
     transition: border-color 0.2s;
 }
 .folder-add-input:focus {
-    border-color: var(--focus);
-    box-shadow: var(--focus-ring);
+    border-color: var(--helto-focus);
+    box-shadow: var(--helto-focus-ring);
 }
 .folder-add-btn {
-    background: linear-gradient(180deg, #4f4322, #3c3318);
-    color: var(--accent-hover);
-    border: 1px solid var(--accent-border);
-    border-radius: 6px;
+    background: linear-gradient(180deg, #4f3a2a, #3d2d20);
+    color: var(--helto-accent-strong);
+    border: 1px solid var(--helto-accent-border);
+    border-radius: var(--helto-radius);
     width: 32px;
     cursor: pointer;
     font-size: 18px;
@@ -854,8 +882,8 @@
     transition: background 0.15s, color 0.15s;
 }
 .folder-add-btn:hover {
-    background: linear-gradient(180deg, #5b4d27, #46391b);
-    color: #fff3cf;
+    background: linear-gradient(180deg, #5d4531, #493626);
+    color: #fbe6d6;
 }
 
 .folder-modal-list-header {
@@ -866,14 +894,14 @@
 }
 .helto-modal-folder-count {
     font-size: 11px;
-    font-family: var(--font-mono);
-    color: var(--text-secondary);
+    font-family: var(--helto-font-mono);
+    color: var(--helto-text-dim);
 }
 
 .helto-modal-folder-list {
-    background: var(--bg-tertiary);
-    border: 1px solid var(--border-subtle);
-    border-radius: 8px;
+    background: var(--helto-bg);
+    border: 1px solid var(--helto-border);
+    border-radius: var(--helto-radius);
     max-height: 180px;
     overflow-y: auto;
     display: flex;
@@ -884,7 +912,7 @@
 .folder-list-empty {
     padding: 24px 0;
     text-align: center;
-    color: var(--text-dim);
+    color: var(--helto-text-faint);
     font-style: italic;
     font-size: 12px;
 }
@@ -892,33 +920,33 @@
     display: flex;
     align-items: center;
     padding: 8px 10px;
-    background: var(--bg-secondary);
-    border-radius: 6px;
+    background: var(--helto-surface-2);
+    border-radius: var(--helto-radius);
     gap: 8px;
     border: 1px solid transparent;
     transition: border-color 0.2s;
 }
 .folder-list-item:hover {
-    border-color: var(--border-subtle);
+    border-color: var(--helto-border);
 }
 .folder-item-icon {
-    color: var(--text-dim);
+    color: var(--helto-text-faint);
     display: flex;
     align-items: center;
 }
 .folder-item-path {
     flex: 1;
     font-size: 12px;
-    font-family: var(--font-mono);
+    font-family: var(--helto-font-mono);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    color: var(--text-secondary);
+    color: var(--helto-text-dim);
 }
 .folder-item-del-btn {
     background: transparent;
     border: none;
-    color: var(--text-dim);
+    color: var(--helto-text-faint);
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -926,7 +954,7 @@
     transition: color 0.15s;
 }
 .folder-item-del-btn:hover {
-    color: var(--danger);
+    color: var(--helto-danger);
 }
 
 /* --- Properties Modal Settings --- */
@@ -935,7 +963,7 @@
     justify-content: space-between;
     align-items: center;
     padding-bottom: 12px;
-    border-bottom: 1px solid var(--border-subtle);
+    border-bottom: 1px solid var(--helto-border);
 }
 .settings-modal-row:last-of-type {
     border-bottom: none;
@@ -947,12 +975,12 @@
 .settings-title {
     font-size: 13px;
     font-weight: 600;
-    color: var(--text-primary);
+    color: var(--helto-text);
     margin-bottom: 2px;
 }
 .settings-desc {
     font-size: 11px;
-    color: var(--text-secondary);
+    color: var(--helto-text-dim);
     line-height: 1.4;
 }
 
@@ -975,8 +1003,8 @@
     left: 0;
     right: 0;
     bottom: 0;
-    background-color: var(--bg-tertiary);
-    border: 1px solid var(--border-subtle);
+    background-color: var(--helto-bg);
+    border: 1px solid var(--helto-border);
     transition: .25s ease;
     border-radius: 20px;
 }
@@ -987,17 +1015,17 @@
     width: 12px;
     left: 3px;
     bottom: 3px;
-    background-color: var(--text-secondary);
+    background-color: var(--helto-text-dim);
     transition: .25s ease;
     border-radius: 50%;
 }
 .helto-switch input:checked + .helto-switch-slider {
-    background-color: var(--accent-dim);
-    border-color: var(--border-active);
+    background-color: var(--helto-accent-bg);
+    border-color: var(--helto-accent-border);
 }
 .helto-switch input:checked + .helto-switch-slider:before {
     transform: translateX(16px);
-    background-color: var(--accent-primary);
+    background-color: var(--helto-accent);
 }
 
 /* Button UI Footer Modals */
@@ -1006,14 +1034,14 @@
     justify-content: flex-end;
     gap: 10px;
     padding: 12px 20px;
-    background: var(--bg-tertiary);
-    border-top: 1px solid var(--border-subtle);
+    background: var(--helto-bg);
+    border-top: 1px solid var(--helto-border);
 }
 .helto-modal-btn {
     border: none;
-    border-radius: 6px;
+    border-radius: var(--helto-radius);
     padding: 8px 16px;
-    font-family: var(--font-sans);
+    font-family: var(--helto-font-sans);
     font-size: 12px;
     font-weight: 600;
     cursor: pointer;
@@ -1023,32 +1051,32 @@
     transform: scale(0.97);
 }
 .btn-primary {
-    background: linear-gradient(180deg, #4f4322, #3c3318);
-    color: var(--accent-hover);
-    border: 1px solid var(--accent-border);
+    background: linear-gradient(180deg, #4f3a2a, #3d2d20);
+    color: var(--helto-accent-strong);
+    border: 1px solid var(--helto-accent-border);
 }
 .btn-primary:hover {
-    background: linear-gradient(180deg, #5b4d27, #46391b);
-    color: #fff3cf;
+    background: linear-gradient(180deg, #5d4531, #493626);
+    color: #fbe6d6;
 }
 .btn-secondary {
-    background: linear-gradient(180deg, var(--bg-raised), var(--bg-secondary));
-    border: 1px solid var(--border-strong);
-    color: var(--text-secondary);
+    background: linear-gradient(180deg, var(--helto-surface-3), var(--helto-surface-2));
+    border: 1px solid var(--helto-border-strong);
+    color: var(--helto-text-dim);
 }
 .btn-secondary:hover {
-    background: linear-gradient(180deg, var(--bg-hover), var(--bg-raised));
-    color: var(--text-primary);
+    background: linear-gradient(180deg, var(--helto-surface-hover), var(--helto-surface-3));
+    color: var(--helto-text);
 }
 .btn-danger {
-    background: linear-gradient(180deg, #5a2330, #471b25);
-    color: #ffd6dc;
-    border: 1px solid #8f3a44;
+    background: linear-gradient(180deg, #5c2c3d, #482331);
+    color: #f9d4e0;
+    border: 1px solid var(--helto-danger-border);
 }
 .btn-danger:hover {
-    background: linear-gradient(180deg, #6e2937, #57212c);
-    border-color: #d0505f;
-    color: #fff3f5;
+    background: linear-gradient(180deg, #6e3549, #5a2a3c);
+    border-color: #c56d8c;
+    color: #fdeef4;
 }
 .btn-full {
     width: 100%;
@@ -1058,12 +1086,12 @@
 }
 
 .helto-select {
-    background: var(--bg-tertiary);
-    border: 1px solid var(--border-subtle);
-    color: var(--text-primary);
-    border-radius: 6px;
+    background: var(--helto-bg);
+    border: 1px solid var(--helto-border);
+    color: var(--helto-text);
+    border-radius: var(--helto-radius);
     padding: 6px 10px;
-    font-family: var(--font-sans);
+    font-family: var(--helto-font-sans);
     font-size: 12px;
     outline: none;
     cursor: pointer;
@@ -1071,8 +1099,8 @@
     transition: border-color 0.15s;
 }
 .helto-select:focus {
-    border-color: var(--focus);
-    box-shadow: var(--focus-ring);
+    border-color: var(--helto-focus);
+    box-shadow: var(--helto-focus-ring);
 }
 
 .helto-prompt-enhancer-section {
@@ -1088,12 +1116,12 @@
 }
 .helto-prompt-enhancer-input,
 .helto-prompt-enhancer-number {
-    background: var(--bg-tertiary);
-    border: 1px solid var(--border-subtle);
-    border-radius: 6px;
+    background: var(--helto-bg);
+    border: 1px solid var(--helto-border);
+    border-radius: var(--helto-radius);
     box-sizing: border-box;
-    color: var(--text-primary);
-    font-family: var(--font-sans);
+    color: var(--helto-text);
+    font-family: var(--helto-font-sans);
     font-size: 12px;
     outline: none;
     padding: 6px 10px;
@@ -1107,8 +1135,8 @@
 }
 .helto-prompt-enhancer-input:focus,
 .helto-prompt-enhancer-number:focus {
-    border-color: var(--focus);
-    box-shadow: var(--focus-ring);
+    border-color: var(--helto-focus);
+    box-shadow: var(--helto-focus-ring);
 }
 .helto-prompt-enhancer-prompt-actions {
     justify-content: flex-start;
@@ -1145,8 +1173,8 @@
     width: 32px;
 }
 .helto-pe-system-preset-action.is-danger:hover {
-    border-color: rgba(239, 83, 80, 0.65);
-    color: var(--danger);
+    border-color: var(--helto-danger-border);
+    color: var(--helto-danger);
 }
 .helto-prompt-enhancer-editor-widget {
     box-sizing: border-box;
@@ -1160,12 +1188,12 @@
     width: 100%;
 }
 .helto-prompt-enhancer-user-prompt {
-    background: var(--bg-tertiary);
-    border: 1px solid var(--border-subtle);
-    border-radius: 6px;
+    background: var(--helto-bg);
+    border: 1px solid var(--helto-border);
+    border-radius: var(--helto-radius);
     box-sizing: border-box;
-    color: var(--text-primary);
-    font-family: var(--font-mono, monospace);
+    color: var(--helto-text);
+    font-family: var(--helto-font-mono);
     font-size: 12px;
     height: 100%;
     line-height: 1.45;
@@ -1179,14 +1207,14 @@
     width: 100%;
 }
 .helto-prompt-enhancer-user-prompt:focus {
-    border-color: var(--focus);
-    box-shadow: var(--focus-ring);
+    border-color: var(--helto-focus);
+    box-shadow: var(--helto-focus-ring);
 }
 .helto-prompt-enhancer-suggestions {
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-subtle);
-    border-radius: 6px;
-    box-shadow: var(--shadow-main);
+    background: var(--helto-surface-2);
+    border: 1px solid var(--helto-border);
+    border-radius: var(--helto-radius);
+    box-shadow: var(--helto-shadow-pop);
     display: grid;
     gap: 2px;
     left: 0;
@@ -1207,18 +1235,18 @@
 .helto-prompt-enhancer-suggestions button {
     background: transparent;
     border: 0;
-    border-radius: 4px;
-    color: var(--text-secondary);
+    border-radius: var(--helto-radius-sm);
+    color: var(--helto-text-dim);
     cursor: pointer;
-    font-family: var(--font-sans);
+    font-family: var(--helto-font-sans);
     font-size: 12px;
     padding: 5px 8px;
     text-align: left;
 }
 .helto-prompt-enhancer-suggestions button:hover,
 .helto-prompt-enhancer-suggestions button.selected {
-    background: var(--accent-dim);
-    color: var(--text-primary);
+    background: var(--helto-accent-bg);
+    color: var(--helto-text);
 }
 .helto-prompt-enhancer-editor-card {
     height: min(86vh, 920px);
@@ -1254,20 +1282,20 @@
     width: min(240px, calc(100% - 28px));
 }
 .helto-prompt-enhancer-script-help {
-    color: var(--text-secondary);
+    color: var(--helto-text-dim);
     flex: 0 0 auto;
-    font-family: var(--font-sans);
+    font-family: var(--helto-font-sans);
     font-size: 12px;
     line-height: 1.35;
     padding: 8px 2px 0;
 }
 .helto-prompt-enhancer-textarea {
-    background: var(--bg-tertiary);
-    border: 1px solid var(--border-subtle);
-    border-radius: 6px;
+    background: var(--helto-bg);
+    border: 1px solid var(--helto-border);
+    border-radius: var(--helto-radius);
     box-sizing: border-box;
-    color: var(--text-primary);
-    font-family: var(--font-mono, monospace);
+    color: var(--helto-text);
+    font-family: var(--helto-font-mono);
     font-size: 12px;
     flex: 1;
     height: 100%;
@@ -1279,20 +1307,20 @@
     width: 100%;
 }
 .helto-prompt-enhancer-textarea:focus {
-    border-color: var(--focus);
-    box-shadow: var(--focus-ring);
+    border-color: var(--helto-focus);
+    box-shadow: var(--helto-focus-ring);
 }
 .helto-prompt-enhancer-prompt-hidden {
-    background: var(--bg-tertiary) !important;
-    border-color: var(--bg-tertiary) !important;
+    background: var(--helto-bg) !important;
+    border-color: var(--helto-bg) !important;
     color: transparent !important;
     -webkit-text-fill-color: transparent !important;
     caret-color: transparent !important;
     text-shadow: none !important;
 }
 .helto-prompt-enhancer-prompt-hidden:hover {
-    background: var(--bg-tertiary) !important;
-    border-color: var(--border-subtle) !important;
+    background: var(--helto-bg) !important;
+    border-color: var(--helto-border) !important;
     color: inherit !important;
     -webkit-text-fill-color: currentColor !important;
     caret-color: auto !important;
@@ -1319,9 +1347,9 @@
     gap: 12px;
 }
 .helto-prompt-enhancer-variable-row {
-    background: var(--bg-primary);
-    border: 1px solid var(--border-subtle);
-    border-radius: 8px;
+    background: var(--helto-surface);
+    border: 1px solid var(--helto-border);
+    border-radius: var(--helto-radius);
     display: grid;
     gap: 10px;
     padding: 10px;
@@ -1336,8 +1364,8 @@
     width: auto;
 }
 .helto-prompt-enhancer-empty {
-    color: var(--text-secondary);
-    font-family: var(--font-sans);
+    color: var(--helto-text-dim);
+    font-family: var(--helto-font-sans);
     font-size: 12px;
     padding: 8px 0;
 }
@@ -1398,10 +1426,10 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    border-radius: 12px;
+    border-radius: var(--helto-radius-lg);
     box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6);
-    background: var(--bg-primary);
-    border: 1px solid var(--border-subtle);
+    background: var(--helto-surface);
+    border: 1px solid var(--helto-border);
     padding: 8px;
     transform: scale(0.95);
     transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
@@ -1413,14 +1441,14 @@
     max-width: 85vw;
     max-height: 80vh;
     object-fit: contain;
-    border-radius: 8px;
+    border-radius: var(--helto-radius);
     display: block;
 }
 .helto-preview-title {
     margin-top: 8px;
     font-size: 12px;
-    color: var(--text-secondary);
-    font-family: var(--font-sans);
+    color: var(--helto-text-dim);
+    font-family: var(--helto-font-sans);
     text-align: center;
     word-break: break-all;
     max-width: 80vw;
@@ -1432,9 +1460,9 @@
     right: -16px;
     width: 32px;
     height: 32px;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-subtle);
-    color: var(--text-primary);
+    background: var(--helto-surface-2);
+    border: 1px solid var(--helto-border);
+    color: var(--helto-text);
     border-radius: 50%;
     display: flex;
     justify-content: center;
@@ -1446,9 +1474,9 @@
     z-index: 100001;
 }
 .helto-preview-close:hover {
-    background: var(--danger);
-    color: white;
-    border-color: var(--danger);
+    background: linear-gradient(180deg, #6e3549, #5a2a3c);
+    color: #fdeef4;
+    border-color: #c56d8c;
     transform: scale(1.1);
 }
 
@@ -1506,9 +1534,9 @@
     width: min(92vw, 1180px);
     height: min(90vh, 860px);
     overflow: hidden;
-    background: var(--bg-primary);
-    border: 1px solid var(--border-subtle);
-    border-radius: 8px;
+    background: var(--helto-surface);
+    border: 1px solid var(--helto-border);
+    border-radius: var(--helto-radius);
     box-shadow: 0 22px 70px rgba(0, 0, 0, 0.6);
 }
 .helto-mask-editor-header {
@@ -1517,14 +1545,14 @@
     justify-content: space-between;
     gap: 12px;
     padding: 10px 12px;
-    border-bottom: 1px solid var(--border-subtle);
-    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--helto-border);
+    background: var(--helto-surface-2);
 }
 .helto-mask-editor-title {
     min-width: 0;
     overflow: hidden;
-    color: var(--text-primary);
-    font-family: var(--font-sans);
+    color: var(--helto-text);
+    font-family: var(--helto-font-sans);
     font-size: 13px;
     font-weight: 600;
     text-overflow: ellipsis;
@@ -1540,31 +1568,36 @@
 .helto-mask-editor-btn {
     min-width: 52px;
     height: 30px;
-    border-radius: 6px;
-    border: 1px solid var(--border-strong);
-    background: linear-gradient(180deg, var(--bg-raised), var(--bg-secondary));
-    color: var(--text-primary);
+    border-radius: var(--helto-radius);
+    border: 1px solid var(--helto-border-strong);
+    background: linear-gradient(180deg, var(--helto-surface-3), var(--helto-surface-2));
+    color: var(--helto-text);
     cursor: pointer;
-    font-family: var(--font-sans);
+    font-family: var(--helto-font-sans);
     font-size: 12px;
     line-height: 1;
     padding: 0 10px;
     transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
 }
 .helto-mask-editor-btn:hover {
-    background: linear-gradient(180deg, var(--bg-hover), var(--bg-raised));
-    border-color: #4c5970;
-    color: #fff;
+    background: linear-gradient(180deg, var(--helto-surface-hover), var(--helto-surface-3));
+    border-color: var(--helto-border-hover);
+    color: #e6ebf9;
 }
 .helto-mask-editor-btn.active {
-    background: linear-gradient(180deg, #4f4322, #3c3318);
-    border-color: var(--accent-border);
-    color: var(--accent-hover);
+    background: linear-gradient(180deg, #4f3a2a, #3d2d20);
+    border-color: var(--helto-accent-border);
+    color: var(--helto-accent-strong);
 }
 .helto-mask-editor-btn.primary {
-    background: linear-gradient(180deg, #2f9e65, #268554);
-    border-color: #2f9e65;
-    color: white;
+    background: linear-gradient(180deg, #4f3a2a, #3d2d20);
+    border-color: var(--helto-accent-border);
+    color: var(--helto-accent-strong);
+}
+.helto-mask-editor-btn.primary:hover {
+    background: linear-gradient(180deg, #5d4531, #493626);
+    border-color: var(--helto-accent-border);
+    color: #fbe6d6;
 }
 .helto-mask-editor-btn:disabled {
     cursor: wait;
@@ -1580,9 +1613,9 @@
     width: 34px;
     height: 30px;
     padding: 2px;
-    border: 1px solid var(--border-subtle);
-    border-radius: 6px;
-    background: var(--bg-primary);
+    border: 1px solid var(--helto-border);
+    border-radius: var(--helto-radius);
+    background: var(--helto-surface);
     cursor: pointer;
 }
 .helto-mask-editor-stage {
@@ -1593,7 +1626,7 @@
     align-items: center;
     justify-content: center;
     overflow: auto;
-    background: #0a0e16;
+    background: #11111b;
 }
 .helto-mask-editor-stage.actual-size {
     align-items: flex-start;
@@ -1657,13 +1690,13 @@
 .helto-node-layout-action {
     align-items: center;
     appearance: none;
-    background: linear-gradient(180deg, var(--bg-raised), var(--bg-secondary));
-    border: 1px solid var(--border-strong);
+    background: linear-gradient(180deg, var(--helto-surface-3), var(--helto-surface-2));
+    border: 1px solid var(--helto-border-strong);
     box-sizing: border-box;
-    color: var(--text-secondary);
+    color: var(--helto-text-dim);
     cursor: pointer;
     display: inline-flex;
-    font-family: var(--font-sans);
+    font-family: var(--helto-font-sans);
     justify-content: center;
     margin: 0;
     padding: 0;
@@ -1672,7 +1705,7 @@
 }
 
 .helto-node-layout-button {
-    border-radius: 7px;
+    border-radius: var(--helto-radius);
     box-shadow: 0 7px 18px rgba(0, 0, 0, 0.34);
     height: 28px;
     left: 0;
@@ -1694,27 +1727,27 @@
 .helto-node-layout-button:hover,
 .helto-node-layout-button.active,
 .helto-node-layout-action:hover {
-    background: linear-gradient(180deg, var(--bg-hover), var(--bg-raised));
-    border-color: var(--accent-border);
-    color: var(--accent-hover);
+    background: linear-gradient(180deg, var(--helto-surface-hover), var(--helto-surface-3));
+    border-color: var(--helto-accent-border);
+    color: var(--helto-accent-strong);
 }
 
 .helto-node-layout-button.active {
-    box-shadow: var(--shadow-glow), 0 8px 20px rgba(0, 0, 0, 0.45);
+    box-shadow: var(--helto-shadow-glow), 0 8px 20px rgba(0, 0, 0, 0.45);
 }
 
 .helto-node-layout-button:focus-visible,
 .helto-node-layout-action:focus-visible {
-    border-color: var(--focus);
-    box-shadow: var(--focus-ring);
+    border-color: var(--helto-focus);
+    box-shadow: var(--helto-focus-ring);
     outline: none;
 }
 
 .helto-node-layout-popup {
-    background: rgba(21, 28, 42, 0.98);
-    border: 1px solid var(--border-strong);
-    border-radius: 8px;
-    box-shadow: var(--shadow-main);
+    background: var(--helto-surface);
+    border: 1px solid var(--helto-border-strong);
+    border-radius: var(--helto-radius);
+    box-shadow: var(--helto-shadow-pop);
     box-sizing: border-box;
     display: grid;
     gap: 4px;
@@ -1737,7 +1770,7 @@
 }
 
 .helto-node-layout-action {
-    border-radius: 6px;
+    border-radius: var(--helto-radius);
     height: 30px;
     width: 30px;
 }

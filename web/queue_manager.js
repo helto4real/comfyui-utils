@@ -152,29 +152,29 @@ function injectStyles() {
     style.id = STYLE_ID;
     style.textContent = `
         :root {
-            --helto-bg: #0d1320;
-            --helto-surface: #151c2a;
-            --helto-surface-2: #1b2333;
-            --helto-surface-3: #232d3f;
-            --helto-surface-hover: #2c3850;
-            --helto-border: #2a3346;
-            --helto-border-strong: #3a465c;
-            --helto-border-hover: #4c5970;
-            --helto-text: #e7ebf3;
-            --helto-text-dim: #9aa6bd;
-            --helto-text-faint: #6f7c95;
-            --helto-accent: #f1c75c;
-            --helto-accent-strong: #ffd873;
-            --helto-accent-bg: rgba(241, 199, 92, 0.16);
-            --helto-accent-border: rgba(241, 199, 92, 0.55);
-            --helto-focus: #5e9bff;
-            --helto-focus-ring: 0 0 0 2px rgba(94, 155, 255, 0.5);
-            --helto-danger: #ec5a6b;
-            --helto-danger-bg: #3a1a22;
-            --helto-danger-border: #8f3a44;
-            --helto-ok: #baf0c8;
-            --helto-warn: #ffe3a3;
-            --helto-info: #b9dafc;
+            --helto-bg: #181825;
+            --helto-surface: #1e1e2e;
+            --helto-surface-2: #313244;
+            --helto-surface-3: #45475a;
+            --helto-surface-hover: #585b70;
+            --helto-border: #313244;
+            --helto-border-strong: #45475a;
+            --helto-border-hover: #6c7086;
+            --helto-text: #cdd6f4;
+            --helto-text-dim: #a6adc8;
+            --helto-text-faint: #7f849c;
+            --helto-accent: #fab387;
+            --helto-accent-strong: #fddcc4;
+            --helto-accent-bg: #46301f;
+            --helto-accent-border: #93664a;
+            --helto-focus: #89b4fa;
+            --helto-focus-ring: 0 0 0 3px rgba(137, 180, 250, 0.28);
+            --helto-danger: #f38ba8;
+            --helto-danger-bg: #3a2130;
+            --helto-danger-border: #96526a;
+            --helto-ok: #a6e3a1;
+            --helto-warn: #f9e2af;
+            --helto-info: #74c7ec;
             --helto-radius-sm: 5px;
             --helto-radius: 6px;
             --helto-radius-lg: 10px;
@@ -183,8 +183,8 @@ function injectStyles() {
             --helto-font-size: 12px;
             --helto-line: 1.4;
             --helto-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
-            --helto-shadow-pop: 0 14px 36px rgba(0, 0, 0, 0.55);
-            --helto-shadow-glow: 0 0 10px rgba(241, 199, 92, 0.35);
+            --helto-shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.5);
+            --helto-shadow-glow: 0 0 0 1px rgba(250, 179, 135, 0.35), 0 0 12px rgba(250, 179, 135, 0.22);
             --helto-transition: 0.12s ease;
             --helto-ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
         }
@@ -194,7 +194,7 @@ function injectStyles() {
                 border-color: var(--helto-accent-border);
             }
             100% {
-                box-shadow: 0 0 16px rgba(241, 199, 92, 0.55);
+                box-shadow: 0 0 16px rgba(250, 179, 135, 0.55);
                 border-color: var(--helto-accent-strong);
             }
         }
@@ -230,7 +230,7 @@ function injectStyles() {
             border: 1px solid rgba(255, 255, 255, 0.65);
             border-radius: 999px;
             box-shadow: 0 2px 7px rgba(0, 0, 0, 0.45);
-            color: #fff;
+            color: #11111b;
             content: attr(data-queue-count);
             display: inline-flex;
             font: 700 9px / 1 var(--helto-font-sans);
@@ -321,23 +321,23 @@ function injectStyles() {
         }
         .helto-qm-icon-btn.is-active,
         .helto-qm-icon-btn.is-primary {
-            background: linear-gradient(180deg, #4f4322, #3c3318);
+            background: linear-gradient(180deg, #4f3a2a, #3d2d20);
             border-color: var(--helto-accent-border);
             color: var(--helto-accent-strong);
-            box-shadow: inset 0 0 0 1px rgba(241, 199, 92, 0.18);
+            box-shadow: inset 0 0 0 1px rgba(250, 179, 135, 0.18);
         }
         .helto-qm-icon-btn.is-active:hover:not(:disabled),
         .helto-qm-icon-btn.is-primary:hover:not(:disabled) {
-            background: linear-gradient(180deg, #5b4d27, #46391b);
+            background: linear-gradient(180deg, #5d4531, #493626);
             color: var(--helto-accent-strong);
         }
         .helto-qm-icon-btn.is-danger {
-            background: linear-gradient(180deg, #5a2330, #471b25);
+            background: linear-gradient(180deg, #5c2c3d, #482331);
             border-color: var(--helto-danger-border);
             color: var(--helto-text);
         }
         .helto-qm-icon-btn.is-danger:hover:not(:disabled) {
-            background: linear-gradient(180deg, #6e2937, #57212c);
+            background: linear-gradient(180deg, #6e3549, #5a2a3c);
             border-color: var(--helto-danger);
         }
         .helto-qm-icon-btn:focus-visible,
@@ -413,10 +413,10 @@ function injectStyles() {
             color: var(--helto-text);
         }
         .helto-qm-tab.is-active {
-            background: linear-gradient(180deg, #4f4322, #3c3318);
+            background: linear-gradient(180deg, #4f3a2a, #3d2d20);
             border-color: var(--helto-accent-border);
             color: var(--helto-accent-strong);
-            box-shadow: inset 0 0 0 1px rgba(241, 199, 92, 0.18);
+            box-shadow: inset 0 0 0 1px rgba(250, 179, 135, 0.18);
         }
         .helto-qm-tab-count {
             color: inherit;
@@ -524,7 +524,7 @@ function injectStyles() {
             position: absolute;
             inset: 0;
             pointer-events: none;
-            background: linear-gradient(100deg, transparent 30%, rgba(241, 199, 92, 0.14) 50%, transparent 70%);
+            background: linear-gradient(100deg, transparent 30%, rgba(250, 179, 135, 0.14) 50%, transparent 70%);
             transform: translateX(-120%);
             animation: heltoQmShimmer 2.8s ease-in-out infinite;
         }

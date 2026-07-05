@@ -31,14 +31,14 @@ function injectStyles() {
         .helto-progress-bar {
             --helto-progress-height: 14px;
             align-items: stretch;
-            background: var(--bg-tertiary, #0d1320);
-            border-bottom: 1px solid rgba(241, 199, 92, 0.24);
+            background: var(--helto-bg, #181825);
+            border-bottom: 1px solid rgba(250, 179, 135, 0.24);
             box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.35), 0 1px 0 rgba(255, 255, 255, 0.08);
             box-sizing: border-box;
-            color: var(--text-primary, #e7ebf3);
+            color: var(--helto-text, #cdd6f4);
             cursor: default;
             display: block;
-            font: 700 10px / 1 var(--font-sans, system-ui, sans-serif);
+            font: 700 10px / 1 var(--helto-font-sans, system-ui, sans-serif);
             height: var(--helto-progress-height);
             left: 0;
             overflow: visible;
@@ -65,15 +65,15 @@ function injectStyles() {
             width: 0%;
         }
         .helto-progress-track {
-            background: linear-gradient(180deg, var(--bg-primary, #151c2a), var(--bg-tertiary, #0d1320));
+            background: linear-gradient(180deg, var(--helto-surface, #1e1e2e), var(--helto-bg, #181825));
             overflow: hidden;
             right: 0;
             width: 100%;
         }
         /* Overall workflow progress: dim gold, brighter toward the leading edge. */
         .helto-progress-workflow {
-            background: linear-gradient(90deg, rgba(241, 199, 92, 0.14), rgba(241, 199, 92, 0.30));
-            border-right: 1px solid var(--accent-border, rgba(241, 199, 92, 0.55));
+            background: linear-gradient(90deg, rgba(250, 179, 135, 0.14), rgba(250, 179, 135, 0.30));
+            border-right: 1px solid var(--helto-accent-border, #93664a);
             height: 50%;
             overflow: hidden;
             transition: width 90ms linear, background 240ms ease, height 240ms ease;
@@ -81,8 +81,8 @@ function injectStyles() {
         /* Current node progress: translucent gold (keeps overlaid text legible),
            the "live" step is emphasised by its crisp leading edge, glow and sheen. */
         .helto-progress-node {
-            background: linear-gradient(90deg, rgba(241, 199, 92, 0.32), rgba(241, 199, 92, 0.52));
-            border-right: 1px solid var(--accent-hover, #ffd873);
+            background: linear-gradient(90deg, rgba(250, 179, 135, 0.32), rgba(250, 179, 135, 0.52));
+            border-right: 1px solid var(--helto-accent-strong, #fddcc4);
             overflow: hidden;
             top: 50%;
         }
@@ -101,25 +101,25 @@ function injectStyles() {
             content: "";
             position: absolute;
             inset: 0;
-            background: linear-gradient(90deg, transparent, var(--accent-dim, rgba(241, 199, 92, 0.16)), rgba(241, 199, 92, 0.36), var(--accent-dim, rgba(241, 199, 92, 0.16)), transparent);
+            background: linear-gradient(90deg, transparent, rgba(250, 179, 135, 0.16), rgba(250, 179, 135, 0.36), rgba(250, 179, 135, 0.16), transparent);
             opacity: 0;
             transform: translateX(-70%);
             pointer-events: none;
         }
         .helto-progress-bar.is-running .helto-progress-node {
-            box-shadow: var(--shadow-glow, 0 0 10px rgba(241, 199, 92, 0.35));
+            box-shadow: var(--helto-shadow-glow, 0 0 10px rgba(250, 179, 135, 0.35));
         }
         .helto-progress-bar.is-idle {
             opacity: 0.7;
         }
         /* Completion flourish: translucent gold fills the strip, glow does the "pop". */
         .helto-progress-bar.is-complete .helto-progress-workflow {
-            background: linear-gradient(90deg, rgba(241, 199, 92, 0.34), rgba(241, 199, 92, 0.5));
+            background: linear-gradient(90deg, rgba(250, 179, 135, 0.34), rgba(250, 179, 135, 0.5));
             height: 100%;
         }
         .helto-progress-bar.is-error .helto-progress-workflow,
         .helto-progress-bar.is-error .helto-progress-node {
-            background: var(--danger, #ec5a6b);
+            background: var(--helto-danger, #f38ba8);
             border-right-color: rgba(255, 255, 255, 0.45);
         }
         @media (prefers-reduced-motion: no-preference) {
@@ -145,7 +145,7 @@ function injectStyles() {
         }
         @keyframes heltoProgressComplete {
             0% { box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.35), 0 1px 0 rgba(255, 255, 255, 0.06); }
-            30% { box-shadow: inset 0 0 18px rgba(241, 199, 92, 0.55), 0 0 12px rgba(241, 199, 92, 0.4); }
+            30% { box-shadow: inset 0 0 18px rgba(250, 179, 135, 0.55), 0 0 12px rgba(250, 179, 135, 0.4); }
             100% { box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.35), 0 1px 0 rgba(255, 255, 255, 0.06); }
         }
         .helto-progress-text {

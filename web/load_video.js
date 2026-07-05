@@ -20,7 +20,7 @@ function injectStyles() {
     style.textContent = `
         .helto-load-video-dialog {
             align-items: center;
-            background: rgba(6, 9, 15, 0.62);
+            background: rgba(17, 17, 27, 0.72);
             backdrop-filter: blur(3px);
             display: flex;
             inset: 0;
@@ -29,10 +29,10 @@ function injectStyles() {
             z-index: 10001;
         }
         .helto-load-video-panel {
-            background: #151c2a;
-            border: 1px solid #3a465c;
+            background: #1e1e2e;
+            border: 1px solid #45475a;
             border-radius: 10px;
-            color: #e7ebf3;
+            color: #cdd6f4;
             display: flex;
             flex-direction: column;
             font: 12px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -60,10 +60,10 @@ function injectStyles() {
         }
         .helto-load-video-controls input,
         .helto-load-video-controls select {
-            background: #0d1320;
-            border: 1px solid #3a465c;
+            background: #181825;
+            border: 1px solid #45475a;
             border-radius: 5px;
-            color: #e7ebf3;
+            color: #cdd6f4;
             font: inherit;
             height: 28px;
             min-width: 0;
@@ -73,15 +73,15 @@ function injectStyles() {
         .helto-load-video-controls input:focus,
         .helto-load-video-controls select:focus {
             outline: none;
-            border-color: #5e9bff;
-            box-shadow: 0 0 0 2px rgba(94, 155, 255, 0.5);
+            border-color: #89b4fa;
+            box-shadow: 0 0 0 3px rgba(137, 180, 250, 0.28);
         }
         .helto-load-video-controls button,
         .helto-load-video-actions button {
-            background: linear-gradient(180deg, #232d3f, #1b2333);
-            border: 1px solid #3a465c;
+            background: linear-gradient(180deg, #45475a, #313244);
+            border: 1px solid #45475a;
             border-radius: 5px;
-            color: #e7ebf3;
+            color: #cdd6f4;
             font: inherit;
             height: 28px;
             min-width: 0;
@@ -91,9 +91,9 @@ function injectStyles() {
         }
         .helto-load-video-controls button:hover,
         .helto-load-video-actions button:hover {
-            background: linear-gradient(180deg, #2c3850, #232d3f);
-            border-color: #4c5970;
-            color: #fff;
+            background: linear-gradient(180deg, #585b70, #45475a);
+            border-color: #6c7086;
+            color: #e6ebf9;
         }
         .helto-load-video-icon-btn {
             align-items: center;
@@ -125,7 +125,7 @@ function injectStyles() {
         }
         .helto-load-video-meta {
             align-items: center;
-            color: #9aa6bd;
+            color: #a6adc8;
             display: flex;
             min-width: 0;
             overflow: hidden;
@@ -141,10 +141,10 @@ function injectStyles() {
             padding: 2px;
         }
         .helto-load-video-tile {
-            background: #0a0e16;
-            border: 1px solid #2a3346;
+            background: #11111b;
+            border: 1px solid #313244;
             border-radius: 6px;
-            color: #e7ebf3;
+            color: #cdd6f4;
             cursor: pointer;
             display: grid;
             gap: 5px;
@@ -156,21 +156,21 @@ function injectStyles() {
             transition: border-color 0.12s ease, box-shadow 0.12s ease;
         }
         .helto-load-video-tile:hover {
-            border-color: #3a465c;
+            border-color: #45475a;
         }
         .helto-load-video-tile.selected {
-            border-color: #f1c75c;
-            box-shadow: 0 0 0 1px #f1c75c inset, 0 0 10px rgba(241, 199, 92, 0.35);
+            border-color: #fab387;
+            box-shadow: 0 0 0 1px #fab387 inset, 0 0 10px rgba(250, 179, 135, 0.35);
         }
         .helto-load-video-media {
-            background: #070a11;
+            background: #11111b;
             min-height: 0;
             overflow: hidden;
             position: relative;
         }
         .helto-load-video-tile img,
         .helto-load-video-tile video {
-            background: #070a11;
+            background: #11111b;
             height: 100%;
             object-fit: contain;
             pointer-events: none;

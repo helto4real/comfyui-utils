@@ -45,8 +45,8 @@ function injectStyles() {
             padding: 0 !important;
         }
         .helto-video-comparer__stage {
-            background: rgba(13, 19, 32, 0.45);
-            border: 1px solid #2a3346;
+            background: rgba(24, 24, 37, 0.45);
+            border: 1px solid #313244;
             border-radius: 6px;
             display: grid;
             flex: 1 1 auto;
@@ -59,7 +59,7 @@ function injectStyles() {
         }
         .helto-video-comparer__pane {
             align-items: center;
-            background: #070a11;
+            background: #11111b;
             display: flex;
             min-width: 0;
             overflow: hidden;
@@ -71,7 +71,7 @@ function injectStyles() {
             width: 100%;
         }
         .helto-video-comparer__placeholder {
-            background: #0a0e16;
+            background: #11111b;
             inset: 4px;
             position: absolute;
             z-index: 2;
@@ -92,19 +92,19 @@ function injectStyles() {
         }
         .helto-video-comparer__button,
         .helto-video-comparer__select {
-            background: linear-gradient(180deg, #232d3f, #1b2333);
-            border: 1px solid #3a465c;
+            background: linear-gradient(180deg, #45475a, #313244);
+            border: 1px solid #45475a;
             border-radius: 5px;
-            color: #e7ebf3;
+            color: #cdd6f4;
             font: 11px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
             height: 24px;
             transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
         }
         .helto-video-comparer__button:hover,
         .helto-video-comparer__select:hover {
-            background: linear-gradient(180deg, #2c3850, #232d3f);
-            border-color: #4c5970;
-            color: #fff;
+            background: linear-gradient(180deg, #585b70, #45475a);
+            border-color: #6c7086;
+            color: #e6ebf9;
         }
         .helto-video-comparer__button {
             align-items: center;
@@ -128,7 +128,7 @@ function injectStyles() {
             width: 100%;
         }
         .helto-video-comparer__time {
-            color: #9aa6bd;
+            color: #a6adc8;
             font: 10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
             font-variant-numeric: tabular-nums;
             overflow: hidden;

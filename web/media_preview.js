@@ -57,8 +57,8 @@ function ensureStyles(documentRef = document) {
         }
         .helto-preview-window {
             align-items: center;
-            background: var(--bg-primary, #151c2a);
-            border: 1px solid var(--border-subtle, #2a3346);
+            background: var(--helto-surface, #1e1e2e);
+            border: 1px solid var(--helto-border, #313244);
             border-radius: 12px;
             box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6);
             display: flex;
@@ -77,7 +77,7 @@ function ensureStyles(documentRef = document) {
         .helto-preview-media,
         .helto-preview-img,
         .helto-preview-video {
-            background: #0d1320;
+            background: #181825;
             border-radius: 8px;
             display: block;
             max-height: 80vh;
@@ -88,8 +88,8 @@ function ensureStyles(documentRef = document) {
             min-height: 180px;
         }
         .helto-preview-title {
-            color: var(--text-secondary, #aeb7c6);
-            font-family: var(--font-sans, Inter, system-ui, sans-serif);
+            color: var(--helto-text-dim, #a6adc8);
+            font-family: var(--helto-font-sans, system-ui, sans-serif);
             font-size: 12px;
             margin-top: 8px;
             max-width: 80vw;
@@ -101,11 +101,11 @@ function ensureStyles(documentRef = document) {
         }
         .helto-preview-close {
             align-items: center;
-            background: var(--bg-secondary, #1b2333);
-            border: 1px solid var(--border-subtle, #2a3346);
+            background: var(--helto-surface-2, #313244);
+            border: 1px solid var(--helto-border, #313244);
             border-radius: 50%;
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-            color: var(--text-primary, #e7ebf3);
+            color: var(--helto-text, #cdd6f4);
             cursor: pointer;
             display: flex;
             font-size: 20px;
@@ -120,14 +120,14 @@ function ensureStyles(documentRef = document) {
             z-index: 100001;
         }
         .helto-preview-close:hover {
-            background: var(--danger, #ec5a6b);
-            border-color: var(--danger, #ec5a6b);
-            color: #fff;
+            background: linear-gradient(180deg, #6e3549, #5a2a3c);
+            border-color: #c56d8c;
+            color: #fdeef4;
             transform: scale(1.1);
         }
         .helto-media-preview-thumb-popover {
-            background: var(--bg-primary, #151c2a);
-            border: 1px solid var(--border-subtle, #2a3346);
+            background: var(--helto-surface, #1e1e2e);
+            border: 1px solid var(--helto-border, #313244);
             border-radius: 8px;
             box-shadow: 0 14px 34px rgba(0, 0, 0, 0.46);
             max-width: 240px;
@@ -146,7 +146,7 @@ function ensureStyles(documentRef = document) {
         }
         .helto-media-preview-thumb-media {
             aspect-ratio: 16 / 10;
-            background: #0d1320;
+            background: #181825;
             border-radius: 6px;
             display: block;
             max-height: 160px;
@@ -154,8 +154,8 @@ function ensureStyles(documentRef = document) {
             width: 100%;
         }
         .helto-media-preview-thumb-title {
-            color: var(--text-secondary, #aeb7c6);
-            font-family: var(--font-sans, Inter, system-ui, sans-serif);
+            color: var(--helto-text-dim, #a6adc8);
+            font-family: var(--helto-font-sans, system-ui, sans-serif);
             font-size: 11px;
             margin-top: 5px;
             overflow: hidden;
