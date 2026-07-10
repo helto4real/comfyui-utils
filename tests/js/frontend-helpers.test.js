@@ -71,6 +71,7 @@ import {
     buildPauseResumePrompt,
     dependencyNodeIdsForPromptOutput,
     downstreamNodeIdsFromOutput,
+    hidePauseReleaseTokenWidget,
     queueFilteredPrompt,
     queueWithReleaseRollback,
     restoreSerializedWidgetValues,
@@ -1248,6 +1249,43 @@ test("pause control binds one-time release token to the save node prompt", () =>
 
     assert.equal(prompt.output[7].inputs.release_token, "one-time-token");
     assert.throws(() => bindPauseReleaseToken(prompt, 8, "one-time-token"), /bound release token/);
+});
+
+test("pause control hides the release token for legacy and Vue renderers without disabling serialization", () => {
+    const releaseToken = {
+        name: "release_token",
+        type: "text",
+        value: "",
+        options: {},
+    };
+    const collapseCalls = [];
+
+    const hiddenWidget = hidePauseReleaseTokenWidget(
+        { widgets: [{ name: "folder" }, releaseToken] },
+        (widget) => collapseCalls.push(widget),
+    );
+
+    assert.equal(hiddenWidget, releaseToken);
+    assert.equal(releaseToken.hidden, true);
+    assert.equal(releaseToken.type, "hidden");
+    assert.equal(releaseToken.options.hidden, true);
+    assert.notEqual(releaseToken.serialize, false);
+    assert.notEqual(releaseToken.options.serialize, false);
+    assert.deepEqual(serializedWidgetValueMap({ widgets: [releaseToken] }), { release_token: "" });
+    assert.deepEqual(collapseCalls, [releaseToken]);
+});
+
+test("advanced save pause-control setup applies release-token hiding", () => {
+    const source = readFileSync(new URL("../../web/save_image_advanced_hide_mode.js", import.meta.url), "utf8");
+    const setupStart = source.indexOf("function ensurePauseControlWidget(node)");
+    const setupEnd = source.indexOf("async function postPauseRelease(node", setupStart);
+
+    assert.ok(setupStart >= 0);
+    assert.ok(setupEnd > setupStart);
+    assert.match(
+        source.slice(setupStart, setupEnd),
+        /hidePauseReleaseTokenWidget\(node, collapseHiddenWidgetLayout\)/,
+    );
 });
 
 test("pause control builds resume prompt from the save video images output", () => {

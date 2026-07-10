@@ -12,12 +12,14 @@ import {
     SAVE_VIDEO_RELEASE_ROUTE,
     bindPauseReleaseToken,
     buildPauseResumePrompt,
+    hidePauseReleaseTokenWidget,
     queueFilteredPrompt,
     queueWithReleaseRollback,
     restoreSerializedWidgetValues,
     sanitizeSerializedWidgetValues,
 } from "./pause_control_helpers.js";
 import { ensurePrivacyTokenCookieSoon, privacyFetch } from "./privacy_common.js";
+import { collapseHiddenWidgetLayout } from "./ui.js";
 
 const NODE_CLASSES = new Map([
     ["HeltoSaveImageAdvanced", "Save Image Advanced"],
@@ -401,6 +403,7 @@ function configurePauseControlWidget(node, widget) {
 }
 
 function ensurePauseControlWidget(node) {
+    hidePauseReleaseTokenWidget(node, collapseHiddenWidgetLayout);
     const existingWidget = node[PAUSE_CONTROL_WIDGET]
         ?? node.widgets?.find((widget) => widget.name === "continue" || widget.name === "run again" || widget.name === "queueing");
     const widget = existingWidget ?? node.addWidget?.("button", "continue", null, () => handlePauseControlButton(node));

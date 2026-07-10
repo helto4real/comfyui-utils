@@ -186,6 +186,20 @@ export function bindPauseReleaseToken(promptData, nodeId, releaseToken) {
     return promptData;
 }
 
+export function hidePauseReleaseTokenWidget(node, collapseWidgetLayout) {
+    const widget = node?.widgets?.find((candidate) => candidate.name === "release_token");
+    if (!widget) {
+        return null;
+    }
+
+    widget.hidden = true;
+    widget.type = "hidden";
+    widget.options ??= {};
+    widget.options.hidden = true;
+    collapseWidgetLayout?.(widget);
+    return widget;
+}
+
 export async function queueWithReleaseRollback(release, queue, cancel) {
     const releasePayload = await release();
     try {
