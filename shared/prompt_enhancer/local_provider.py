@@ -4,8 +4,10 @@ import base64
 import gc
 import importlib.util
 import io
-import json
 import os
+import threading
+import traceback
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -14,11 +16,18 @@ from urllib.parse import unquote, urlparse
 from PIL import Image
 
 from .progress import PromptEnhancerProgress
+from .provider_settings import (
+    clear_hf_token,
+    configured_hf_token,
+    hf_auth_token,
+    load_provider_settings,
+    provider_settings_status,
+    save_hf_token,
+    settings_path,
+)
 from .provider import (
     DEFAULT_OLLAMA_KEEP_ALIVE,
-    DEFAULT_OLLAMA_KEEP_ALIVE_UNIT,
     effective_generation_token_budget,
-    ollama_keep_alive,
     ollama_model_supports_images,
 )
 
@@ -51,8 +60,6 @@ GEMMA4_E4B_UNCENSORED_MMPROJ_URL = (
     "mmproj-Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-f16.gguf"
 )
 
-CONFIG_DIR = Path(__file__).resolve().parents[2] / "config" / "prompt enhancer"
-PROVIDER_SETTINGS_FILE = CONFIG_DIR / "provider_settings.json"
 LOCAL_GENERATION_TOKENS = 180
 
 
@@ -160,83 +167,13 @@ MODEL_REGISTRY: dict[str, LocalModelSpec] = {
 }
 
 _LOADED_MODELS: dict[str, dict[str, Any]] = {}
+_LOADED_MODELS_LOCK = threading.RLock()
+_MODEL_OPERATION_LOCKS: dict[str, threading.RLock] = {}
 
 
-def settings_path(base_dir: str | os.PathLike[str] | None = None) -> Path:
-    return Path(base_dir) / PROVIDER_SETTINGS_FILE.name if base_dir is not None else PROVIDER_SETTINGS_FILE
-
-
-def _write_private_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(path.parent, 0o700)
-    except OSError:
-        pass
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    try:
-        os.chmod(tmp_path, 0o600)
-    except OSError:
-        pass
-    tmp_path.replace(path)
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
-
-
-def load_provider_settings(base_dir: str | os.PathLike[str] | None = None) -> dict[str, Any]:
-    path = settings_path(base_dir)
-    if not path.exists():
-        return {"version": 1, "hf_token": ""}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8") or "{}")
-    except Exception:
-        return {"version": 1, "hf_token": ""}
-    return {"version": 1, "hf_token": str(payload.get("hf_token") or "")}
-
-
-def save_hf_token(token: str, base_dir: str | os.PathLike[str] | None = None) -> dict[str, Any]:
-    token = str(token or "").strip()
-    if not token:
-        return clear_hf_token(base_dir)
-    _write_private_json(settings_path(base_dir), {"version": 1, "hf_token": token})
-    return provider_settings_status(base_dir)
-
-
-def clear_hf_token(base_dir: str | os.PathLike[str] | None = None) -> dict[str, Any]:
-    settings_path(base_dir).unlink(missing_ok=True)
-    return provider_settings_status(base_dir)
-
-
-def env_hf_token() -> str:
-    return str(os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN") or "").strip()
-
-
-def configured_hf_token(base_dir: str | os.PathLike[str] | None = None) -> str:
-    return str(load_provider_settings(base_dir).get("hf_token") or "").strip()
-
-
-def hf_auth_token(base_dir: str | os.PathLike[str] | None = None) -> str | None:
-    return configured_hf_token(base_dir) or env_hf_token() or None
-
-
-def provider_settings_status(base_dir: str | os.PathLike[str] | None = None) -> dict[str, Any]:
-    configured = bool(configured_hf_token(base_dir))
-    env_available = bool(env_hf_token())
-    if configured:
-        auth_source = "configured"
-    elif env_available:
-        auth_source = "environment"
-    else:
-        auth_source = "anonymous"
-    return {
-        "ok": True,
-        "configPath": str(settings_path(base_dir)),
-        "tokenConfigured": configured,
-        "envTokenAvailable": env_available,
-        "authSource": auth_source,
-    }
+def _model_operation_lock(alias: str) -> threading.RLock:
+    with _LOADED_MODELS_LOCK:
+        return _MODEL_OPERATION_LOCKS.setdefault(alias, threading.RLock())
 
 
 def _models_dir() -> Path:
@@ -309,8 +246,9 @@ def resolve_local_model(alias: str | None) -> LocalModelSpec:
 
 def local_model_statuses() -> list[dict[str, Any]]:
     models = []
+    with _LOADED_MODELS_LOCK:
+        loaded_aliases = set(_LOADED_MODELS)
     for spec in MODEL_REGISTRY.values():
-        path = model_path_for(spec)
         missing = missing_dependencies(spec)
         downloaded = model_downloaded(spec)
         if not spec.generator_supported:
@@ -332,10 +270,8 @@ def local_model_statuses() -> list[dict[str, Any]]:
                 "repo_id": spec.repo_id,
                 "backend": spec.backend,
                 "downloaded": downloaded,
-                "loaded": spec.alias in _LOADED_MODELS,
-                "local_path": str(path) if path else "",
+                "loaded": spec.alias in loaded_aliases,
                 "file_urls": list(spec.file_urls),
-                "local_files": [str(file_path) for file_path in model_file_paths_for(spec)] if spec.file_urls else [],
                 "missing_dependencies": missing,
                 "supports_images": spec.supports_images,
                 "generator_supported": spec.generator_supported,
@@ -448,28 +384,49 @@ def download_local_model(alias: str | None) -> dict[str, Any]:
     spec = resolve_local_model(alias)
     if not spec.generator_supported:
         raise LocalProviderError(f"Model '{spec.alias}' is not a standalone prompt-generating model.")
-    path = ensure_model_downloaded(spec)
-    return {"ok": True, "model": spec.alias, "local_path": str(path) if path else "", "models": local_model_statuses()}
+    ensure_model_downloaded(spec)
+    return {"ok": True, "model": spec.alias, "models": local_model_statuses()}
 
 
 def unload_local_model(alias: str | None = None) -> dict[str, Any]:
-    keys = [resolve_local_model(alias).alias] if alias else list(_LOADED_MODELS.keys())
     unloaded = []
     torch_modules = []
+    if alias:
+        keys = [resolve_local_model(alias).alias]
+    else:
+        with _LOADED_MODELS_LOCK:
+            keys = sorted(set(MODEL_REGISTRY) | set(_LOADED_MODELS))
     for key in keys:
-        loaded = _LOADED_MODELS.pop(key, None)
-        if not loaded:
-            continue
-        unloaded.append(key)
-        torch_module = loaded.get("torch")
-        if torch_module is not None:
-            torch_modules.append(torch_module)
-        loaded.clear()
+        # Generation and explicit unload share a per-model lease. This keeps a
+        # model from being closed while its generate call still owns weights,
+        # processor state, or CUDA buffers.
+        with _model_operation_lock(key), _LOADED_MODELS_LOCK:
+            loaded = _LOADED_MODELS.pop(key, None)
+            if not loaded:
+                continue
+            unloaded.append(key)
+            torch_module = loaded.get("torch")
+            if torch_module is not None:
+                torch_modules.append(torch_module)
+            _close_loaded_resources(loaded)
+            loaded.clear()
 
     gc.collect()
     for torch_module in torch_modules:
         _clear_torch_cuda_cache(torch_module)
     return {"ok": True, "unloaded": unloaded, "models": local_model_statuses()}
+
+
+def _close_loaded_resources(loaded: dict[str, Any]) -> None:
+    # llama.cpp objects only give their CUDA buffers back in close(); waiting
+    # for the GC to finalize them leaves the VRAM held for an unbounded time.
+    for key in ("model", "chat_handler"):
+        close = getattr(loaded.get(key), "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
 
 
 def _clear_torch_cuda_cache(torch_module: Any) -> None:
@@ -574,6 +531,15 @@ class LocalPromptProvider:
             _release_local_model_if_needed(spec, request, progress)
             return result
 
+        with _model_operation_lock(spec.alias):
+            return self._generate_locked(spec, request, progress)
+
+    def _generate_locked(
+        self,
+        spec: LocalModelSpec,
+        request: Any,
+        progress: PromptEnhancerProgress | None,
+    ) -> str:
         try:
             path = ensure_model_downloaded(spec, progress)
             if path is None:
@@ -618,7 +584,12 @@ class LocalPromptProvider:
                 _release_local_model_if_needed(spec, request, progress)
                 return result
             raise LocalProviderError(f"Unsupported local Prompt Enhancer backend: {spec.backend}")
-        except BaseException:
+        except BaseException as exc:
+            # The in-flight traceback pins the _generate_* frames, whose locals
+            # reference the model weights and GPU tensors; clear them so the
+            # cleanup below can actually free the VRAM (still-executing frames
+            # are skipped by clear_frames).
+            traceback.clear_frames(exc.__traceback__)
             _cleanup_local_model_after_exception(spec)
             raise
 
@@ -628,17 +599,23 @@ def _release_local_model_if_needed(
     request: Any,
     progress: PromptEnhancerProgress | None = None,
 ) -> None:
+    # Ollama's server evicts idle models on its own keep-alive timer, but the
+    # in-process providers have no such daemon: anything short of "keep loaded
+    # forever" (a negative keep-alive) must release the VRAM right after the
+    # generation so it is available to the rest of the workflow.
     settings = getattr(request, "settings", None)
-    keep_alive = ollama_keep_alive(
-        getattr(settings, "keep_alive", DEFAULT_OLLAMA_KEEP_ALIVE),
-        getattr(settings, "keep_alive_unit", DEFAULT_OLLAMA_KEEP_ALIVE_UNIT),
-    )
-    if keep_alive != "0s":
+    try:
+        keep_alive = int(getattr(settings, "keep_alive", DEFAULT_OLLAMA_KEEP_ALIVE))
+    except (TypeError, ValueError):
+        keep_alive = DEFAULT_OLLAMA_KEEP_ALIVE
+    if keep_alive < 0:
         return
+    with _LOADED_MODELS_LOCK:
+        if spec.alias not in _LOADED_MODELS:
+            return
     if progress is not None:
         progress.phase_start("release")
-    if spec.alias in _LOADED_MODELS:
-        unload_local_model(spec.alias)
+    unload_local_model(spec.alias)
     if progress is not None:
         progress.phase_done("release")
 
@@ -661,12 +638,10 @@ def _local_generation_token_budget(max_tokens: int | str | None) -> int:
 
 def _cleanup_local_model_after_exception(spec: LocalModelSpec) -> None:
     try:
-        if spec.alias in _LOADED_MODELS:
+        with _LOADED_MODELS_LOCK:
+            loaded = spec.alias in _LOADED_MODELS
+        if loaded:
             unload_local_model(spec.alias)
-    except Exception:
-        pass
-    try:
-        local_vram_preflight()
     except Exception:
         pass
     gc.collect()
@@ -678,35 +653,46 @@ def _cleanup_local_model_after_exception(spec: LocalModelSpec) -> None:
         pass
 
 
+def _load_cached_model(spec: LocalModelSpec, loader: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    with _model_operation_lock(spec.alias):
+        with _LOADED_MODELS_LOCK:
+            existing = _LOADED_MODELS.get(spec.alias)
+        if existing is not None:
+            return existing
+        loaded = loader()
+        with _LOADED_MODELS_LOCK:
+            _LOADED_MODELS[spec.alias] = loaded
+        return loaded
+
+
 def _load_qwen_model(spec: LocalModelSpec, path: Path) -> dict[str, Any]:
-    if spec.alias in _LOADED_MODELS:
-        return _LOADED_MODELS[spec.alias]
-    import torch
-    from transformers import AutoProcessor
+    def load() -> dict[str, Any]:
+        import torch
+        from transformers import AutoProcessor
 
-    try:
-        from transformers import Qwen3VLForConditionalGeneration
+        try:
+            from transformers import Qwen3VLForConditionalGeneration
 
-        model_cls = Qwen3VLForConditionalGeneration if "Qwen3-VL" in spec.repo_id else None
-    except Exception:  # noqa: BLE001
-        model_cls = None
-    if model_cls is None:
-        from transformers import AutoModelForVision2Seq
+            model_cls = Qwen3VLForConditionalGeneration if "Qwen3-VL" in spec.repo_id else None
+        except Exception:  # noqa: BLE001
+            model_cls = None
+        if model_cls is None:
+            from transformers import AutoModelForVision2Seq
 
-        model_cls = AutoModelForVision2Seq
+            model_cls = AutoModelForVision2Seq
 
-    model = model_cls.from_pretrained(
-        str(path),
-        torch_dtype="auto",
-        device_map="auto",
-        attn_implementation="sdpa",
-    ).eval()
-    # Qwen3-VL is natively supported by transformers, so we do not need to
-    # execute arbitrary repo code to load its processor.
-    processor = AutoProcessor.from_pretrained(str(path))
-    loaded = {"model": model, "processor": processor, "torch": torch}
-    _LOADED_MODELS[spec.alias] = loaded
-    return loaded
+        model = model_cls.from_pretrained(
+            str(path),
+            torch_dtype="auto",
+            device_map="auto",
+            attn_implementation="sdpa",
+        ).eval()
+        # Qwen3-VL is natively supported by transformers, so we do not need to
+        # execute arbitrary repo code to load its processor.
+        processor = AutoProcessor.from_pretrained(str(path))
+        return {"model": model, "processor": processor, "torch": torch}
+
+    return _load_cached_model(spec, load)
 
 
 def _generate_qwen(
@@ -753,20 +739,19 @@ def _generate_qwen(
 
 
 def _load_florence_model(spec: LocalModelSpec, path: Path) -> dict[str, Any]:
-    if spec.alias in _LOADED_MODELS:
-        return _LOADED_MODELS[spec.alias]
-    import torch
-    from transformers import AutoModelForCausalLM, AutoProcessor
+    def load() -> dict[str, Any]:
+        import torch
+        from transformers import AutoModelForCausalLM, AutoProcessor
 
-    # Florence-2 ships custom modeling code, so trust_remote_code is required
-    # here; the repo is pinned via LocalModelSpec.revision to bound that trust.
-    model = AutoModelForCausalLM.from_pretrained(str(path), trust_remote_code=True, torch_dtype="auto").eval()
-    if torch.cuda.is_available():
-        model = model.to("cuda")
-    processor = AutoProcessor.from_pretrained(str(path), trust_remote_code=True)
-    loaded = {"model": model, "processor": processor, "torch": torch}
-    _LOADED_MODELS[spec.alias] = loaded
-    return loaded
+        # Florence-2 ships custom modeling code, so trust_remote_code is required
+        # here; the repo is pinned via LocalModelSpec.revision to bound that trust.
+        model = AutoModelForCausalLM.from_pretrained(str(path), trust_remote_code=True, torch_dtype="auto").eval()
+        if torch.cuda.is_available():
+            model = model.to("cuda")
+        processor = AutoProcessor.from_pretrained(str(path), trust_remote_code=True)
+        return {"model": model, "processor": processor, "torch": torch}
+
+    return _load_cached_model(spec, load)
 
 
 def _generate_florence(
@@ -837,20 +822,19 @@ def _llama_cpp_model_paths(spec: LocalModelSpec, path: Path) -> tuple[Path, Path
 
 
 def _load_llama_cpp_vision_model(spec: LocalModelSpec, path: Path) -> dict[str, Any]:
-    if spec.alias in _LOADED_MODELS:
-        return _LOADED_MODELS[spec.alias]
-    model_path, mmproj_path = _llama_cpp_model_paths(spec, path)
-    try:
-        from llama_cpp import Llama
-        from llama_cpp.llama_chat_format import Llava15ChatHandler
-    except Exception as exc:  # noqa: BLE001
-        raise LocalProviderError(f"Model '{spec.alias}' requires optional package: llama-cpp-python") from exc
+    def load() -> dict[str, Any]:
+        model_path, mmproj_path = _llama_cpp_model_paths(spec, path)
+        try:
+            from llama_cpp import Llama
+            from llama_cpp.llama_chat_format import Llava15ChatHandler
+        except Exception as exc:  # noqa: BLE001
+            raise LocalProviderError(f"Model '{spec.alias}' requires optional package: llama-cpp-python") from exc
 
-    chat_handler = Llava15ChatHandler(clip_model_path=str(mmproj_path))
-    model = Llama(model_path=str(model_path), chat_handler=chat_handler, n_ctx=8192, n_gpu_layers=-1, verbose=False)
-    loaded = {"model": model, "chat_handler": chat_handler, "model_path": model_path, "mmproj_path": mmproj_path}
-    _LOADED_MODELS[spec.alias] = loaded
-    return loaded
+        chat_handler = Llava15ChatHandler(clip_model_path=str(mmproj_path))
+        model = Llama(model_path=str(model_path), chat_handler=chat_handler, n_ctx=8192, n_gpu_layers=-1, verbose=False)
+        return {"model": model, "chat_handler": chat_handler, "model_path": model_path, "mmproj_path": mmproj_path}
+
+    return _load_cached_model(spec, load)
 
 
 def _generate_llama_cpp_vision(

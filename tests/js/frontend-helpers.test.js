@@ -67,10 +67,12 @@ import {
     storeOutputForPreviewKeys,
 } from "../../web/hide_mode_helpers.js";
 import {
+    bindPauseReleaseToken,
     buildPauseResumePrompt,
     dependencyNodeIdsForPromptOutput,
     downstreamNodeIdsFromOutput,
     queueFilteredPrompt,
+    queueWithReleaseRollback,
     restoreSerializedWidgetValues,
     sanitizeSerializedWidgetValues,
     serializedWidgetValueMap,
@@ -150,7 +152,7 @@ import {
     encryptedPrivacyShowAnyState,
     encryptTextState,
     encryptTextStateForOwner,
-    extractPrivacyShowAnyText,
+    extractPrivacyShowAnyEncryptedText,
     flushPrivacyShowAnyEncryption,
     hidePrivacyShowAnyStateWidget,
     isEncryptedText as isPrivacyEncryptedText,
@@ -355,7 +357,7 @@ test("privacy envelope helper fails closed when encryption is unavailable or inv
     );
 });
 
-test("selector image urls include metadata version tokens and keep legacy calls working", () => {
+test("selector image urls include metadata versions without client-authority folder lists", () => {
     const image = { date_modified: 1712345678.123, size_bytes: 4096 };
     assert.equal(selectorImageVersionToken(image), "m1712345678.123-s4096");
 
@@ -384,25 +386,25 @@ test("selector image urls include metadata version tokens and keep legacy calls 
     assert.equal(legacyViewUrl.searchParams.has("v"), false);
 
     const configuredThumbUrl = new URL(
-        selectorApi.thumbnailUrl("/external/a.png", true, { ...image, folder: "/external" }, ["/external"]),
+        selectorApi.thumbnailUrl("/external/a.png", true, { ...image, folder: "/external" }),
         "http://localhost",
     );
-    assert.deepEqual(JSON.parse(configuredThumbUrl.searchParams.get("folders")), ["/external"]);
+    assert.equal(configuredThumbUrl.searchParams.has("folders"), false);
 
     const configuredViewUrl = new URL(
-        selectorApi.viewImageUrl("/external/a.png", { ...image, folder: "/fallback" }, ["/external"]),
+        selectorApi.viewImageUrl("/external/a.png", { ...image, folder: "/fallback" }),
         "http://localhost",
     );
-    assert.deepEqual(JSON.parse(configuredViewUrl.searchParams.get("folders")), ["/external"]);
+    assert.equal(configuredViewUrl.searchParams.has("folders"), false);
 
     const inferredViewUrl = new URL(
         selectorApi.viewImageUrl("/external/a.png", { ...image, folder: "/fallback" }),
         "http://localhost",
     );
-    assert.deepEqual(JSON.parse(inferredViewUrl.searchParams.get("folders")), ["/fallback"]);
+    assert.equal(inferredViewUrl.searchParams.has("folders"), false);
 
-    const configuredMaskUrl = new URL(selectorApi.maskUrl("/external/a.png", ["/external"]), "http://localhost");
-    assert.deepEqual(JSON.parse(configuredMaskUrl.searchParams.get("folders")), ["/external"]);
+    const configuredMaskUrl = new URL(selectorApi.maskUrl("/external/a.png"), "http://localhost");
+    assert.equal(configuredMaskUrl.searchParams.has("folders"), false);
 });
 
 test("selector empty state renders folder paths as text nodes", () => {
@@ -419,6 +421,20 @@ test("selector empty state renders folder paths as text nodes", () => {
     assert.equal(pathContainer.children[1].tagName, "BR");
     assert.equal(pathContainer.children[2].textContent, "/tmp/next");
     assert.ok(empty.textContent.includes(maliciousFolder));
+});
+
+test("selector tiles and shared modals expose keyboard-accessible semantics", () => {
+    const selectorSource = readFileSync(new URL("../../web/selector.js", import.meta.url), "utf8");
+    const uiSource = readFileSync(new URL("../../web/ui.js", import.meta.url), "utf8");
+
+    assert.match(selectorSource, /const item = document\.createElement\("button"\);/);
+    assert.match(selectorSource, /path\.textContent = folder;/);
+    assert.doesNotMatch(selectorSource, /title="\$\{folder\}"/);
+    assert.match(uiSource, /setAttribute\("role", "dialog"\)/);
+    assert.match(uiSource, /setAttribute\("aria-modal", "true"\)/);
+    assert.match(uiSource, /event\.key === "Escape"/);
+    assert.match(uiSource, /event\.key !== "Tab"/);
+    assert.match(uiSource, /previousFocus\.focus\(\)/);
 });
 
 test("mask editor overlay treats unaffected masks as transparent", () => {
@@ -1194,8 +1210,44 @@ test("pause control button handler uses filtered queue path only", () => {
     assert.ok(handlerEnd > handlerStart);
 
     const handlerSource = source.slice(handlerStart, handlerEnd);
-    assert.match(handlerSource, /return queueFilteredPrompt\(api, nextPrompt\);/);
+    assert.match(handlerSource, /return queueWithReleaseRollback\(/);
+    assert.match(handlerSource, /queueFilteredPrompt\(api, nextPrompt\)/);
+    assert.match(handlerSource, /postPauseRelease\(node, "cancel", release\?\.release_token\)/);
     assert.doesNotMatch(handlerSource, /app\.queuePrompt/);
+});
+
+test("pause control cancels a release when filtered queueing fails", async () => {
+    const calls = [];
+
+    await assert.rejects(
+        queueWithReleaseRollback(
+            async () => {
+                calls.push("release");
+                return { release_token: "one-time-token" };
+            },
+            async (release) => {
+                assert.equal(release.release_token, "one-time-token");
+                calls.push("queue");
+                throw new Error("queue failed");
+            },
+            async (release) => {
+                assert.equal(release.release_token, "one-time-token");
+                calls.push("cancel");
+            },
+        ),
+        /queue failed/,
+    );
+
+    assert.deepEqual(calls, ["release", "queue", "cancel"]);
+});
+
+test("pause control binds one-time release token to the save node prompt", () => {
+    const prompt = { output: { 7: { inputs: { pause_mode: true } } }, workflow: {} };
+
+    bindPauseReleaseToken(prompt, 7, "one-time-token");
+
+    assert.equal(prompt.output[7].inputs.release_token, "one-time-token");
+    assert.throws(() => bindPauseReleaseToken(prompt, 8, "one-time-token"), /bound release token/);
 });
 
 test("pause control builds resume prompt from the save video images output", () => {
@@ -2649,8 +2701,9 @@ test("prompt enhancer autocomplete accept closes or continues to immediate follo
     assert.equal(accepted.autocomplete.active, false);
 });
 
-test("privacy show any extracts output text and hides encrypted state widget", () => {
-    const output = { helto_privacy_show_any: [{ text: "secret text" }] };
+test("privacy show any extracts only encrypted output and hides encrypted state widget", () => {
+    const encrypted = privacyEnvelopeText("secret text");
+    const output = { helto_privacy_show_any: [{ encrypted }] };
     const node = {
         widgets: [
             { name: PRIVACY_SHOW_ANY_STATE_WIDGET, value: privacyEnvelopeText("abc") },
@@ -2661,7 +2714,8 @@ test("privacy show any extracts output text and hides encrypted state widget", (
 
     const widget = hidePrivacyShowAnyStateWidget(node, (item) => collapsed.push(item.name));
 
-    assert.equal(extractPrivacyShowAnyText(output), "secret text");
+    assert.equal(extractPrivacyShowAnyEncryptedText(output), encrypted);
+    assert.equal(extractPrivacyShowAnyEncryptedText({ helto_privacy_show_any: [{ text: "secret text" }] }), "");
     assert.equal(widget.hidden, true);
     assert.equal(widget.type, "hidden");
     assert.deepEqual(collapsed, [PRIVACY_SHOW_ANY_STATE_WIDGET]);

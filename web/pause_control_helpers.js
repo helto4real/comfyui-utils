@@ -175,6 +175,31 @@ export async function queueFilteredPrompt(apiClient, promptData) {
     return apiClient.queuePrompt(-1, promptData);
 }
 
+export function bindPauseReleaseToken(promptData, nodeId, releaseToken) {
+    const token = String(releaseToken || "");
+    const apiNode = promptData?.output?.[String(nodeId)];
+    if (!apiNode || !token) {
+        throw new Error("Cannot queue resume without a bound release token.");
+    }
+    apiNode.inputs ??= {};
+    apiNode.inputs.release_token = token;
+    return promptData;
+}
+
+export async function queueWithReleaseRollback(release, queue, cancel) {
+    const releasePayload = await release();
+    try {
+        return await queue(releasePayload);
+    } catch (error) {
+        try {
+            await cancel(releasePayload);
+        } catch (cancelError) {
+            console.error("[Helto pause control] Failed to cancel release after queue failure:", cancelError);
+        }
+        throw error;
+    }
+}
+
 export function isPauseControlRuntimeWidget(widget, runtimeNames = PAUSE_CONTROL_RUNTIME_WIDGET_NAMES) {
     return runtimeNames.has(widget?.name);
 }

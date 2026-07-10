@@ -238,9 +238,7 @@ function ensureVideoPreviewMediaType(node) {
 }
 
 function routeUrl(path) {
-    if (String(path || "").includes("privacy=1")) {
-        ensurePrivacyTokenCookieSoon();
-    }
+    ensurePrivacyTokenCookieSoon();
     return api.apiURL(path);
 }
 
@@ -254,10 +252,10 @@ function privateRecordToUrl(record) {
 }
 
 async function fetchJson(path, options = {}) {
-    const isPrivacyPreview = String(path || "").startsWith(`${ROUTE_PREFIX}/preview`) && String(path || "").includes("privacy=1");
-    const response = isPrivacyPreview
-        ? await privacyFetch(path, { ...options, fetcher: (route, init) => api.fetchApi(route, init) })
-        : await api.fetchApi(path, options);
+    const response = await privacyFetch(path, {
+        ...options,
+        fetcher: (route, init) => api.fetchApi(route, init),
+    });
     const data = await response.json();
     if (!response.ok || data?.error) {
         throw new Error(data?.error || response.statusText);

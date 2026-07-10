@@ -547,6 +547,9 @@ export function normalizeQueueState(rawState, options = {}) {
             const retryState = retryOrFailQueueRun(state, activeRuntimeRun.id);
             state = {
                 ...retryState,
+                active_run_id: null,
+                paused: true,
+                resume_required: true,
                 queue: (retryState.queue || []).map((run) => (
                     RUNTIME_QUEUE_STATUSES.has(run.status) ? resetRuntimeRunForRetry(run) : run
                 )),

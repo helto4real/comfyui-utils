@@ -22,6 +22,14 @@ from .video_io import list_videos, preview_result, thumbnail_bytes
 ROUTE_PREFIX = "/helto_load_video"
 
 
+def _privacy_mode(request) -> bool:
+    return request.query.get("privacy", "true").lower() in {"1", "true", "yes"}
+
+
+def _require_privacy_token(request):
+    return aiohttp_check_privacy_token(request)
+
+
 def folder_payload() -> list[dict]:
     folders = []
     for folder in load_folders():
@@ -38,13 +46,19 @@ def folder_payload() -> list[dict]:
 
 
 @server.PromptServer.instance.routes.get(f"{ROUTE_PREFIX}/folders")
-async def get_folders(_request):
+async def get_folders(request):
+    denied = _require_privacy_token(request)
+    if denied is not None:
+        return denied
     return web.json_response({"folders": folder_payload()})
 
 
 @server.PromptServer.instance.routes.post(f"{ROUTE_PREFIX}/folders")
 async def post_folder(request):
     try:
+        denied = _require_privacy_token(request)
+        if denied is not None:
+            return denied
         data = await request.json()
         add_folder(data.get("alias"), data.get("path"))
         return web.json_response({"status": "ok", "folders": folder_payload()})
@@ -55,6 +69,9 @@ async def post_folder(request):
 @server.PromptServer.instance.routes.delete(f"{ROUTE_PREFIX}/folders")
 async def delete_folder(request):
     try:
+        denied = _require_privacy_token(request)
+        if denied is not None:
+            return denied
         alias = request.query.get("alias", "input") or "input"
         remove_folder(alias)
         return web.json_response({"status": "ok", "folders": folder_payload()})
@@ -65,9 +82,12 @@ async def delete_folder(request):
 @server.PromptServer.instance.routes.get(f"{ROUTE_PREFIX}/videos")
 async def get_videos(request):
     try:
+        denied = _require_privacy_token(request)
+        if denied is not None:
+            return denied
         alias = request.query.get("alias", "input") or "input"
         recursive = request.query.get("recursive", "1").lower() not in {"0", "false", "no"}
-        privacy_mode = request.query.get("privacy", "true").lower() in {"1", "true", "yes"}
+        privacy_mode = _privacy_mode(request)
         folder = folder_by_alias(alias)
         if not os.path.isdir(folder.path):
             return web.json_response({"videos": [], "warning": "Folder does not exist."})
@@ -76,7 +96,12 @@ async def get_videos(request):
         for video in videos:
             video["video_url"] = (
                 f"{ROUTE_PREFIX}/video?"
-                + urllib.parse.urlencode({"alias": alias, "filename": video["filename"], "t": int(video["mtime"])})
+                + urllib.parse.urlencode({
+                    "alias": alias,
+                    "filename": video["filename"],
+                    "t": int(video["mtime"]),
+                    "privacy": "1" if privacy_mode else "0",
+                })
             )
             video["thumb_url"] = (
                 f"{ROUTE_PREFIX}/thumb?"
@@ -87,25 +112,31 @@ async def get_videos(request):
                     "privacy": "1" if privacy_mode else "0",
                 })
             )
-        return web.json_response({"videos": videos})
+        return web.json_response({"videos": videos}, headers={"Cache-Control": "private, no-store"})
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=400)
 
 
 @server.PromptServer.instance.routes.post(f"{ROUTE_PREFIX}/refresh")
-async def refresh(_request):
+async def refresh(request):
+    denied = _require_privacy_token(request)
+    if denied is not None:
+        return denied
     return web.json_response({"status": "ok", "folders": folder_payload()})
 
 
 @server.PromptServer.instance.routes.get(f"{ROUTE_PREFIX}/video")
 async def get_video(request):
     try:
+        denied = _require_privacy_token(request)
+        if denied is not None:
+            return denied
         alias = request.query.get("alias", "input") or "input"
         filename = urllib.parse.unquote(request.query.get("filename", ""))
         path = resolve_video_path(alias, filename)
         if path.suffix.lower() not in VIDEO_EXTENSIONS:
             return web.Response(status=400, text="Unsupported video type")
-        return web.FileResponse(path, headers={"Cache-Control": "private, max-age=300"})
+        return web.FileResponse(path, headers={"Cache-Control": "private, no-store"})
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=400)
 
@@ -113,13 +144,12 @@ async def get_video(request):
 @server.PromptServer.instance.routes.get(f"{ROUTE_PREFIX}/preview")
 async def get_preview(request):
     try:
+        denied = _require_privacy_token(request)
+        if denied is not None:
+            return denied
         alias = request.query.get("alias", "input") or "input"
         filename = urllib.parse.unquote(request.query.get("filename", ""))
-        privacy_mode = request.query.get("privacy", "true").lower() in {"1", "true", "yes"}
-        if privacy_mode:
-            denied = aiohttp_check_privacy_token(request)
-            if denied is not None:
-                return denied
+        privacy_mode = _privacy_mode(request)
         path = resolve_video_path(alias, filename)
         if path.suffix.lower() not in VIDEO_EXTENSIONS:
             return web.json_response({"error": "Unsupported video type"}, status=400)
@@ -132,18 +162,17 @@ async def get_preview(request):
 @server.PromptServer.instance.routes.get(f"{ROUTE_PREFIX}/thumb")
 async def get_thumb(request):
     try:
+        denied = _require_privacy_token(request)
+        if denied is not None:
+            return denied
         alias = request.query.get("alias", "input") or "input"
-        privacy_mode = request.query.get("privacy", "true").lower() in {"1", "true", "yes"}
-        if privacy_mode:
-            denied = aiohttp_check_privacy_token(request)
-            if denied is not None:
-                return denied
+        privacy_mode = _privacy_mode(request)
         filename = urllib.parse.unquote(request.query.get("filename", ""))
         path = resolve_video_path(alias, filename)
         body = await asyncio.to_thread(thumbnail_bytes, path, privacy_mode)
         return web.Response(
             body=body,
-            headers={"Cache-Control": "public, max-age=86400"},
+            headers={"Cache-Control": "private, no-store"},
             content_type="image/webp",
         )
     except Exception as exc:

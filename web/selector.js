@@ -695,8 +695,31 @@ app.registerExtension({
                     message.textContent = String(e?.message || e);
                     const hint = document.createElement("span");
                     hint.className = "helto-grid-error-hint";
-                    hint.textContent = "Check browser console.";
+                    const needsApproval = String(e?.message || e).includes("outside authorized");
+                    hint.textContent = needsApproval
+                        ? "Approve the workflow's saved folders before scanning them."
+                        : "Check browser console.";
                     errorEl.append(title, message, hint);
+                    if (needsApproval && node.properties.folders?.length) {
+                        const approveButton = document.createElement("button");
+                        approveButton.type = "button";
+                        approveButton.className = "helto-modal-btn btn-primary";
+                        approveButton.textContent = "Approve configured folders";
+                        approveButton.onclick = async (event) => {
+                            containEvent(event);
+                            approveButton.disabled = true;
+                            try {
+                                await selectorApi.registerFolders(node.properties.folders);
+                                await node.scanFolders();
+                            } catch (approvalError) {
+                                console.error("Approving selector folders failed:", approvalError);
+                                alert(approvalError?.message || "Failed to approve selector folders.");
+                            } finally {
+                                approveButton.disabled = false;
+                            }
+                        };
+                        errorEl.appendChild(approveButton);
+                    }
                     gridEl.appendChild(errorEl);
                 }
             }
@@ -709,7 +732,7 @@ app.registerExtension({
         function showPreviewPopup(img) {
             openHeltoMediaPreview({
                 kind: "image",
-                url: selectorApi.viewImageUrl(img.path, img, node.properties.folders || []),
+                url: selectorApi.viewImageUrl(img.path, img),
                 title: img.name,
                 label: img.name,
             });
@@ -717,7 +740,7 @@ app.registerExtension({
 
         function saveOriginalImage(img) {
             const link = document.createElement("a");
-            link.href = selectorApi.viewImageUrl(img.path, img, node.properties.folders || []);
+            link.href = selectorApi.viewImageUrl(img.path, img);
             link.download = img.name || "image";
             document.body.appendChild(link);
             link.click();
@@ -729,14 +752,14 @@ app.registerExtension({
                 document,
                 window,
                 img,
-                imageUrl: selectorApi.viewImageUrl(img.path, img, node.properties.folders || []),
-                maskUrl: selectorApi.maskUrl(img.path, node.properties.folders || []),
+                imageUrl: selectorApi.viewImageUrl(img.path, img),
+                maskUrl: selectorApi.maskUrl(img.path),
                 privacyMode: node.properties.privacyMode,
                 hideMode: node.properties.hideMode,
                 hasEditedMask: Boolean(node.editedMasks?.[img.path]),
                 containPointerEvents,
-                saveMask: (path, maskData, privacyMode) => selectorApi.saveMask(path, maskData, privacyMode, node.properties.folders || []),
-                deleteMask: (path) => selectorApi.deleteMask(path, node.properties.folders || []),
+                saveMask: (path, maskData, privacyMode) => selectorApi.saveMask(path, maskData, privacyMode),
+                deleteMask: (path) => selectorApi.deleteMask(path),
                 onSaved: async (savedImg, ref, result) => {
                     node.editedMasks = applyEditedMaskSaveResult(node.editedMasks, savedImg.path, ref, result);
                     await updateMaskWidgetValue();
@@ -751,7 +774,7 @@ app.registerExtension({
                 document,
                 window,
                 img,
-                imageUrl: selectorApi.viewImageUrl(img.path, img, node.properties.folders || []),
+                imageUrl: selectorApi.viewImageUrl(img.path, img),
                 bboxes: node.editedBboxes?.[img.path] || [],
                 hideMode: node.properties.hideMode,
                 containPointerEvents,
@@ -923,7 +946,7 @@ app.registerExtension({
 
                 const thumb = document.createElement("img");
                 thumb.className = `helto-selected-preview-thumb ${aspectClass}`;
-                thumb.src = selectorApi.thumbnailUrl(img.path, isPrivacy, img, node.properties.folders || []);
+                thumb.src = selectorApi.thumbnailUrl(img.path, isPrivacy, img);
                 thumb.alt = img.name;
                 thumbWrap.appendChild(thumb);
 
@@ -1027,8 +1050,10 @@ app.registerExtension({
             filtered.forEach(img => {
                 const isSelected = node.selectedPaths.includes(img.path);
                 
-                const item = document.createElement("div");
+                const item = document.createElement("button");
+                item.type = "button";
                 item.className = `helto-grid-item ${isSelected ? "selected" : ""}`;
+                item.setAttribute("aria-pressed", String(isSelected));
                 if (node.editedMasks?.[img.path]) {
                     item.classList.add("has-mask");
                 }
@@ -1046,7 +1071,7 @@ app.registerExtension({
                 
                 // Thumb url targeting our backend endpoint
                 const isPrivacy = node.properties.privacyMode;
-                thumb.dataset.src = selectorApi.thumbnailUrl(img.path, isPrivacy, img, node.properties.folders || []);
+                thumb.dataset.src = selectorApi.thumbnailUrl(img.path, isPrivacy, img);
                 
                 const checkmark = document.createElement("div");
                 checkmark.className = "helto-item-checkmark";
@@ -1069,9 +1094,11 @@ app.registerExtension({
                     if (index > -1) {
                         node.selectedPaths.splice(index, 1);
                         item.classList.remove("selected");
+                        item.setAttribute("aria-pressed", "false");
                     } else {
                         node.selectedPaths.push(path);
                         item.classList.add("selected");
+                        item.setAttribute("aria-pressed", "true");
                     }
                     updateFooter();
                     updateWidgetValue();
@@ -1472,10 +1499,17 @@ app.registerExtension({
         };
         
         // --- 7. Modals: Manage Folders ---
-        folderBtn.onclick = (e) => {
+        folderBtn.onclick = async (e) => {
             containEvent(e);
             preserveSelectorSizeOnNextResize();
             let foldersList = [...node.properties.folders];
+            let registeredFolders = new Set();
+            try {
+                const registry = await selectorApi.getRegisteredFolders();
+                registeredFolders = new Set(registry.folders || []);
+            } catch (error) {
+                console.error("Loading selector root registry failed:", error);
+            }
             
             const updateModalList = (body) => {
                 const listContainer = body.querySelector(".helto-modal-folder-list");
@@ -1484,24 +1518,65 @@ app.registerExtension({
                 body.querySelector(".helto-modal-folder-count").innerText = `${foldersList.length} Total`;
                 
                 if (foldersList.length === 0) {
-                    listContainer.innerHTML = `<div class="folder-list-empty">No active folders configured</div>`;
+                    const empty = document.createElement("div");
+                    empty.className = "folder-list-empty";
+                    empty.textContent = "No active folders configured";
+                    listContainer.appendChild(empty);
                     return;
                 }
                 
                 foldersList.forEach((folder, idx) => {
                     const item = document.createElement("div");
                     item.className = "folder-list-item";
-                    item.innerHTML = `
-                        <span class="folder-item-icon">${ICONS.folder}</span>
-                        <span class="folder-item-path" title="${folder}">${folder}</span>
-                        <button class="folder-item-del-btn" data-index="${idx}">${ICONS.clear}</button>
-                    `;
-                    
-                    item.querySelector(".folder-item-del-btn").onclick = (e) => {
+
+                    const icon = document.createElement("span");
+                    icon.className = "folder-item-icon";
+                    icon.innerHTML = ICONS.folder;
+
+                    const path = document.createElement("span");
+                    path.className = "folder-item-path";
+                    path.title = folder;
+                    path.textContent = folder;
+
+                    const approval = document.createElement("span");
+                    approval.className = "folder-item-approval";
+                    approval.textContent = registeredFolders.has(folder) ? "Approved" : "Needs approval";
+
+                    const deleteButton = document.createElement("button");
+                    deleteButton.type = "button";
+                    deleteButton.className = "folder-item-del-btn";
+                    deleteButton.dataset.index = String(idx);
+                    deleteButton.setAttribute("aria-label", `Remove folder ${folder} from this selector`);
+                    deleteButton.innerHTML = ICONS.clear;
+
+                    const revokeButton = document.createElement("button");
+                    revokeButton.type = "button";
+                    revokeButton.className = "folder-item-revoke-btn";
+                    revokeButton.textContent = "Revoke";
+                    revokeButton.disabled = !registeredFolders.has(folder);
+                    revokeButton.title = "Revoke server access for every selector using this folder";
+
+                    deleteButton.onclick = (e) => {
                         containEvent(e);
                         foldersList.splice(idx, 1);
                         updateModalList(body);
                     };
+                    revokeButton.onclick = async (e) => {
+                        containEvent(e);
+                        if (!confirm(`Revoke server access to this folder for every selector?\n${folder}`)) return;
+                        revokeButton.disabled = true;
+                        try {
+                            await selectorApi.revokeFolder(folder);
+                            registeredFolders.delete(folder);
+                            foldersList.splice(idx, 1);
+                            updateModalList(body);
+                        } catch (revokeError) {
+                            console.error("Revoking selector folder failed:", revokeError);
+                            alert(revokeError?.message || "Failed to revoke selector folder.");
+                            revokeButton.disabled = false;
+                        }
+                    };
+                    item.append(icon, path, approval, revokeButton, deleteButton);
                     listContainer.appendChild(item);
                 });
             };
@@ -1519,12 +1594,17 @@ app.registerExtension({
                         <label class="modal-label">ACTIVE FOLDERS</label>
                         <span class="helto-modal-folder-count">0 Total</span>
                     </div>
+                    <div class="folder-modal-help">Removing affects only this selector. Revoke removes server approval for every selector.</div>
                     <div class="helto-modal-folder-list"></div>
                 </div>
             `;
             
-            const { body } = createModal("Manage Folders", content, (bodyEl) => {
+            const { body } = createModal("Manage Folders", content, async (bodyEl) => {
                 preserveSelectorSizeOnNextResize();
+                if (foldersList.length > 0) {
+                    await selectorApi.registerFolders(foldersList);
+                    registeredFolders = new Set([...registeredFolders, ...foldersList]);
+                }
                 node.properties.folders = foldersList;
                 if (node.properties.folderFilter !== "all" && !foldersList.includes(node.properties.folderFilter)) {
                     node.properties.folderFilter = "all";
@@ -1643,7 +1723,7 @@ app.registerExtension({
                     await clearThumbnailCache();
                 }
                 if (privacyChanged) {
-                    await selectorApi.migrateMasks(Object.keys(node.editedMasks || {}), newPrivacyMode, node.properties.folders || []);
+                    await selectorApi.migrateMasks(Object.keys(node.editedMasks || {}), newPrivacyMode);
                 }
                 
                 node.properties.hideMode = newHideMode;

@@ -7,6 +7,7 @@ export function createSelectorDom({
     sortBy,
     containPointerEvents,
 }) {
+    const safeCols = Math.min(8, Math.max(2, Number.parseInt(cols, 10) || 4));
     const widgetFrame = document.createElement("div");
     widgetFrame.className = "helto-selector-widget";
     containPointerEvents(widgetFrame);
@@ -34,21 +35,21 @@ export function createSelectorDom({
             <div class="helto-controls">
                 <div class="helto-slider-group">
                     <span class="helto-label">Thumbnails per Row</span>
-                    <input type="range" class="helto-col-slider" min="2" max="8" value="${cols}">
-                    <span class="helto-slider-val">${cols}</span>
+                    <input type="range" class="helto-col-slider" min="2" max="8" value="${safeCols}">
+                    <span class="helto-slider-val"></span>
                 </div>
                 <div class="helto-filter-sort-group">
                     <div class="helto-folder-filter-group">
                         <span class="helto-label">Folder:</span>
-                        <span class="helto-folder-filter-link">${rootFolderLabel}</span>
+                        <span class="helto-folder-filter-link"></span>
                     </div>
                     <div class="helto-subfolder-filter-group">
                         <span class="helto-label">Subfolder:</span>
-                        <span class="helto-subfolder-filter-link">${subfolderLabel}</span>
+                        <span class="helto-subfolder-filter-link"></span>
                     </div>
                     <div class="helto-sort-group">
                         <span class="helto-label">Sort:</span>
-                        <span class="helto-sort-link">${sortBy}</span>
+                        <span class="helto-sort-link"></span>
                     </div>
                 </div>
             </div>
@@ -68,6 +69,11 @@ export function createSelectorDom({
                 </div>
             </div>
         `;
+
+    container.querySelector(".helto-slider-val").textContent = String(safeCols);
+    container.querySelector(".helto-folder-filter-link").textContent = String(rootFolderLabel ?? "");
+    container.querySelector(".helto-subfolder-filter-link").textContent = String(subfolderLabel ?? "");
+    container.querySelector(".helto-sort-link").textContent = String(sortBy ?? "");
 
     return { widgetFrame, container };
 }

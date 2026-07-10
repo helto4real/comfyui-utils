@@ -24,10 +24,10 @@ export function isEncryptedText(value) {
     return isPrivacyEnvelope(value);
 }
 
-export function extractPrivacyShowAnyText(output) {
+export function extractPrivacyShowAnyEncryptedText(output) {
     const records = output?.[PRIVACY_SHOW_ANY_UI_KEY];
     const first = Array.isArray(records) ? records[0] : records;
-    return typeof first?.text === "string" ? first.text : "";
+    return isEncryptedText(first?.encrypted) ? first.encrypted : "";
 }
 
 export function hidePrivacyShowAnyStateWidget(node, collapseWidgetLayout) {

@@ -28,6 +28,12 @@ from PIL import Image, ExifTags
 from PIL.PngImagePlugin import PngInfo
 
 from ...shared import progress_api as helto_progress
+from ...shared.pause_release import (
+    cancel_pause_release,
+    consume_pause_release,
+    dispatch_pause_release,
+    request_pause_release,
+)
 from ...shared.privacy import (
     SAVE_VIDEO_REPLAY_PURPOSE,
     content_type_for_path,
@@ -240,7 +246,7 @@ def _available_formats() -> tuple[list[str], dict[str, list[list[Any]]], dict[st
         try:
             preset = _load_video_format(name, path)
         except Exception as exc:
-            print(f"Save Video Advanced ignored invalid video format {path}: {exc}")
+            print(f"Save Video Advanced ignored an invalid video format ({type(exc).__name__}).")
             continue
         if "gifski_pass" in preset:
             continue
@@ -394,6 +400,13 @@ class SaveVideoAdvanced(io.ComfyNode):
                 io.Boolean.Input("save_output", default=True),
                 io.Boolean.Input("pause_mode", display_name="pause mode", default=False),
                 io.Boolean.Input("privacy_mode", default=True),
+                io.String.Input(
+                    "release_token",
+                    default="",
+                    optional=True,
+                    socketless=True,
+                    extra_dict={"hidden": True},
+                ),
             ],
             outputs=[
                 io.Image.Output("images"),
@@ -431,11 +444,12 @@ class SaveVideoAdvanced(io.ComfyNode):
         save_output: bool = True,
         pause_mode: bool = False,
         privacy_mode: bool = True,
+        release_token: str = "",
         **kwargs,
     ) -> io.NodeOutput:
         node_id = cls._node_id()
         cached_preview = cls.state["previews"].get(node_id)
-        release = cls._consume_release(node_id)
+        release = cls._consume_release(node_id, release_token)
 
         if release is not None:
             stored = cls._load_replay_bundle(node_id)
@@ -550,11 +564,11 @@ class SaveVideoAdvanced(io.ComfyNode):
             helto_progress.done("Video output ready", phase="complete", percent=100, node_id=node_id)
 
             if save_output:
-                print(f"Save Video Advanced saved {len(output_files)} file(s) to: {save_dir}")
+                print(f"Save Video Advanced saved {len(output_files)} file(s).")
             elif privacy_mode:
                 print("Save Video Advanced created an encrypted private preview without saving output files.")
             else:
-                print(f"Save Video Advanced saved {len(output_files)} temp file(s) to: {save_dir}")
+                print(f"Save Video Advanced saved {len(output_files)} temp file(s).")
 
             if pause_mode:
                 blocker = ExecutionBlocker(None)
@@ -663,39 +677,21 @@ class SaveVideoAdvanced(io.ComfyNode):
 
     @classmethod
     def request_release(cls, node_id: str, revision=None) -> dict:
-        stored = cls.state["media"].get(node_id)
-        if stored is None or not Path(stored.get("path", "")).is_file():
-            return {
-                "ok": False,
-                "error": "No stored video is available for this node.",
-                "status": 404,
-            }
-
-        current_revision = int(stored.get("revision", 0))
-        if revision is not None:
-            try:
-                requested_revision = int(revision)
-            except (TypeError, ValueError):
-                requested_revision = None
-            if requested_revision != current_revision:
-                return {
-                    "ok": False,
-                    "error": "Stored video revision is no longer current.",
-                    "revision": current_revision,
-                    "status": 409,
-                }
-
-        cls.state["releases"][node_id] = {"revision": current_revision}
-        return {
-            "ok": True,
-            "has_media": True,
-            "revision": current_revision,
-            "paused": bool(stored.get("paused", False)),
-        }
+        return request_pause_release(
+            cls.state,
+            node_id,
+            revision,
+            media_label="video",
+            is_available=lambda stored: Path(stored.get("path", "")).is_file(),
+        )
 
     @classmethod
-    def _consume_release(cls, node_id: str) -> dict | None:
-        return cls.state["releases"].pop(node_id, None)
+    def _consume_release(cls, node_id: str, release_token: str = "") -> dict | None:
+        return consume_pause_release(cls.state, node_id, release_token)
+
+    @classmethod
+    def cancel_release(cls, node_id: str, revision=None, release_token=None) -> dict:
+        return cancel_pause_release(cls.state, node_id, revision, release_token)
 
     @classmethod
     def _pause_control_payload(
@@ -976,26 +972,33 @@ class SaveVideoAdvanced(io.ComfyNode):
         frame_total = len(frame_arrays)
         helto_progress.start("Writing frames to ffmpeg", phase="write_frames", value=0, total=frame_total, node_id=node_id)
         try:
-            process = subprocess.Popen(command, stdin=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
-            assert process.stdin is not None
-            assert process.stderr is not None
-            try:
-                for index, frame_array in enumerate(frame_arrays, start=1):
-                    process.stdin.write(frame_array.tobytes())
-                    pbar.update(1)
-                    helto_progress.update(
-                        f"Writing frame {index}/{frame_total}",
-                        phase="write_frames",
-                        value=index,
-                        total=frame_total,
-                        node_id=node_id,
-                    )
-                process.stdin.close()
-                stderr = process.stderr.read()
+            # A pipe can deadlock if ffmpeg fills stderr while Python is still
+            # feeding raw frames. A temporary file drains stderr continuously
+            # without keeping an unbounded diagnostic buffer in memory.
+            with tempfile.TemporaryFile() as stderr_file:
+                process = subprocess.Popen(command, stdin=subprocess.PIPE, stderr=stderr_file, env=env)
+                assert process.stdin is not None
+                try:
+                    for index, frame_array in enumerate(frame_arrays, start=1):
+                        process.stdin.write(frame_array.tobytes())
+                        pbar.update(1)
+                        helto_progress.update(
+                            f"Writing frame {index}/{frame_total}",
+                            phase="write_frames",
+                            value=index,
+                            total=frame_total,
+                            node_id=node_id,
+                        )
+                except BrokenPipeError:
+                    pass
+                finally:
+                    try:
+                        process.stdin.close()
+                    except BrokenPipeError:
+                        pass
                 return_code = process.wait()
-            except BrokenPipeError:
-                stderr = process.stderr.read()
-                return_code = process.wait()
+                stderr_file.seek(0)
+                stderr = stderr_file.read()
         finally:
             if metadata_path is not None:
                 try:
@@ -1261,9 +1264,7 @@ async def release_save_video_advanced(request):
         if denied is not None:
             return denied
         data = await request.json()
-        node_id = str(data.get("node_id", ""))
-        result = SaveVideoAdvanced.request_release(node_id, data.get("revision"))
-        status = int(result.pop("status", 200))
+        result, status = dispatch_pause_release(SaveVideoAdvanced, data)
         return web.json_response(result, status=status)
     except Exception as exc:
         return web.json_response({"ok": False, "error": str(exc)}, status=400)

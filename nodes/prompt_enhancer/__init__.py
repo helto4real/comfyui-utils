@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 from comfy_api.latest import io
@@ -18,6 +19,7 @@ from ...shared.prompt_enhancer import (
     VISUAL_CONTEXT_SYSTEM_PROMPT,
     build_visual_context_prompt,
     build_system_prompt,
+    load_system_prompt,
     decrypt_prompt_text,
     PromptEnhancerProgress,
     provider_model_supports_images,
@@ -147,8 +149,28 @@ class PromptEnhancer(io.ComfyNode):
         )
 
     @classmethod
-    def fingerprint_inputs(cls, seed: int = -1, **kwargs: Any) -> str:
-        return ""
+    def fingerprint_inputs(
+        cls,
+        seed: int = -1,
+        image_system_prompt_preset: str = "default",
+        video_system_prompt_preset: str = "default",
+        **kwargs: Any,
+    ) -> str | float:
+        del kwargs
+        if _as_int(seed, -1) < 0:
+            return float("nan")
+        digest = hashlib.sha256()
+        for kind, preset_id in (
+            ("image", image_system_prompt_preset),
+            ("video", video_system_prompt_preset),
+        ):
+            digest.update(kind.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(str(preset_id or "default").encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(load_system_prompt(kind, preset_id).encode("utf-8"))
+            digest.update(b"\0")
+        return digest.hexdigest()
 
     @classmethod
     def execute(

@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import os
+
 from comfy_api.latest import io
 
-from .image_processing import DEFAULT_RESIZE_MODE, select_images
+from .image_processing import DEFAULT_RESIZE_MODE, parse_edited_masks, parse_selected_paths, select_images
+from .mask_storage import mask_cache_paths
 
 
 def coerce_batching_mode(value: object) -> bool:
@@ -87,3 +92,38 @@ class HeltoImageSelector(io.ComfyNode):
         if not coerce_batching_mode(batching_mode):
             return io.NodeOutput([image_batch], image_batch, [mask_batch], mask_batch, [bboxes])
         return io.NodeOutput(tensor_list, image_batch, mask_list, mask_batch, bboxes)
+
+    @classmethod
+    def fingerprint_inputs(
+        cls,
+        selected_images: str = "[]",
+        edited_masks: str = "{}",
+        **kwargs,
+    ) -> str:
+        del kwargs
+        selected_paths = parse_selected_paths(selected_images)
+        edited_mask_paths = set(parse_edited_masks(edited_masks))
+        records = []
+        for image_path in selected_paths:
+            records.append(_file_revision_record(image_path, "image"))
+            if image_path in edited_mask_paths:
+                for mask_path in mask_cache_paths(image_path):
+                    records.append(_file_revision_record(mask_path, "mask"))
+        serialized = json.dumps(records, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _file_revision_record(path: str, kind: str) -> dict[str, object]:
+    normalized = os.path.realpath(os.path.abspath(os.path.normpath(path)))
+    path_id = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    try:
+        stat = os.stat(normalized)
+        return {
+            "kind": kind,
+            "path": path_id,
+            "exists": True,
+            "mtime_ns": stat.st_mtime_ns,
+            "size": stat.st_size,
+        }
+    except OSError:
+        return {"kind": kind, "path": path_id, "exists": False}

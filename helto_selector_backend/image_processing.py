@@ -200,7 +200,7 @@ def load_rgb_images(paths: list[str]) -> list[Image.Image]:
                 img = ImageOps.exif_transpose(img)
                 loaded_images.append(img.convert("RGB"))
         except Exception as e:
-            print(f"[HeltoSelector] Error loading image {path}: {e}")
+            print(f"[HeltoSelector] Error loading selected image ({type(e).__name__}).")
     return loaded_images
 
 
@@ -212,7 +212,7 @@ def load_rgb_image_pairs(paths: list[str]) -> list[tuple[str, Image.Image]]:
                 img = ImageOps.exif_transpose(img)
                 loaded_images.append((path, img.convert("RGB")))
         except Exception as e:
-            print(f"[HeltoSelector] Error loading image {path}: {e}")
+            print(f"[HeltoSelector] Error loading selected image ({type(e).__name__}).")
     return loaded_images
 
 

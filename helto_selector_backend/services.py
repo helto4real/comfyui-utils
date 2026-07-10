@@ -18,6 +18,11 @@ from .mask_storage import delete_mask, load_mask_bytes, migrate_mask_privacy, sa
 from .scanning import delete_image_files, discover_image_folders, scan_image_folders
 from .thumbnail_cache import clear_thumbnail_cache, delete_thumbnail_cache_for_paths, get_thumbnail_bytes
 
+try:
+    from ..shared.private_json import write_private_json
+except ImportError:
+    from shared.private_json import write_private_json
+
 
 _FALLBACK_IMAGE_EXTENSIONS = {
     "image/bmp": ".bmp",
@@ -44,7 +49,7 @@ def _string_list(value: Any) -> list[str]:
 
 
 def _normalize_folder_path(path: str) -> str:
-    normalized = os.path.normpath(path.strip())
+    normalized = os.path.normpath(os.path.expanduser(path.strip()))
     return normalized if Path(normalized).parts else ""
 
 
@@ -97,55 +102,99 @@ def _default_authorized_root_paths() -> list[str]:
     ]
 
 
-def _configured_allowlist_roots() -> list[str]:
-    """Server-side allowlist of extra selector roots (opt-in lockdown).
-
-    Read from the HELTO_SELECTOR_ROOTS env var (os.pathsep-separated) and/or
-    config/selector_roots.json (a JSON list of paths). Both are editable only
-    on the server's disk, never from a request.
-    """
-    roots: list[str] = []
-    env_value = os.environ.get(SELECTOR_ROOTS_ENV, "")
-    if env_value.strip():
-        roots.extend(part for part in env_value.split(os.pathsep) if part.strip())
+def load_registered_selector_roots() -> list[str]:
+    """Load user-approved selector roots from the server-owned registry."""
     try:
         with open(SELECTOR_ROOTS_FILE, encoding="utf-8") as handle:
             data = json.load(handle)
-        if isinstance(data, list):
-            roots.extend(item for item in data if isinstance(item, str) and item.strip())
     except (OSError, ValueError):
-        pass
+        return []
+    if not isinstance(data, list):
+        return []
+    roots: list[str] = []
+    seen: set[str] = set()
+    for item in data:
+        if not isinstance(item, str) or not item.strip():
+            continue
+        root = _real_path(os.path.expanduser(item))
+        if root in seen:
+            continue
+        seen.add(root)
+        roots.append(root)
     return roots
 
 
-def selector_lockdown_enabled() -> bool:
-    """True when an allowlist is configured; client folders stop self-authorizing."""
-    return bool(_configured_allowlist_roots())
+def _environment_authorized_roots() -> list[str]:
+    env_value = os.environ.get(SELECTOR_ROOTS_ENV, "")
+    return [part for part in env_value.split(os.pathsep) if part.strip()]
 
 
-def effective_authorized_roots() -> list[str] | None:
-    """Server roots to enforce, or None to keep the permissive default behavior.
+def register_selector_roots(folders: list[str]) -> dict[str, Any]:
+    """Persist folders approved through the authenticated selector UI.
 
-    When no allowlist is configured this returns None so the selector keeps
-    trusting client-supplied folders (ComfyUI's local-operator model). Once an
-    operator sets an allowlist, requests are confined to input/output/temp plus
-    those roots.
+    This is the only request-facing authority expansion seam. Ordinary scan,
+    preview, delete, paste, and mask requests can select from registered roots,
+    but cannot add roots themselves.
     """
-    if not selector_lockdown_enabled():
-        return None
-    return _default_authorized_root_paths() + _configured_allowlist_roots()
+    requested = _folder_list(folders)
+    if not requested:
+        raise SelectorPathError("At least one selector folder is required", 400)
+
+    approved: list[str] = []
+    for folder in requested:
+        expanded = os.path.expanduser(folder)
+        if not os.path.isabs(expanded):
+            raise SelectorPathError("Selector folders must use absolute paths", 400)
+        root = _real_path(expanded)
+        if not os.path.isdir(root):
+            raise SelectorPathError("Selector folder was not found", 404)
+        approved.append(root)
+
+    registered = load_registered_selector_roots()
+    seen = set(registered)
+    added: list[str] = []
+    for root in approved:
+        if root in seen:
+            continue
+        seen.add(root)
+        registered.append(root)
+        added.append(root)
+    write_private_json(SELECTOR_ROOTS_FILE, registered)
+    return {"ok": True, "registered": approved, "added": added}
 
 
-def _configured_root_paths(configured_folders: list[str] | tuple[str, ...] | None = None) -> list[str]:
-    return _folder_list(list(configured_folders or []))
+def registered_selector_roots_payload() -> dict[str, Any]:
+    return {"ok": True, "folders": load_registered_selector_roots()}
+
+
+def unregister_selector_root(folder: str) -> dict[str, Any]:
+    expanded = os.path.expanduser(str(folder or "").strip())
+    if not expanded or not os.path.isabs(expanded):
+        raise SelectorPathError("Selector folder must use an absolute path", 400)
+    target = _real_path(expanded)
+    registered = load_registered_selector_roots()
+    remaining = [root for root in registered if root != target]
+    removed = len(remaining) != len(registered)
+    if removed:
+        write_private_json(SELECTOR_ROOTS_FILE, remaining)
+    return {"ok": True, "removed": removed, "folder": target}
+
+
+def effective_authorized_roots() -> list[str]:
+    """Return the complete server-owned selector root allowlist."""
+    return selector_authorized_roots(
+        [
+            *_default_authorized_root_paths(),
+            *_environment_authorized_roots(),
+            *load_registered_selector_roots(),
+        ]
+    )
 
 
 def _authorized_root_pairs(
     authorized_roots: list[str] | tuple[str, ...] | None = None,
-    configured_folders: list[str] | tuple[str, ...] | None = None,
 ) -> list[tuple[str, str]]:
-    roots = list(authorized_roots if authorized_roots is not None else _default_authorized_root_paths())
-    roots.extend(_configured_root_paths(configured_folders))
+    roots = list(authorized_roots if authorized_roots is not None else effective_authorized_roots())
     pairs: list[tuple[str, str]] = []
     seen_real_paths: set[str] = set()
 
@@ -164,9 +213,8 @@ def _authorized_root_pairs(
 
 def selector_authorized_roots(
     authorized_roots: list[str] | tuple[str, ...] | None = None,
-    configured_folders: list[str] | tuple[str, ...] | None = None,
 ) -> list[str]:
-    return [absolute for absolute, _real in _authorized_root_pairs(authorized_roots, configured_folders)]
+    return [absolute for absolute, _real in _authorized_root_pairs(authorized_roots)]
 
 
 def _is_under_authorized_root(path: str, root_pairs: list[tuple[str, str]]) -> bool:
@@ -178,7 +226,6 @@ def authorize_selector_image_path(
     image_path: str | None,
     *,
     must_exist: bool = True,
-    configured_folders: list[str] | tuple[str, ...] | None = None,
     authorized_roots: list[str] | tuple[str, ...] | None = None,
 ) -> str:
     if not image_path:
@@ -188,7 +235,7 @@ def authorize_selector_image_path(
     if not _is_supported_image_path(normalized_path):
         raise SelectorPathError("Unsupported image extension", 400)
 
-    root_pairs = _authorized_root_pairs(authorized_roots, configured_folders)
+    root_pairs = _authorized_root_pairs(authorized_roots)
     if not root_pairs or not _is_under_authorized_root(normalized_path, root_pairs):
         raise SelectorPathError("Image path is outside authorized selector folders", 403)
 
@@ -203,8 +250,7 @@ def authorize_selector_folders(
     *,
     authorized_roots: list[str] | tuple[str, ...] | None = None,
 ) -> list[str]:
-    configured_folders = folders if authorized_roots is None else []
-    root_pairs = _authorized_root_pairs(authorized_roots, configured_folders)
+    root_pairs = _authorized_root_pairs(authorized_roots)
     authorized_folders: list[str] = []
     seen_paths: set[str] = set()
 
@@ -330,7 +376,6 @@ class SaveMaskPayload:
     path: str
     mask_data: str
     privacy: bool
-    folders: list[str]
 
     @classmethod
     def from_request_data(cls, data: Mapping[str, Any]) -> "SaveMaskPayload":
@@ -338,20 +383,17 @@ class SaveMaskPayload:
             path=str(data.get("path") or ""),
             mask_data=str(data.get("mask_data") or ""),
             privacy=_truthy(data.get("privacy", False)),
-            folders=_folder_list(data.get("folders") or []),
         )
 
 
 @dataclass(frozen=True)
 class DeleteMaskPayload:
     path: str
-    folders: list[str]
 
     @classmethod
     def from_request_data(cls, data: Mapping[str, Any]) -> "DeleteMaskPayload":
         return cls(
             path=str(data.get("path") or ""),
-            folders=_folder_list(data.get("folders") or []),
         )
 
 
@@ -359,14 +401,12 @@ class DeleteMaskPayload:
 class MigrateMasksPayload:
     paths: list[str]
     privacy: bool
-    folders: list[str]
 
     @classmethod
     def from_request_data(cls, data: Mapping[str, Any]) -> "MigrateMasksPayload":
         return cls(
             paths=_string_list(data.get("paths") or []),
             privacy=_truthy(data.get("privacy", False)),
-            folders=_folder_list(data.get("folders") or []),
         )
 
 
@@ -441,7 +481,6 @@ def delete_images_payload(
         authorize_selector_image_path(
             path,
             must_exist=False,
-            configured_folders=authorized_folders,
             authorized_roots=authorized_roots,
         )
         for path in payload.paths
@@ -500,10 +539,8 @@ def save_mask_payload(
     *,
     authorized_roots: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
-    configured_folders = authorize_selector_folders(payload.folders, authorized_roots=authorized_roots) if payload.folders else []
     image_path = authorize_selector_image_path(
         payload.path,
-        configured_folders=configured_folders,
         authorized_roots=authorized_roots,
     )
     if not payload.mask_data:
@@ -520,10 +557,8 @@ def delete_mask_payload(
     *,
     authorized_roots: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
-    configured_folders = authorize_selector_folders(payload.folders, authorized_roots=authorized_roots) if payload.folders else []
     image_path = authorize_selector_image_path(
         payload.path,
-        configured_folders=configured_folders,
         authorized_roots=authorized_roots,
     )
     return {
@@ -539,12 +574,10 @@ def migrate_masks_payload(
     *,
     authorized_roots: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
-    configured_folders = authorize_selector_folders(payload.folders, authorized_roots=authorized_roots) if payload.folders else []
     authorized_paths = [
         authorize_selector_image_path(
             path,
             must_exist=False,
-            configured_folders=configured_folders,
             authorized_roots=authorized_roots,
         )
         for path in payload.paths

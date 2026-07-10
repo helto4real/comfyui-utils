@@ -10,8 +10,10 @@ import {
 import {
     SAVE_IMAGE_RELEASE_ROUTE,
     SAVE_VIDEO_RELEASE_ROUTE,
+    bindPauseReleaseToken,
     buildPauseResumePrompt,
     queueFilteredPrompt,
+    queueWithReleaseRollback,
     restoreSerializedWidgetValues,
     sanitizeSerializedWidgetValues,
 } from "./pause_control_helpers.js";
@@ -412,12 +414,14 @@ function ensurePauseControlWidget(node) {
     expandNodeToComputedSize(node);
 }
 
-async function postPauseRelease(node) {
+async function postPauseRelease(node, action = "release", releaseToken = "") {
     const state = pauseControlState(node);
     const route = getNodeClass(node) === VIDEO_NODE_CLASS ? SAVE_VIDEO_RELEASE_ROUTE : SAVE_IMAGE_RELEASE_ROUTE;
     const body = JSON.stringify({
         node_id: String(node.id),
         revision: state.revision,
+        action,
+        release_token: releaseToken,
     });
     const fetcher = api.fetchApi ? (path, options) => api.fetchApi(path, options) : fetch;
     const response = await privacyFetch(route, {
@@ -441,8 +445,14 @@ async function queuePauseResumePrompt(node) {
         throw new Error("No downstream nodes are connected to the released outputs.");
     }
 
-    await postPauseRelease(node);
-    return queueFilteredPrompt(api, nextPrompt);
+    return queueWithReleaseRollback(
+        () => postPauseRelease(node),
+        (release) => {
+            bindPauseReleaseToken(nextPrompt, node.id, release?.release_token);
+            return queueFilteredPrompt(api, nextPrompt);
+        },
+        (release) => postPauseRelease(node, "cancel", release?.release_token),
+    );
 }
 
 async function handlePauseControlButton(node) {

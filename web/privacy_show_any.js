@@ -11,7 +11,7 @@ import {
     PRIVACY_SHOW_ANY_STATE_WIDGET,
     decryptTextStateForOwner,
     encryptTextStateForOwner,
-    extractPrivacyShowAnyText,
+    extractPrivacyShowAnyEncryptedText,
     flushPrivacyShowAnyEncryption,
     getWidget,
     hidePrivacyShowAnyStateWidget,
@@ -455,7 +455,26 @@ app.registerExtension({
         nodeType.prototype.onExecuted = function (output, ...args) {
             const result = onExecuted?.apply(this, [output, ...args]);
             ensurePrivacyShowAnyUi(this);
-            setDisplayText(this, extractPrivacyShowAnyText(output));
+            const encrypted = extractPrivacyShowAnyEncryptedText(output);
+            if (!encrypted) {
+                setDisplayText(this, "", false);
+                return result;
+            }
+            const stateWidget = getStateWidget(this);
+            this[ENCRYPT_PROMISE_KEY] = decryptTextStateForOwner(this, encrypted, selectorApi)
+                .then((text) => {
+                    setEncryptedPrivacyShowAnyState(this, stateWidget, encrypted);
+                    setDisplayText(this, text, false);
+                    captureWorkflowState(this);
+                    return encrypted;
+                })
+                .catch((err) => {
+                    console.error("Privacy Show Any output decryption failed:", err);
+                    setEncryptedPrivacyShowAnyState(this, stateWidget, "");
+                    setDisplayText(this, "", false);
+                    captureWorkflowState(this);
+                    return "";
+                });
             return result;
         };
     },

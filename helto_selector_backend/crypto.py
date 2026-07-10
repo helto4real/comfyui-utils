@@ -8,6 +8,8 @@ from typing import Any
 def _install_folder_paths_stub() -> None:
     folder_paths = types.ModuleType("folder_paths")
     folder_paths.get_temp_directory = tempfile.gettempdir
+    folder_paths.get_input_directory = tempfile.gettempdir
+    folder_paths.get_output_directory = tempfile.gettempdir
     sys.modules["folder_paths"] = folder_paths
 
 

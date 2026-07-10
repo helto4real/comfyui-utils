@@ -13,6 +13,12 @@ from comfy_api.latest import io, ui
 from comfy_execution.graph import ExecutionBlocker
 
 from ...shared import progress_api as helto_progress
+from ...shared.pause_release import (
+    cancel_pause_release,
+    consume_pause_release,
+    dispatch_pause_release,
+    request_pause_release,
+)
 from ...shared.privacy import private_media_record, write_encrypted_temp_bytes
 
 
@@ -58,6 +64,13 @@ class SaveImageAdvanced(io.ComfyNode):
                 io.Boolean.Input("pause_mode", display_name="pause mode", default=False),
                 io.Boolean.Input("privacy_mode", default=True),
                 io.Boolean.Input("save_image", display_name="save image", default=True),
+                io.String.Input(
+                    "release_token",
+                    default="",
+                    optional=True,
+                    socketless=True,
+                    extra_dict={"hidden": True},
+                ),
             ],
             outputs=[
                 io.Image.Output("images"),
@@ -88,10 +101,11 @@ class SaveImageAdvanced(io.ComfyNode):
         pause_mode: bool = False,
         privacy_mode: bool = True,
         save_image: bool = True,
+        release_token: str = "",
     ) -> io.NodeOutput:
         node_id = cls._node_id()
         cached_preview = cls.state["previews"].get(node_id)
-        release = cls._consume_release(node_id)
+        release = cls._consume_release(node_id, release_token)
 
         if release is not None:
             stored = cls.state["media"].get(node_id)
@@ -135,7 +149,7 @@ class SaveImageAdvanced(io.ComfyNode):
                     subfolder=subfolder,
                 )
                 saved_paths = cls._save_images(images, save_dir, filename_prefix)
-                print(f"Save Image Advanced saved {len(saved_paths)} image(s) to: {save_dir}")
+                print(f"Save Image Advanced saved {len(saved_paths)} image(s).")
             else:
                 helto_progress.update(
                     "Preparing preview only",
@@ -244,39 +258,15 @@ class SaveImageAdvanced(io.ComfyNode):
 
     @classmethod
     def request_release(cls, node_id: str, revision=None) -> dict:
-        stored = cls.state["media"].get(node_id)
-        if stored is None:
-            return {
-                "ok": False,
-                "error": "No stored image is available for this node.",
-                "status": 404,
-            }
-
-        current_revision = int(stored.get("revision", 0))
-        if revision is not None:
-            try:
-                requested_revision = int(revision)
-            except (TypeError, ValueError):
-                requested_revision = None
-            if requested_revision != current_revision:
-                return {
-                    "ok": False,
-                    "error": "Stored image revision is no longer current.",
-                    "revision": current_revision,
-                    "status": 409,
-                }
-
-        cls.state["releases"][node_id] = {"revision": current_revision}
-        return {
-            "ok": True,
-            "has_media": True,
-            "revision": current_revision,
-            "paused": bool(stored.get("paused", False)),
-        }
+        return request_pause_release(cls.state, node_id, revision, media_label="image")
 
     @classmethod
-    def _consume_release(cls, node_id: str) -> dict | None:
-        return cls.state["releases"].pop(node_id, None)
+    def _consume_release(cls, node_id: str, release_token: str = "") -> dict | None:
+        return consume_pause_release(cls.state, node_id, release_token)
+
+    @classmethod
+    def cancel_release(cls, node_id: str, revision=None, release_token=None) -> dict:
+        return cancel_pause_release(cls.state, node_id, revision, release_token)
 
     @classmethod
     def _pause_control_payload(
@@ -460,9 +450,7 @@ async def release_save_image_advanced(request):
         if denied is not None:
             return denied
         data = await request.json()
-        node_id = str(data.get("node_id", ""))
-        result = SaveImageAdvanced.request_release(node_id, data.get("revision"))
-        status = int(result.pop("status", 200))
+        result, status = dispatch_pause_release(SaveImageAdvanced, data)
         return web.json_response(result, status=status)
     except Exception as exc:
         return web.json_response({"ok": False, "error": str(exc)}, status=400)

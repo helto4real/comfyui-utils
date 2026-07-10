@@ -18,6 +18,7 @@ from PIL import Image
 import torch
 
 import helto_selector_backend.image_processing as selector_image_processing
+import helto_selector_backend.services as selector_services
 from helto_selector_backend import crypto as selector_crypto
 from helto_selector_backend.crypto import decrypt_selection, encrypt_selection
 from helto_selector_backend.image_processing import (
@@ -47,11 +48,16 @@ from helto_selector_backend.services import (
     decrypt_payload,
     delete_images_payload,
     delete_mask_payload,
+    effective_authorized_roots,
     encrypt_payload,
     get_input_dir_payload,
+    load_registered_selector_roots,
     paste_image_payload,
+    register_selector_roots,
+    registered_selector_roots_payload,
     scan_folders_payload,
     save_mask_payload,
+    unregister_selector_root,
     migrate_masks_payload,
 )
 from helto_selector_backend.thumbnail_cache import (
@@ -281,7 +287,7 @@ class ImageProcessingTests(unittest.TestCase):
             image_path = os.path.join(tmpdir, "image.png")
             write_image(image_path, (4, 4), (255, 0, 0))
 
-            result = delete_mask_payload(DeleteMaskPayload(path=image_path, folders=[]), authorized_roots=[tmpdir])
+            result = delete_mask_payload(DeleteMaskPayload(path=image_path), authorized_roots=[tmpdir])
 
             self.assertEqual(result["status"], "success")
             self.assertEqual(result["path"], image_path)
@@ -770,11 +776,8 @@ class ServiceLayerTests(unittest.TestCase):
             with self.assertRaises(SelectorPathError) as forbidden:
                 authorize_selector_image_path(outside_path, authorized_roots=[root_dir])
             self.assertEqual(forbidden.exception.status_code, 403)
-            self.assertEqual(
-                authorize_selector_image_path(outside_path, configured_folders=[outside_dir], authorized_roots=[root_dir]),
-                outside_path,
-            )
-            self.assertEqual(authorize_selector_folders([outside_dir]), [outside_dir])
+            with self.assertRaises(SelectorPathError):
+                authorize_selector_folders([outside_dir], authorized_roots=[root_dir])
 
             with self.assertRaises(SelectorPathError) as missing:
                 authorize_selector_image_path(missing_path, authorized_roots=[root_dir])
@@ -789,6 +792,7 @@ class ServiceLayerTests(unittest.TestCase):
 
             scan_result = scan_folders_payload(
                 ScanFoldersPayload(folders=[configured_dir], recursive=False, previous_paths=[]),
+                authorized_roots=[configured_dir],
             )
             self.assertEqual([image["path"] for image in scan_result["images"]], [image_path])
 
@@ -800,6 +804,7 @@ class ServiceLayerTests(unittest.TestCase):
                     "skipped": [],
                 },
                 delete_cache_func=lambda _paths: 0,
+                authorized_roots=[configured_dir],
             )
             self.assertEqual(delete_result["deleted"], [image_path])
 
@@ -809,8 +814,46 @@ class ServiceLayerTests(unittest.TestCase):
                 filename="paste.png",
                 content=image_bytes(),
                 content_type="image/png",
-            ))
+            ), authorized_roots=[configured_dir])
             self.assertEqual(paste_result["path"], os.path.join(configured_dir, "paste.png"))
+
+    def test_selector_registered_roots_are_server_persisted_and_authorized(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            configured_dir = os.path.join(tmpdir, "configured")
+            os.makedirs(configured_dir)
+            roots_file = os.path.join(tmpdir, "selector_roots.json")
+
+            with patch.object(selector_services, "SELECTOR_ROOTS_FILE", roots_file), \
+                    patch.object(selector_services, "_default_authorized_root_paths", return_value=[]), \
+                    patch.dict(os.environ, {selector_services.SELECTOR_ROOTS_ENV: ""}):
+                result = register_selector_roots([configured_dir])
+
+                self.assertEqual(result["registered"], [os.path.realpath(configured_dir)])
+                self.assertEqual(load_registered_selector_roots(), [os.path.realpath(configured_dir)])
+                self.assertEqual(
+                    registered_selector_roots_payload()["folders"],
+                    [os.path.realpath(configured_dir)],
+                )
+                self.assertEqual(effective_authorized_roots(), [os.path.realpath(configured_dir)])
+                self.assertEqual(
+                    authorize_selector_folders([configured_dir], authorized_roots=effective_authorized_roots()),
+                    [os.path.abspath(configured_dir)],
+                )
+
+                revoked = unregister_selector_root(configured_dir)
+                self.assertTrue(revoked["removed"])
+                self.assertEqual(load_registered_selector_roots(), [])
+
+    def test_selector_root_registration_rejects_missing_or_relative_folders(self):
+        with tempfile.TemporaryDirectory() as tmpdir, \
+                patch.object(selector_services, "SELECTOR_ROOTS_FILE", os.path.join(tmpdir, "selector_roots.json")):
+            with self.assertRaises(SelectorPathError) as relative:
+                register_selector_roots(["relative/path"])
+            with self.assertRaises(SelectorPathError) as missing:
+                register_selector_roots([os.path.join(tmpdir, "missing")])
+
+            self.assertEqual(relative.exception.status_code, 400)
+            self.assertEqual(missing.exception.status_code, 404)
 
     def test_selector_payloads_reject_unconfigured_folders_outside_server_roots(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -841,12 +884,12 @@ class ServiceLayerTests(unittest.TestCase):
                     authorized_roots=[root_dir],
                 ),
                 lambda: save_mask_payload(
-                    SaveMaskPayload(path=outside_path, mask_data="data:image/png;base64,", privacy=False, folders=[]),
+                    SaveMaskPayload(path=outside_path, mask_data="data:image/png;base64,", privacy=False),
                     authorized_roots=[root_dir],
                 ),
-                lambda: delete_mask_payload(DeleteMaskPayload(path=outside_path, folders=[]), authorized_roots=[root_dir]),
+                lambda: delete_mask_payload(DeleteMaskPayload(path=outside_path), authorized_roots=[root_dir]),
                 lambda: migrate_masks_payload(
-                    MigrateMasksPayload(paths=[outside_path], privacy=True, folders=[]),
+                    MigrateMasksPayload(paths=[outside_path], privacy=True),
                     authorized_roots=[root_dir],
                 ),
             ]
@@ -1051,6 +1094,7 @@ class SelectorRouteTests(unittest.TestCase):
         original = self.routes.authorize_selector_image_path
 
         def authorize_with_test_roots(path, **kwargs):
+            kwargs.pop("authorized_roots", None)
             return original(path, authorized_roots=roots, **kwargs)
 
         self.routes.authorize_selector_image_path = authorize_with_test_roots
@@ -1105,12 +1149,9 @@ class SelectorRouteTests(unittest.TestCase):
                 configured_thumbnail = asyncio.run(self.routes.get_thumbnail(self._request(outside_path, folders=[outside_dir])))
                 configured_mask = asyncio.run(self.routes.get_mask(self._request(outside_path, folders=[outside_dir])))
 
-                self.assertEqual(configured_view.status, 200)
-                self.assertEqual(configured_view.path, outside_path)
-                self.assertEqual(configured_thumbnail.status, 200)
-                self.assertEqual(configured_thumbnail.content_type, "image/webp")
-                self.assertEqual(configured_mask.status, 200)
-                self.assertEqual(configured_mask.content_type, "image/png")
+                self.assertEqual(configured_view.status, 403)
+                self.assertEqual(configured_thumbnail.status, 403)
+                self.assertEqual(configured_mask.status, 403)
             finally:
                 self.routes.authorize_selector_image_path = original_authorize
                 self.routes.thumbnail_payload = original_thumbnail_payload
@@ -1244,6 +1285,48 @@ class NodeSchemaContractTests(unittest.TestCase):
         self.assertTrue(node_module.coerce_batching_mode("1"))
         self.assertTrue(node_module.coerce_batching_mode(1))
 
+    def test_selector_fingerprint_changes_when_selected_file_changes(self):
+        node_module = self._import_node_with_fake_comfy_api()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = os.path.join(tmpdir, "selected.png")
+            write_image(image_path, (4, 4), (255, 0, 0))
+            selected = json.dumps([image_path])
+
+            first = node_module.HeltoImageSelector.fingerprint_inputs(selected_images=selected)
+            stat = os.stat(image_path)
+            os.utime(image_path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+            second = node_module.HeltoImageSelector.fingerprint_inputs(selected_images=selected)
+
+            self.assertNotEqual(first, second)
+
+    def test_selector_fingerprint_changes_when_edited_mask_cache_changes(self):
+        node_module = self._import_node_with_fake_comfy_api()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = os.path.join(tmpdir, "selected.png")
+            plain_mask = os.path.join(tmpdir, "mask.png")
+            encrypted_mask = os.path.join(tmpdir, "mask.png.enc")
+            write_image(image_path, (4, 4), (255, 0, 0))
+            selected = json.dumps([image_path])
+            edited_masks = json.dumps({image_path: {"key": "mask"}})
+
+            with patch.dict(
+                node_module.HeltoImageSelector.fingerprint_inputs.__func__.__globals__,
+                {"mask_cache_paths": lambda _path: (plain_mask, encrypted_mask)},
+            ):
+                first = node_module.HeltoImageSelector.fingerprint_inputs(
+                    selected_images=selected,
+                    edited_masks=edited_masks,
+                )
+                Path(plain_mask).write_bytes(b"mask")
+                second = node_module.HeltoImageSelector.fingerprint_inputs(
+                    selected_images=selected,
+                    edited_masks=edited_masks,
+                )
+
+            self.assertNotEqual(first, second)
+
     def test_registered_node_display_names_are_helto_prefixed(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()
 
@@ -1366,7 +1449,56 @@ class NodeSchemaContractTests(unittest.TestCase):
             ],
         )
 
-    def test_prompt_enhancer_fingerprint_is_stable_for_negative_seed(self):
+    def test_load_video_private_listing_and_raw_media_require_token(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        routes = extension_module.HeltoLoadVideo.execute.__func__.__globals__["video_routes"]
+        denied = object()
+        private_request = types.SimpleNamespace(
+            query={"alias": "input", "recursive": "1", "privacy": "1"},
+            headers={},
+            cookies={},
+        )
+        downgrade_request = types.SimpleNamespace(
+            query={"alias": "input", "recursive": "1", "privacy": "0"},
+            headers={},
+            cookies={},
+        )
+
+        with patch.object(routes, "_require_privacy_token", return_value=denied):
+            self.assertIs(asyncio.run(routes.get_videos(private_request)), denied)
+            self.assertIs(asyncio.run(routes.get_video(private_request)), denied)
+            self.assertIs(asyncio.run(routes.get_videos(downgrade_request)), denied)
+            self.assertIs(asyncio.run(routes.get_video(downgrade_request)), denied)
+            self.assertIs(asyncio.run(routes.get_preview(downgrade_request)), denied)
+            self.assertIs(asyncio.run(routes.get_thumb(downgrade_request)), denied)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            video_path = Path(tmpdir) / "clip.mp4"
+            video_path.write_bytes(b"video")
+            with patch.object(routes, "_require_privacy_token", return_value=None), \
+                    patch.object(routes, "folder_by_alias", return_value=types.SimpleNamespace(path=tmpdir)), \
+                    patch.object(routes, "list_videos", return_value=[{
+                        "filename": "clip.mp4",
+                        "mtime": 1,
+                        "width": 1,
+                        "height": 1,
+                        "duration": 1,
+                        "fps": 1,
+                        "size": 5,
+                    }]), \
+                    patch.object(routes, "resolve_video_path", return_value=video_path), \
+                    patch.object(routes.web, "FileResponse", side_effect=lambda path, headers=None: {
+                        "path": path,
+                        "headers": headers or {},
+                    }):
+                listing_response = asyncio.run(routes.get_videos(private_request))
+                video_response = asyncio.run(routes.get_video(private_request))
+
+            listing = listing_response["args"][0]["videos"][0]
+            self.assertIn("privacy=1", listing["video_url"])
+            self.assertEqual(video_response["headers"]["Cache-Control"], "private, no-store")
+
+    def test_prompt_enhancer_fingerprint_disables_cache_for_negative_seed_and_tracks_presets(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()
         prompt_node = next(
             node_cls
@@ -1374,11 +1506,28 @@ class NodeSchemaContractTests(unittest.TestCase):
             if node_cls.define_schema().node_id == "HeltoPromptEnhancer"
         )
 
-        first = prompt_node.fingerprint_inputs(seed=-1)
-        second = prompt_node.fingerprint_inputs(seed=-1)
+        globals_ = prompt_node.fingerprint_inputs.__func__.__globals__
+        with patch.dict(globals_, {"load_system_prompt": lambda kind, preset_id: f"{kind}:{preset_id}:v1"}):
+            first = prompt_node.fingerprint_inputs(
+                seed=42,
+                image_system_prompt_preset="portrait",
+                video_system_prompt_preset="cinematic",
+            )
+            second = prompt_node.fingerprint_inputs(
+                seed=42,
+                image_system_prompt_preset="portrait",
+                video_system_prompt_preset="cinematic",
+            )
+            self.assertTrue(prompt_node.fingerprint_inputs(seed=-1) != prompt_node.fingerprint_inputs(seed=-1))
+            self.assertEqual(first, second)
 
-        self.assertEqual(first, second)
-        self.assertEqual(first, prompt_node.fingerprint_inputs(seed=42))
+        with patch.dict(globals_, {"load_system_prompt": lambda kind, preset_id: f"{kind}:{preset_id}:v2"}):
+            changed = prompt_node.fingerprint_inputs(
+                seed=42,
+                image_system_prompt_preset="portrait",
+                video_system_prompt_preset="cinematic",
+            )
+        self.assertNotEqual(first, changed)
 
     def test_save_image_advanced_appends_save_image_toggle(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()
@@ -1398,11 +1547,16 @@ class NodeSchemaContractTests(unittest.TestCase):
                 "pause_mode",
                 "privacy_mode",
                 "save_image",
+                "release_token",
             ],
         )
-        save_image_input = schema.inputs[-1]
+        save_image_input = next(input_def for input_def in schema.inputs if input_def.id == "save_image")
         self.assertEqual(save_image_input.display_name, "save image")
         self.assertTrue(save_image_input.kwargs["default"])
+        release_input = schema.inputs[-1]
+        self.assertEqual(release_input.id, "release_token")
+        self.assertTrue(release_input.kwargs["optional"])
+        self.assertTrue(release_input.kwargs["extra_dict"]["hidden"])
         self.assertEqual([output_def.id for output_def in schema.outputs], ["images", "width", "height"])
 
     def test_image_comparer_accepts_optional_images_and_masks(self):
@@ -1491,14 +1645,21 @@ class NodeSchemaContractTests(unittest.TestCase):
             if node_cls.define_schema().node_id == "HeltoPrivacyShowAny"
         )
         schema = text_node.define_schema()
-        result = text_node.execute({"prompt": "hello", "steps": 4, "flags": [True, None]})
+        with isolated_privacy_keystore():
+            result = text_node.execute({"prompt": "hello", "steps": 4, "flags": [True, None]})
+            decrypted_ui_text = decrypt_selection(
+                result.kwargs["ui"]["helto_privacy_show_any"][0]["encrypted"]
+            )
 
         self.assertEqual(schema.display_name, "Helto Privacy Show Any")
         self.assertEqual([input_def.id for input_def in schema.inputs], ["input", "encrypted_text_state"])
         self.assertEqual([output_def.id for output_def in schema.outputs], ["text"])
         self.assertTrue(schema.kwargs["is_output_node"])
         self.assertIn('"prompt": "hello"', result[0])
-        self.assertEqual(result.kwargs["ui"]["helto_privacy_show_any"][0]["text"], result[0])
+        ui_record = result.kwargs["ui"]["helto_privacy_show_any"][0]
+        self.assertNotIn("text", ui_record)
+        self.assertNotIn("hello", ui_record["encrypted"])
+        self.assertEqual(decrypted_ui_text, result[0])
 
     def test_prompt_enhancer_sends_substituted_prompt_to_provider(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()
@@ -2572,7 +2733,7 @@ Second beat moves toward the doorway. @image1:end
             first = node_cls.execute(images=images, pause_mode=False)
             revision = first.kwargs["ui"]["helto_pause_control"][0]["revision"]
             release = node_cls.request_release("release-node", revision)
-            second = node_cls.execute(images=None, pause_mode=True)
+            second = node_cls.execute(images=None, pause_mode=True, release_token=release["release_token"])
         finally:
             node_cls._save_images = original_save_images
             node_cls._private_preview_records = original_private_records
@@ -2610,7 +2771,7 @@ Second beat moves toward the doorway. @image1:end
             first = node_cls.execute(images=images, pause_mode=True)
             revision = first.kwargs["ui"]["helto_pause_control"][0]["revision"]
             release = node_cls.request_release("paused-release-node", revision)
-            second = node_cls.execute(images=None, pause_mode=True)
+            second = node_cls.execute(images=None, pause_mode=True, release_token=release["release_token"])
         finally:
             node_cls._save_images = original_save_images
             node_cls._private_preview_records = original_private_records
@@ -2629,6 +2790,42 @@ Second beat moves toward the doorway. @image1:end
         self.assertEqual(control["mode"], "released")
         self.assertTrue(control["released"])
         self.assertFalse(control["paused"])
+
+    def test_pause_release_can_be_cancelled_and_stale_revisions_are_not_consumed(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+
+        for node_cls in (extension_module.SaveImageAdvanced, extension_module.SaveVideoAdvanced):
+            with self.subTest(node=node_cls.__name__):
+                node_cls.state["media"]["transaction-node"] = {"revision": 4}
+                node_cls.state["releases"]["transaction-node"] = {
+                    "revision": 4,
+                    "token": "release-token",
+                    "expires_at": float("inf"),
+                }
+
+                cancelled = node_cls.cancel_release("transaction-node", 4)
+
+                self.assertTrue(cancelled["ok"])
+                self.assertTrue(cancelled["cancelled"])
+                self.assertNotIn("transaction-node", node_cls.state["releases"])
+
+                node_cls.state["releases"]["transaction-node"] = {
+                    "revision": 4,
+                    "token": "bound-token",
+                    "expires_at": float("inf"),
+                }
+                self.assertIsNone(node_cls._consume_release("transaction-node", ""))
+                self.assertIn("transaction-node", node_cls.state["releases"])
+                self.assertIsNotNone(node_cls._consume_release("transaction-node", "bound-token"))
+
+                node_cls.state["releases"]["transaction-node"] = {
+                    "revision": 3,
+                    "token": "stale-token",
+                    "expires_at": float("inf"),
+                }
+                self.assertIsNone(node_cls._consume_release("transaction-node", "stale-token"))
+                self.assertNotIn("transaction-node", node_cls.state["releases"])
+                node_cls.state["media"].pop("transaction-node", None)
 
     def test_save_video_pause_mode_writes_encrypted_bundle_and_blocks_downstream_quietly(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()
@@ -2747,7 +2944,12 @@ Second beat moves toward the doorway. @image1:end
                 )
                 revision = first.kwargs["ui"]["helto_pause_control"][0]["revision"]
                 release = node_cls.request_release("video-release-node", revision)
-                second = node_cls.execute(images=None, audio=None, pause_mode=True)
+                second = node_cls.execute(
+                    images=None,
+                    audio=None,
+                    pause_mode=True,
+                    release_token=release["release_token"],
+                )
             finally:
                 node_cls._save_video = original_save_video
                 node_cls.hidden = original_hidden
@@ -2833,7 +3035,12 @@ Second beat moves toward the doorway. @image1:end
                 stored = node_cls.state["media"]["video-lazy-audio-node"]
                 bundle = torch.load(stored["path"], map_location="cpu", weights_only=True)
                 release = node_cls.request_release("video-lazy-audio-node", revision)
-                second = node_cls.execute(images=None, audio=None, pause_mode=True)
+                second = node_cls.execute(
+                    images=None,
+                    audio=None,
+                    pause_mode=True,
+                    release_token=release["release_token"],
+                )
             finally:
                 node_cls._save_video = original_save_video
                 node_cls.hidden = original_hidden
@@ -2867,7 +3074,12 @@ Second beat moves toward the doorway. @image1:end
             }
             try:
                 release = node_cls.request_release("video-stale-node", 1)
-                result = node_cls.execute(images=None, audio=None, pause_mode=True)
+                result = node_cls.execute(
+                    images=None,
+                    audio=None,
+                    pause_mode=True,
+                    release_token=release["release_token"],
+                )
             finally:
                 node_cls.hidden = original_hidden
 
@@ -3072,9 +3284,11 @@ Second beat moves toward the doorway. @image1:end
             original_run = module_globals["subprocess"].run
             original_find_ffmpeg = module_globals["_find_ffmpeg"]
             frames = [module_globals["torch"].zeros((2, 2, 3))]
+            stderr_targets = []
 
             class FakeProcess:
                 def __init__(self, command, **_kwargs):
+                    stderr_targets.append(_kwargs.get("stderr"))
                     self.stdin = types.SimpleNamespace(write=lambda _data: None, close=lambda: None)
                     self.stderr = types.SimpleNamespace(read=lambda: b"")
                     Path(command[-1]).write_bytes(b"silent video")
@@ -3108,6 +3322,9 @@ Second beat moves toward the doorway. @image1:end
 
             self.assertEqual(output_files, [os.path.join(tmpdir, "video_00001.mp4")])
             self.assertEqual(Path(output_files[0]).read_bytes(), b"silent video")
+            self.assertEqual(len(stderr_targets), 1)
+            self.assertIsNot(stderr_targets[0], module_globals["subprocess"].PIPE)
+            self.assertTrue(callable(getattr(stderr_targets[0], "write", None)))
 
     def test_save_video_ffmpeg_reports_progress_phases(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()

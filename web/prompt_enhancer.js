@@ -3,6 +3,7 @@ import { app } from "/scripts/app.js";
 import { selectorApi } from "./api.js";
 import { ICONS } from "./constants.js";
 import { collapseHiddenWidgetLayout, containPointerEvents, createModal, setWidgetHeight } from "./ui.js";
+import { privacyFetchJson } from "./privacy_common.js";
 import {
     PROMPT_ENHANCER_NODE_CLASS,
     SCRIPT_WIDGET_NAME,
@@ -821,25 +822,15 @@ async function refreshModels(node) {
 }
 
 async function postProviderAction(path, payload) {
-    const response = await fetch(path, {
+    return privacyFetchJson(path, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload || {}),
     });
-    const data = await response.json();
-    if (!response.ok) {
-        throw new Error(data.error || "Prompt Enhancer provider action failed.");
-    }
-    return data;
 }
 
 async function fetchProviderSettings() {
-    const response = await fetch("/helto_prompt_enhancer/providers/settings");
-    const data = await response.json();
-    if (!response.ok) {
-        throw new Error(data.error || "Failed to fetch Prompt Enhancer provider settings.");
-    }
-    return data;
+    return privacyFetchJson("/helto_prompt_enhancer/providers/settings");
 }
 
 async function saveProviderSettings(payload) {

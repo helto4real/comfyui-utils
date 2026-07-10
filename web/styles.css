@@ -499,6 +499,7 @@
 
 /* --- Grid Items (Thumbnails) --- */
 .helto-grid-item {
+    appearance: none;
     position: relative;
     width: 100%;
     height: 0;
@@ -507,6 +508,10 @@
     overflow: hidden;
     border: 2px solid transparent;
     background: #11111b;
+    color: inherit;
+    font: inherit;
+    padding-left: 0;
+    padding-right: 0;
     cursor: pointer;
     transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
@@ -514,6 +519,11 @@
     transform: scale(1.03);
     border-color: var(--helto-border-strong);
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+.helto-grid-item:focus-visible {
+    outline: none;
+    border-color: var(--helto-focus);
+    box-shadow: var(--helto-focus-ring);
 }
 .helto-grid-item.selected {
     border-color: var(--helto-accent);
@@ -824,6 +834,12 @@
 .helto-modal-close-btn:hover {
     color: var(--helto-text);
 }
+.helto-modal-close-btn:focus-visible,
+.helto-modal-btn:focus-visible {
+    outline: none;
+    border-color: var(--helto-focus);
+    box-shadow: var(--helto-focus-ring);
+}
 
 .helto-modal-body {
     padding: 20px;
@@ -892,6 +908,12 @@
     align-items: center;
     margin-bottom: 6px;
 }
+.folder-modal-help {
+    color: var(--helto-text-faint);
+    font-size: 11px;
+    line-height: 1.35;
+    margin: 0 0 8px;
+}
 .helto-modal-folder-count {
     font-size: 11px;
     font-family: var(--helto-font-mono);
@@ -942,6 +964,33 @@
     overflow: hidden;
     text-overflow: ellipsis;
     color: var(--helto-text-dim);
+}
+.folder-item-approval {
+    color: var(--helto-text-faint);
+    font-size: 10px;
+    white-space: nowrap;
+}
+.folder-item-revoke-btn {
+    background: linear-gradient(180deg, #5c2c3d, #482331);
+    border: 1px solid var(--helto-danger-border);
+    border-radius: var(--helto-radius-sm);
+    color: #f9d4e0;
+    cursor: pointer;
+    font: inherit;
+    height: 24px;
+    padding: 0 7px;
+}
+.folder-item-revoke-btn:hover:not(:disabled) {
+    background: linear-gradient(180deg, #6e3549, #5a2a3c);
+}
+.folder-item-revoke-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.4;
+}
+.folder-item-revoke-btn:focus-visible {
+    outline: none;
+    border-color: var(--helto-focus);
+    box-shadow: var(--helto-focus-ring);
 }
 .folder-item-del-btn {
     background: transparent;

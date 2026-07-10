@@ -6,6 +6,7 @@ import os
 import random
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from contextlib import contextmanager
@@ -783,7 +784,10 @@ A character turns around. @image3:character
         self.assertIn(("release", "start"), events)
         self.assertIn(("release", "done"), events)
 
-    def test_local_provider_nonzero_keep_alive_keeps_model_loaded(self):
+    def test_local_provider_positive_keep_alive_unloads_after_generation(self):
+        # Ollama enforces timed keep-alive on its own server; the in-process
+        # providers have no eviction timer, so any non-negative keep-alive must
+        # release the model as soon as the generation finishes.
         alias = "qwen3_vl_4b_fast"
         request = PromptEnhancerRequest(
             model=alias,
@@ -803,11 +807,123 @@ A character turns around. @image3:character
                 patch.object(local_provider, "local_vram_preflight"), \
                 patch.object(local_provider, "decode_request_images", return_value=[]), \
                 patch.object(local_provider, "_generate_qwen", return_value=" generated prompt "), \
+                patch.object(local_provider, "unload_local_model", return_value={"ok": True, "unloaded": [alias]}) as unload:
+            result = local_provider.LocalPromptProvider().generate(request)
+
+        self.assertEqual(result, "generated prompt")
+        unload.assert_called_once_with(alias)
+
+    def test_local_provider_negative_keep_alive_keeps_model_loaded(self):
+        alias = "qwen3_vl_4b_fast"
+        request = PromptEnhancerRequest(
+            model=alias,
+            prompt_type="image",
+            prompt="A quiet forest",
+            system_prompt="system",
+            seed=1,
+            images=[],
+            settings=PromptEnhancerSettings(keep_alive=-1, keep_alive_unit="minutes"),
+            provider=local_provider.PROVIDER_LOCAL_TRANSFORMERS,
+            model_id=alias,
+            model_backend="qwen",
+        )
+
+        with patch.object(local_provider, "_LOADED_MODELS", {alias: {"torch": None}}), \
+                patch.object(local_provider, "ensure_model_downloaded", return_value=Path("/tmp/model")), \
+                patch.object(local_provider, "local_vram_preflight"), \
+                patch.object(local_provider, "decode_request_images", return_value=[]), \
+                patch.object(local_provider, "_generate_qwen", return_value=" generated prompt "), \
                 patch.object(local_provider, "unload_local_model") as unload:
             result = local_provider.LocalPromptProvider().generate(request)
 
         self.assertEqual(result, "generated prompt")
         unload.assert_not_called()
+
+    def test_unload_local_model_closes_closeable_resources(self):
+        closed = []
+
+        class FakeCloseable:
+            def __init__(self, name):
+                self.name = name
+
+            def close(self):
+                closed.append(self.name)
+
+        alias = "gemma4_e4b_uncensored_gguf_q8"
+        loaded = {"model": FakeCloseable("model"), "chat_handler": FakeCloseable("chat_handler")}
+        with patch.object(local_provider, "_LOADED_MODELS", {alias: loaded}):
+            result = local_provider.unload_local_model(alias)
+
+        self.assertEqual(result["unloaded"], [alias])
+        self.assertEqual(closed, ["model", "chat_handler"])
+        self.assertEqual(loaded, {})
+
+    def test_unload_waits_for_inflight_generation_model_lease(self):
+        alias = "qwen3_vl_4b_fast"
+        entered_generation = threading.Event()
+        release_generation = threading.Event()
+        unload_finished = threading.Event()
+        closed = []
+        errors = []
+
+        class FakeModel:
+            def close(self):
+                closed.append(True)
+
+        request = PromptEnhancerRequest(
+            model=alias,
+            prompt_type="image",
+            prompt="A quiet forest",
+            system_prompt="system",
+            seed=1,
+            images=[],
+            settings=PromptEnhancerSettings(keep_alive=-1),
+            provider=local_provider.PROVIDER_LOCAL_TRANSFORMERS,
+            model_id=alias,
+            model_backend="qwen",
+        )
+
+        def generate_blocking(*_args, **_kwargs):
+            entered_generation.set()
+            if not release_generation.wait(2):
+                raise AssertionError("generation lease test timed out")
+            return "generated prompt"
+
+        def run_generation():
+            try:
+                local_provider.LocalPromptProvider().generate(request)
+            except Exception as exc:  # pragma: no cover - asserted through errors.
+                errors.append(exc)
+
+        def run_unload():
+            try:
+                local_provider.unload_local_model(alias)
+            except Exception as exc:  # pragma: no cover - asserted through errors.
+                errors.append(exc)
+            finally:
+                unload_finished.set()
+
+        loaded = {alias: {"model": FakeModel(), "torch": None}}
+        with patch.object(local_provider, "_LOADED_MODELS", loaded), \
+                patch.object(local_provider, "ensure_model_downloaded", return_value=Path("/tmp/model")), \
+                patch.object(local_provider, "local_vram_preflight"), \
+                patch.object(local_provider, "decode_request_images", return_value=[]), \
+                patch.object(local_provider, "_generate_qwen", side_effect=generate_blocking):
+            generation_thread = threading.Thread(target=run_generation)
+            unload_thread = threading.Thread(target=run_unload)
+            generation_thread.start()
+            self.assertTrue(entered_generation.wait(1))
+            unload_thread.start()
+
+            self.assertFalse(unload_finished.wait(0.05))
+            self.assertEqual(closed, [])
+            release_generation.set()
+            generation_thread.join(2)
+            unload_thread.join(2)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(closed, [True])
+        self.assertTrue(unload_finished.is_set())
 
     def test_local_provider_writer_max_tokens_reaches_generation_helpers(self):
         cases = [
@@ -981,8 +1097,9 @@ A character turns around. @image3:character
 
         self.assertIn("A quiet forest", result)
         unload.assert_not_called()
-        self.assertIn(("release", "start"), events)
-        self.assertIn(("release", "done"), events)
+        # Nothing is loaded, so no release phase should be reported either.
+        self.assertNotIn(("release", "start"), events)
+        self.assertNotIn(("release", "done"), events)
 
     def test_local_text_encoder_checkpoint_reports_unsupported_generator(self):
         request = PromptEnhancerRequest(
@@ -1029,15 +1146,29 @@ A character turns around. @image3:character
         self.assertIn("hello", PromptProviderRegistry().generate(local_request))
 
     def test_provider_settings_store_hf_token_privately(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory() as tmpdir, isolated_privacy_keystore():
             saved = local_provider.save_hf_token("token-value", tmpdir)
+            stored = local_provider.settings_path(tmpdir).read_text(encoding="utf-8")
 
             self.assertTrue(saved["tokenConfigured"])
+            self.assertNotIn("token-value", stored)
+            self.assertIn("hf_token_encrypted", stored)
             self.assertEqual(local_provider.configured_hf_token(tmpdir), "token-value")
 
             cleared = local_provider.clear_hf_token(tmpdir)
 
             self.assertFalse(cleared["tokenConfigured"])
+
+    def test_provider_settings_migrate_legacy_plaintext_token(self):
+        with tempfile.TemporaryDirectory() as tmpdir, isolated_privacy_keystore():
+            path = local_provider.settings_path(tmpdir)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('{"version": 1, "hf_token": "legacy-token"}', encoding="utf-8")
+
+            self.assertEqual(local_provider.configured_hf_token(tmpdir), "legacy-token")
+            migrated = path.read_text(encoding="utf-8")
+            self.assertNotIn("legacy-token", migrated)
+            self.assertIn("hf_token_encrypted", migrated)
 
 
 class PromptEnhancerRouteTests(unittest.TestCase):
@@ -1127,7 +1258,7 @@ class PromptEnhancerRouteTests(unittest.TestCase):
         self.assertEqual(unload_response.status, 200)
         self.assertIn('"unloaded": ["fallback_text_backend"]', unload_response.text)
 
-        with tempfile.TemporaryDirectory() as tmpdir, patch.object(routes, "provider_settings_status", lambda: local_provider.provider_settings_status(tmpdir)), \
+        with tempfile.TemporaryDirectory() as tmpdir, isolated_privacy_keystore(), patch.object(routes, "provider_settings_status", lambda: local_provider.provider_settings_status(tmpdir)), \
                 patch.object(routes, "save_hf_token", lambda token: local_provider.save_hf_token(token, tmpdir)), \
                 patch.object(routes, "clear_hf_token", lambda: local_provider.clear_hf_token(tmpdir)):
             settings_response = asyncio.run(routes._save_provider_settings({"hf_token": "secret"}))
@@ -1137,6 +1268,21 @@ class PromptEnhancerRouteTests(unittest.TestCase):
         self.assertIn('"tokenConfigured": true', settings_response.text)
         self.assertEqual(clear_response.status, 200)
         self.assertIn('"tokenConfigured": false', clear_response.text)
+
+    def test_provider_mutation_and_credential_routes_require_privacy_token(self):
+        routes = importlib.import_module("shared.prompt_enhancer.routes")
+        denied = types.SimpleNamespace(status=401)
+
+        class Request:
+            async def json(self):
+                return {"model_id": "fallback_text_backend", "hf_token": "secret"}
+
+        request = Request()
+        with patch.object(routes, "aiohttp_check_privacy_token", return_value=denied):
+            self.assertIs(asyncio.run(routes.post_provider_download(request)), denied)
+            self.assertIs(asyncio.run(routes.post_provider_unload(request)), denied)
+            self.assertIs(asyncio.run(routes.get_provider_settings(request)), denied)
+            self.assertIs(asyncio.run(routes.post_provider_settings(request)), denied)
 
     def test_system_prompt_routes_get_save_and_reset(self):
         routes = importlib.import_module("shared.prompt_enhancer.routes")

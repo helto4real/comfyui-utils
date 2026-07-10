@@ -3,17 +3,16 @@ from __future__ import annotations
 import asyncio
 
 from aiohttp import web
+from helto_privacy import aiohttp_check_privacy_token
 import server
 
 from .local_provider import (
     LocalProviderError,
-    clear_hf_token,
     download_local_model,
     provider_catalog,
-    provider_settings_status,
-    save_hf_token,
     unload_local_model,
 )
+from .provider_settings import clear_hf_token, provider_settings_status, save_hf_token
 from .provider import DEFAULT_OLLAMA_TIMEOUT, DEFAULT_OLLAMA_URL, OllamaPromptProvider
 from .prompts import (
     delete_system_prompt_preset,
@@ -195,6 +194,9 @@ async def post_provider_models(request):
 
 @server.PromptServer.instance.routes.post(f"{ROUTE_PREFIX}/providers/download")
 async def post_provider_download(request):
+    denied = aiohttp_check_privacy_token(request)
+    if denied is not None:
+        return denied
     try:
         data = await request.json()
     except Exception:
@@ -204,6 +206,9 @@ async def post_provider_download(request):
 
 @server.PromptServer.instance.routes.post(f"{ROUTE_PREFIX}/providers/unload")
 async def post_provider_unload(request):
+    denied = aiohttp_check_privacy_token(request)
+    if denied is not None:
+        return denied
     try:
         data = await request.json()
     except Exception:
@@ -212,12 +217,18 @@ async def post_provider_unload(request):
 
 
 @server.PromptServer.instance.routes.get(f"{ROUTE_PREFIX}/providers/settings")
-async def get_provider_settings(_request):
+async def get_provider_settings(request):
+    denied = aiohttp_check_privacy_token(request)
+    if denied is not None:
+        return denied
     return await _request_provider_settings()
 
 
 @server.PromptServer.instance.routes.post(f"{ROUTE_PREFIX}/providers/settings")
 async def post_provider_settings(request):
+    denied = aiohttp_check_privacy_token(request)
+    if denied is not None:
+        return denied
     try:
         data = await request.json()
     except Exception:

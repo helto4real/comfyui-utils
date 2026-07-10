@@ -89,7 +89,7 @@ test("queue privacy defaults on for new persisted state", () => {
     assert.equal(normalizeQueueState(null).privacy_enabled, true);
 });
 
-test("normalizeQueueState retries active runtime jobs after server restart", () => {
+test("normalizeQueueState pauses retried active runtime jobs after server restart", () => {
     const state = createDefaultQueueState();
     state.paused = false;
     state.active_run_id = "run-a";
@@ -107,8 +107,8 @@ test("normalizeQueueState retries active runtime jobs after server restart", () 
         storedServerSessionId: "old-session",
     });
 
-    assert.equal(normalized.paused, false);
-    assert.equal(normalized.resume_required, false);
+    assert.equal(normalized.paused, true);
+    assert.equal(normalized.resume_required, true);
     assert.equal(normalized.active_run_id, null);
     assert.equal(normalized.queue[0].status, QUEUE_STATUS_PENDING);
     assert.equal(normalized.queue[0].prompt_id, null);

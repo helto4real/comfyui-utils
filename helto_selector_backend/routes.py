@@ -31,9 +31,12 @@ from .services import (
     mask_image_payload,
     migrate_masks_payload,
     paste_image_payload,
+    register_selector_roots,
+    registered_selector_roots_payload,
     scan_folders_payload,
     save_mask_payload,
     thumbnail_payload,
+    unregister_selector_root,
 )
 from .crypto import shared_privacy
 
@@ -41,19 +44,13 @@ routes = PromptServer.instance.routes
 
 
 def _roots_kwargs() -> dict:
-    """authorized_roots kwarg to forward, only when server lockdown is on."""
-    roots = effective_authorized_roots()
-    return {"authorized_roots": roots} if roots is not None else {}
+    return {"authorized_roots": effective_authorized_roots()}
 
 
 def _authorize_request_image(request):
-    """Authorize a GET image path, honoring lockdown vs. permissive folders."""
-    roots = effective_authorized_roots()
-    if roots is not None:
-        return authorize_selector_image_path(request.query.get("path"), authorized_roots=roots)
     return authorize_selector_image_path(
         request.query.get("path"),
-        configured_folders=_request_folders(request),
+        authorized_roots=effective_authorized_roots(),
     )
 
 
@@ -66,10 +63,6 @@ def _parse_folders_field(value):
     if not isinstance(value, list):
         return []
     return [item for item in value if isinstance(item, str) and item]
-
-
-def _request_folders(request):
-    return _parse_folders_field(request.query.get("folders"))
 
 
 def _selector_text_error(error: SelectorPathError):
@@ -96,6 +89,9 @@ def _privacy_guard(request):
 @routes.get("/helto_selector/input_dir")
 async def get_input_dir(request):
     try:
+        denied = _privacy_guard(request)
+        if denied is not None:
+            return denied
         return web.json_response(get_input_dir_payload(folder_paths.get_input_directory))
     except Exception as e:
         return _selector_internal_error(request.path, e)
@@ -104,6 +100,9 @@ async def get_input_dir(request):
 @routes.post("/helto_selector/scan_folders")
 async def scan_folders(request):
     try:
+        denied = _privacy_guard(request)
+        if denied is not None:
+            return denied
         data = await request.json()
         payload = ScanFoldersPayload.from_request_data(data)
         return web.json_response(scan_folders_payload(payload, **_roots_kwargs()))
@@ -123,7 +122,11 @@ async def get_thumbnail(request):
         privacy_mode = request.query.get("privacy", "false").lower() == "true"
 
         webp_bytes = await asyncio.to_thread(thumbnail_payload, image_path, privacy_mode)
-        return web.Response(body=webp_bytes, content_type="image/webp")
+        return web.Response(
+            body=webp_bytes,
+            content_type="image/webp",
+            headers={"Cache-Control": "private, no-store"},
+        )
     except SelectorPathError as e:
         return _selector_text_error(e)
     except Exception:
@@ -137,7 +140,7 @@ async def view_image(request):
         if denied is not None:
             return denied
         image_path = _authorize_request_image(request)
-        return web.FileResponse(image_path)
+        return web.FileResponse(image_path, headers={"Cache-Control": "private, no-store"})
     except SelectorPathError as e:
         return _selector_text_error(e)
     except Exception:
@@ -162,6 +165,9 @@ async def get_mask(request):
 @routes.post("/helto_selector/delete_images")
 async def api_delete_images(request):
     try:
+        denied = _privacy_guard(request)
+        if denied is not None:
+            return denied
         data = await request.json()
         payload = DeleteImagesPayload.from_request_data(data)
         return web.json_response(delete_images_payload(payload, **_roots_kwargs()))
@@ -174,6 +180,9 @@ async def api_delete_images(request):
 @routes.post("/helto_selector/paste_image")
 async def api_paste_image(request):
     try:
+        denied = _privacy_guard(request)
+        if denied is not None:
+            return denied
         data = await request.post()
         image = data.get("image")
         if not image or not getattr(image, "file", None):
@@ -273,6 +282,37 @@ async def api_migrate_masks(request):
 @routes.post("/helto_selector/clear_cache")
 async def api_clear_cache(request):
     try:
+        denied = _privacy_guard(request)
+        if denied is not None:
+            return denied
         return web.json_response(clear_cache_payload())
+    except Exception as e:
+        return _selector_internal_error(request.path, e)
+
+
+@routes.post("/helto_selector/register_roots")
+async def api_register_roots(request):
+    try:
+        denied = _privacy_guard(request)
+        if denied is not None:
+            return denied
+        data = await request.json()
+        if isinstance(data, dict) and data.get("action") == "revoke":
+            return web.json_response(unregister_selector_root(str(data.get("folder") or "")))
+        folders = _parse_folders_field(data.get("folders") if isinstance(data, dict) else None)
+        return web.json_response(register_selector_roots(folders))
+    except SelectorPathError as e:
+        return _selector_json_error(e)
+    except Exception as e:
+        return _selector_internal_error(request.path, e)
+
+
+@routes.get("/helto_selector/registered_roots")
+async def api_registered_roots(request):
+    try:
+        denied = _privacy_guard(request)
+        if denied is not None:
+            return denied
+        return web.json_response(registered_selector_roots_payload())
     except Exception as e:
         return _selector_internal_error(request.path, e)

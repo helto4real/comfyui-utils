@@ -1,4 +1,4 @@
-import { ensurePrivacyTokenCookieSoon, privacyFetchJson } from "./privacy_common.js";
+import { ensurePrivacyTokenCookieSoon, privacyFetch, privacyFetchJson } from "./privacy_common.js";
 
 export function selectorImageVersionToken(image) {
     const modified = Number(image?.date_modified);
@@ -23,28 +23,37 @@ function selectorPrivacyQueryValue(privacyMode) {
     return privacyMode === true || String(privacyMode).toLowerCase() === "true" ? "true" : "false";
 }
 
-function selectorFoldersQueryValue(folders, image = null) {
-    let roots = Array.isArray(folders) ? folders : [];
-    if (roots.length === 0 && image?.folder) {
-        roots = [image.folder];
-    }
-    roots = roots.filter((folder) => typeof folder === "string" && folder.trim());
-    return roots.length ? JSON.stringify(roots) : undefined;
-}
-
 export const selectorApi = {
     async getInputDir() {
-        const response = await fetch("/helto_selector/input_dir");
-        return response.json();
+        return privacyFetchJson("/helto_selector/input_dir");
     },
 
     async scanFolders(folders, recursive, previousPaths = []) {
-        const response = await fetch("/helto_selector/scan_folders", {
+        return privacyFetchJson("/helto_selector/scan_folders", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ folders, recursive, previous_paths: previousPaths })
         });
-        return response.json();
+    },
+
+    async registerFolders(folders) {
+        return privacyFetchJson("/helto_selector/register_roots", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ folders: Array.isArray(folders) ? folders : [] }),
+        });
+    },
+
+    async getRegisteredFolders() {
+        return privacyFetchJson("/helto_selector/registered_roots");
+    },
+
+    async revokeFolder(folder) {
+        return privacyFetchJson("/helto_selector/register_roots", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "revoke", folder }),
+        });
     },
 
     async encrypt(data) {
@@ -64,22 +73,11 @@ export const selectorApi = {
     },
 
     async deleteSelectedImages(paths, folders, recursive) {
-        const response = await fetch("/helto_selector/delete_images", {
+        return privacyFetchJson("/helto_selector/delete_images", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ paths, folders, recursive })
         });
-        if (!response.ok) {
-            let message = "Failed to delete selected images.";
-            try {
-                const data = await response.json();
-                if (data.error) message = data.error;
-            } catch (err) {
-                // Keep the generic message if the server did not return JSON.
-            }
-            throw new Error(message);
-        }
-        return response.json();
     },
 
     async pasteImage(file, filename, destination, folders) {
@@ -87,20 +85,10 @@ export const selectorApi = {
         form.append("image", file, filename);
         form.append("destination", destination);
         form.append("folders", JSON.stringify(Array.isArray(folders) ? folders : []));
-        const response = await fetch("/helto_selector/paste_image", {
+        const response = await privacyFetch("/helto_selector/paste_image", {
             method: "POST",
             body: form,
         });
-        if (!response.ok) {
-            let message = "Failed to paste image.";
-            try {
-                const data = await response.json();
-                if (data.error) message = data.error;
-            } catch (err) {
-                // Keep the generic message if the server did not return JSON.
-            }
-            throw new Error(message);
-        }
         return response.json();
     },
 
@@ -125,68 +113,53 @@ export const selectorApi = {
         return response.json();
     },
 
-    thumbnailUrl(path, privacyMode, image = null, folders = []) {
+    thumbnailUrl(path, privacyMode, image = null) {
         ensurePrivacyTokenCookieSoon();
         const version = selectorImageVersionToken(image);
         return `/helto_selector/thumbnail${selectorImageUrl(path, {
             privacy: selectorPrivacyQueryValue(privacyMode),
             v: version,
-            folders: selectorFoldersQueryValue(folders, image),
         })}`;
     },
 
-    viewImageUrl(path, image = null, folders = []) {
+    viewImageUrl(path, image = null) {
         ensurePrivacyTokenCookieSoon();
         const version = selectorImageVersionToken(image);
         return `/helto_selector/view_image${selectorImageUrl(path, {
             v: version,
-            folders: selectorFoldersQueryValue(folders, image),
         })}`;
     },
 
-    maskUrl(path, folders = []) {
+    maskUrl(path) {
         ensurePrivacyTokenCookieSoon();
-        return `/helto_selector/mask${selectorImageUrl(path, {
-            folders: selectorFoldersQueryValue(folders),
-        })}`;
+        return `/helto_selector/mask${selectorImageUrl(path)}`;
     },
 
-    async saveMask(path, maskData, privacyMode, folders = []) {
+    async saveMask(path, maskData, privacyMode) {
         return privacyFetchJson("/helto_selector/save_mask", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ path, mask_data: maskData, privacy: privacyMode, folders })
+            body: JSON.stringify({ path, mask_data: maskData, privacy: privacyMode })
         });
     },
 
-    async deleteMask(path, folders = []) {
+    async deleteMask(path) {
         return privacyFetchJson("/helto_selector/delete_mask", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ path, folders })
+            body: JSON.stringify({ path })
         });
     },
 
-    async migrateMasks(paths, privacyMode, folders = []) {
+    async migrateMasks(paths, privacyMode) {
         return privacyFetchJson("/helto_selector/migrate_masks", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ paths, privacy: privacyMode, folders })
+            body: JSON.stringify({ paths, privacy: privacyMode })
         });
     },
 
     async clearCache() {
-        const response = await fetch("/helto_selector/clear_cache", { method: "POST" });
-        if (!response.ok) {
-            let message = "Failed to clear cached thumbnails.";
-            try {
-                const data = await response.json();
-                if (data.error) message = data.error;
-            } catch (err) {
-                // Keep the generic message if the server did not return JSON.
-            }
-            throw new Error(message);
-        }
-        return response.json();
+        return privacyFetchJson("/helto_selector/clear_cache", { method: "POST" });
     }
 };
