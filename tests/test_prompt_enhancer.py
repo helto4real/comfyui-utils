@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 import torch
 
 from shared.prompt_enhancer import local_provider
@@ -38,6 +39,9 @@ from shared.prompt_enhancer.video_script import (
     parse_video_prompt_script,
 )
 from helto_selector_backend.crypto import encrypt_selection
+
+
+pytestmark = pytest.mark.usefixtures("inactive_coordinated_suite_test_boundary")
 
 
 @contextmanager

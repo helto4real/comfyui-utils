@@ -7,8 +7,11 @@ import types
 import unittest
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
+pytestmark = pytest.mark.usefixtures("inactive_coordinated_suite_test_boundary")
 
 
 def load_video_modules(tmp_path: Path, input_dir: Path):

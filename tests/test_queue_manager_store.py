@@ -8,11 +8,16 @@ import unittest
 from contextlib import contextmanager
 from pathlib import Path
 
+import pytest
+
 from shared.queue_manager_store import (
     default_queue_manager_state,
     load_queue_manager_state,
     save_queue_manager_state,
 )
+
+
+pytestmark = pytest.mark.usefixtures("inactive_coordinated_suite_test_boundary")
 
 
 @contextmanager

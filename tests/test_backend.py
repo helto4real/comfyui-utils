@@ -14,6 +14,7 @@ from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from PIL import Image
 import torch
 
@@ -67,6 +68,9 @@ from helto_selector_backend.thumbnail_cache import (
     thumbnail_cache_paths,
 )
 import shared.temp_cache as temp_cache
+
+
+pytestmark = pytest.mark.usefixtures("inactive_coordinated_suite_test_boundary")
 
 
 def write_image(path: str, size: tuple[int, int], color: tuple[int, int, int]) -> None:
@@ -1101,6 +1105,8 @@ class SelectorRouteTests(unittest.TestCase):
         return original
 
     def test_selector_file_routes_enforce_authorized_image_paths(self):
+        from helto_privacy import PRIVACY_TOKEN_HEADER, initialize_keystore
+
         with tempfile.TemporaryDirectory() as tmpdir:
             root_dir = os.path.join(tmpdir, "root")
             outside_dir = os.path.join(tmpdir, "outside")
@@ -1113,6 +1119,11 @@ class SelectorRouteTests(unittest.TestCase):
             write_image(image_path, (8, 8), (0, 0, 255))
             write_image(outside_path, (8, 8), (255, 0, 0))
             Path(notes_path).write_text("not an image", encoding="utf-8")
+            token = initialize_keystore("correct horse battery staple")["token"]
+            headers = {PRIVACY_TOKEN_HEADER: token}
+
+            def request(path, *, folders=None):
+                return self._request(path, folders=folders, headers=headers)
 
             original_authorize = self._patch_authorized_roots([root_dir])
             original_thumbnail_payload = self.routes.thumbnail_payload
@@ -1128,15 +1139,25 @@ class SelectorRouteTests(unittest.TestCase):
             self.routes.asyncio.to_thread = immediate_to_thread
             try:
                 for handler_name in ("view_image", "get_thumbnail", "get_mask"):
-                    response = asyncio.run(getattr(self.routes, handler_name)(self._request(outside_path)))
+                    response = asyncio.run(
+                        getattr(self.routes, handler_name)(request(outside_path))
+                    )
                     self.assertEqual(response.status, 403)
 
-                self.assertEqual(asyncio.run(self.routes.view_image(self._request(notes_path))).status, 400)
-                self.assertEqual(asyncio.run(self.routes.view_image(self._request(missing_path))).status, 404)
+                self.assertEqual(
+                    asyncio.run(self.routes.view_image(request(notes_path))).status,
+                    400,
+                )
+                self.assertEqual(
+                    asyncio.run(self.routes.view_image(request(missing_path))).status,
+                    404,
+                )
 
-                view_response = asyncio.run(self.routes.view_image(self._request(image_path)))
-                thumbnail_response = asyncio.run(self.routes.get_thumbnail(self._request(image_path)))
-                mask_response = asyncio.run(self.routes.get_mask(self._request(image_path)))
+                view_response = asyncio.run(self.routes.view_image(request(image_path)))
+                thumbnail_response = asyncio.run(
+                    self.routes.get_thumbnail(request(image_path))
+                )
+                mask_response = asyncio.run(self.routes.get_mask(request(image_path)))
 
                 self.assertEqual(view_response.status, 200)
                 self.assertEqual(view_response.path, image_path)
@@ -1145,9 +1166,17 @@ class SelectorRouteTests(unittest.TestCase):
                 self.assertEqual(mask_response.status, 200)
                 self.assertEqual(mask_response.content_type, "image/png")
 
-                configured_view = asyncio.run(self.routes.view_image(self._request(outside_path, folders=[outside_dir])))
-                configured_thumbnail = asyncio.run(self.routes.get_thumbnail(self._request(outside_path, folders=[outside_dir])))
-                configured_mask = asyncio.run(self.routes.get_mask(self._request(outside_path, folders=[outside_dir])))
+                configured_view = asyncio.run(
+                    self.routes.view_image(request(outside_path, folders=[outside_dir]))
+                )
+                configured_thumbnail = asyncio.run(
+                    self.routes.get_thumbnail(
+                        request(outside_path, folders=[outside_dir])
+                    )
+                )
+                configured_mask = asyncio.run(
+                    self.routes.get_mask(request(outside_path, folders=[outside_dir]))
+                )
 
                 self.assertEqual(configured_view.status, 403)
                 self.assertEqual(configured_thumbnail.status, 403)

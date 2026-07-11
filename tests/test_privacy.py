@@ -8,7 +8,11 @@ import types
 import unittest
 from pathlib import Path
 
+import pytest
 from PIL import Image
+
+
+pytestmark = pytest.mark.usefixtures("inactive_coordinated_suite_test_boundary")
 
 
 class PrivacyTests(unittest.TestCase):

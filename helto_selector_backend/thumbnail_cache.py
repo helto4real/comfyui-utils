@@ -4,6 +4,7 @@ import hashlib
 import os
 import shutil
 from io import BytesIO
+from typing import BinaryIO
 
 from PIL import Image, ImageOps
 
@@ -31,17 +32,23 @@ def _resolve_cache_dir(cache_dir: str | os.PathLike[str] | None) -> str:
     return os.fspath(cache_dir) if cache_dir is not None else selector_thumbnail_cache_dir()
 
 
+def thumbnail_cache_key(image_path: str) -> str:
+    cache_key = f"{THUMBNAIL_CACHE_VERSION}:{image_path}"
+    return hashlib.sha256(cache_key.encode("utf-8")).hexdigest()
+
+
 def thumbnail_cache_paths(image_path: str, cache_dir: str | os.PathLike[str] | None = None) -> tuple[str, str]:
     cache_dir = _resolve_cache_dir(cache_dir)
-    cache_key = f"{THUMBNAIL_CACHE_VERSION}:{image_path}"
-    path_hash = hashlib.sha256(cache_key.encode("utf-8")).hexdigest()
+    path_hash = thumbnail_cache_key(image_path)
     return (
         os.path.join(cache_dir, f"{path_hash}.webp"),
         os.path.join(cache_dir, f"{path_hash}.webp.enc"),
     )
 
 
-def generate_thumbnail_bytes(image_path: str) -> bytes:
+def generate_thumbnail_bytes(
+    image_path: str | os.PathLike[str] | BinaryIO,
+) -> bytes:
     with Image.open(image_path) as img:
         img = ImageOps.exif_transpose(img)
         img.thumbnail((THUMBNAIL_MAX_SIZE, THUMBNAIL_MAX_SIZE))
