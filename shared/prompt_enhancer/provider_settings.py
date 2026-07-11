@@ -62,6 +62,13 @@ def env_hf_token() -> str:
     return str(os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN") or "").strip()
 
 
+def env_hf_token_available() -> bool:
+    return any(
+        bool(os.environ.get(name))
+        for name in ("HF_TOKEN", "HUGGINGFACE_HUB_TOKEN")
+    )
+
+
 def configured_hf_token(base_dir: str | os.PathLike[str] | None = None) -> str:
     return str(load_provider_settings(base_dir).get("hf_token") or "").strip()
 
@@ -72,7 +79,7 @@ def hf_auth_token(base_dir: str | os.PathLike[str] | None = None) -> str | None:
 
 def provider_settings_status(base_dir: str | os.PathLike[str] | None = None) -> dict[str, Any]:
     configured = bool(configured_hf_token(base_dir))
-    env_available = bool(env_hf_token())
+    env_available = env_hf_token_available()
     auth_source = "configured" if configured else "environment" if env_available else "anonymous"
     return {
         "ok": True,

@@ -63,6 +63,13 @@ GEMMA4_E4B_UNCENSORED_MMPROJ_URL = (
 LOCAL_GENERATION_TOKENS = 180
 
 
+class _LegacyAuthToken:
+    pass
+
+
+_LEGACY_AUTH_TOKEN = _LegacyAuthToken()
+
+
 @dataclass(frozen=True)
 class LocalModelSpec:
     alias: str
@@ -318,7 +325,12 @@ def provider_catalog(ollama_models: list[str] | None = None, ollama_error: str =
     }
 
 
-def ensure_model_downloaded(spec: LocalModelSpec, progress: PromptEnhancerProgress | None = None) -> Path | None:
+def ensure_model_downloaded(
+    spec: LocalModelSpec,
+    progress: PromptEnhancerProgress | None = None,
+    *,
+    auth_token: str | None | _LegacyAuthToken = _LEGACY_AUTH_TOKEN,
+) -> Path | None:
     _check_interrupted(progress)
     path = model_path_for(spec)
     if path is None:
@@ -336,6 +348,7 @@ def ensure_model_downloaded(spec: LocalModelSpec, progress: PromptEnhancerProgre
         from huggingface_hub import hf_hub_download, snapshot_download
     except Exception as exc:  # noqa: BLE001
         raise LocalProviderError("Local model downloads require optional package: huggingface_hub") from exc
+    download_token = hf_auth_token() if auth_token is _LEGACY_AUTH_TOKEN else auth_token
 
     if spec.file_urls:
         files = list(zip(model_files_for(spec), model_file_paths_for(spec), strict=True))
@@ -354,7 +367,7 @@ def ensure_model_downloaded(spec: LocalModelSpec, progress: PromptEnhancerProgre
                 revision=model_file.revision,
                 local_dir=str(local_dir),
                 local_dir_use_symlinks=False,
-                token=hf_auth_token(),
+                token=download_token,
             )
             if not target_path.exists():
                 raise LocalProviderError(f"Downloaded '{model_file.url}' but expected file was not found at {target_path}")
@@ -372,7 +385,7 @@ def ensure_model_downloaded(spec: LocalModelSpec, progress: PromptEnhancerProgre
         revision=spec.revision,
         local_dir=str(path),
         local_dir_use_symlinks=False,
-        token=hf_auth_token(),
+        token=download_token,
     )
     _check_interrupted(progress)
     if progress is not None:
@@ -380,11 +393,15 @@ def ensure_model_downloaded(spec: LocalModelSpec, progress: PromptEnhancerProgre
     return path
 
 
-def download_local_model(alias: str | None) -> dict[str, Any]:
+def download_local_model(
+    alias: str | None,
+    *,
+    auth_token: str | None | _LegacyAuthToken = _LEGACY_AUTH_TOKEN,
+) -> dict[str, Any]:
     spec = resolve_local_model(alias)
     if not spec.generator_supported:
         raise LocalProviderError(f"Model '{spec.alias}' is not a standalone prompt-generating model.")
-    ensure_model_downloaded(spec)
+    ensure_model_downloaded(spec, auth_token=auth_token)
     return {"ok": True, "model": spec.alias, "models": local_model_statuses()}
 
 
@@ -514,6 +531,22 @@ def fallback_enhance_prompt(prompt: str, prompt_type: str = "image") -> str:
 
 class LocalPromptProvider:
     def generate(self, request: Any, progress: PromptEnhancerProgress | None = None) -> str:
+        return self._generate(request, progress, _LEGACY_AUTH_TOKEN)
+
+    def generate_with_auth(
+        self,
+        request: Any,
+        auth_token: str | None,
+        progress: PromptEnhancerProgress | None = None,
+    ) -> str:
+        return self._generate(request, progress, auth_token)
+
+    def _generate(
+        self,
+        request: Any,
+        progress: PromptEnhancerProgress | None,
+        auth_token: str | None | _LegacyAuthToken,
+    ) -> str:
         spec = resolve_local_model(getattr(request, "model_id", "") or getattr(request, "model", ""))
         _check_interrupted(progress)
         if not spec.generator_supported:
@@ -532,16 +565,21 @@ class LocalPromptProvider:
             return result
 
         with _model_operation_lock(spec.alias):
-            return self._generate_locked(spec, request, progress)
+            return self._generate_locked(spec, request, progress, auth_token)
 
     def _generate_locked(
         self,
         spec: LocalModelSpec,
         request: Any,
         progress: PromptEnhancerProgress | None,
+        auth_token: str | None | _LegacyAuthToken = _LEGACY_AUTH_TOKEN,
     ) -> str:
         try:
-            path = ensure_model_downloaded(spec, progress)
+            path = ensure_model_downloaded(
+                spec,
+                progress,
+                auth_token=auth_token,
+            )
             if path is None:
                 if progress is not None:
                     progress.phase_done("load")
