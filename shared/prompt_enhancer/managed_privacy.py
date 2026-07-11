@@ -21,6 +21,7 @@ from helto_privacy import (
     LegacyReaderBinding,
     PrivacyProfile,
     PrivacyScope,
+    PrivateByDefaultModeAdapter,
     ProfileResource,
     ProtectedField,
     ResourceKind,
@@ -254,29 +255,7 @@ def build_prompt_enhancer_privacy_profile() -> PrivacyProfile:
     )
 
 
-class PromptEnhancerModeAdapter:
-    """Server-owned declaration with a strict private default."""
-
-    def __init__(self, declarations: Mapping[str, object] | None = None) -> None:
-        self._declarations = dict(declarations or {})
-
-    def read_declared_mode(self, scope_id: str) -> str:
-        value = self._declarations.get(scope_id, "private")
-        return "public" if value in {False, "public"} else "private"
-
-    def write_declared_mode(self, scope_id: str, mode: object) -> None:
-        if mode not in {"private", "public"}:
-            raise ValueError("Invalid Prompt Enhancer privacy mode.")
-        self._declarations[scope_id] = mode
-
-    def prepare_mode_transition(self, *_args) -> None:
-        return None
-
-    def commit_mode_transition(self, *_args) -> None:
-        return None
-
-    def rollback_mode_transition(self, *_args) -> None:
-        return None
+PromptEnhancerModeAdapter = PrivateByDefaultModeAdapter
 
 
 class PromptEnhancerWorkflowStateAdapter:

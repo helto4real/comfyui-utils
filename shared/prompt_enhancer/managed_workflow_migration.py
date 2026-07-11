@@ -7,7 +7,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
-from helto_privacy import MigrationVerification, PrivacyEnvelopeCodec
+from helto_privacy import (
+    MigrationVerification,
+    PrivacyEnvelopeCodec,
+    is_verified_current_disposition,
+    protected_envelope_mapping,
+)
 
 from .managed_privacy import (
     PROMPT_ENHANCER_SCHEMA,
@@ -128,7 +133,7 @@ class PromptEnhancerWorkflowMigrationTransaction:
             for field_id in _FIELD_LOCATIONS
         }
         self._protected = {
-            field_id: _protected_envelope(
+            field_id: protected_envelope_mapping(
                 self._workflow.protect(
                     field_id,
                     value,
@@ -155,7 +160,7 @@ class PromptEnhancerWorkflowMigrationTransaction:
         current_format = self._protected is not None and stored == self._protected
         if current_format:
             current_format = all(
-                _verified_current(
+                is_verified_current_disposition(
                     self._workflow.inspect_disposition(
                         field_id,
                         stored[field_id],
@@ -185,18 +190,3 @@ class PromptEnhancerWorkflowMigrationTransaction:
     def finalize(self, _original: object) -> None:
         if self._original is not None and dict(self._store.read_fields()) == self._original:
             raise RuntimeError("Prompt Enhancer workflow source was not retired.")
-
-
-def _protected_envelope(result: object) -> object:
-    envelope = getattr(result, "envelope", None)
-    if isinstance(envelope, Mapping):
-        return dict(envelope)
-    if isinstance(result, Mapping):
-        return dict(result)
-    raise TypeError("Prompt Enhancer protected field result is invalid.")
-
-
-def _verified_current(result: object) -> bool:
-    disposition = getattr(result, "disposition", None)
-    value = getattr(disposition, "value", disposition)
-    return value == "verified-current"

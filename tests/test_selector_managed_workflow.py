@@ -14,7 +14,12 @@ import helto_privacy.keystore as shared_keystore
 import helto_privacy.migration as shared_migration
 import helto_privacy.runtime as shared_runtime
 from helto_privacy import (
+    ALGORITHM,
+    ENVELOPE_VERSION,
+    DispositionResult,
+    EnvelopeDisposition,
     MigrationVerification,
+    ProtectedFieldResult,
     UTILS_KEY_BIN_IMPORT_ID,
     UTILS_PRIV1_READER_ID,
     UTILS_PRIV2_READER_ID,
@@ -405,16 +410,24 @@ def test_product_operation_adapter_applies_real_root_authorization(tmp_path):
 class WorkflowHandle:
     def protect(self, field_id, value, authorization):
         assert authorization == "synthetic-authorization"
-        return {"schema": "current", "field": field_id, "value": value}
+        assert value is not None
+        return ProtectedFieldResult(
+            EnvelopeDisposition.VERIFIED_CURRENT,
+            {
+                "version": ENVELOPE_VERSION,
+                "schema": "current",
+                "encrypted": True,
+                "algorithm": ALGORITHM,
+                "keyId": "synthetic-key",
+                "nonce": "synthetic-nonce",
+                "ciphertext": field_id,
+            },
+        )
 
     def inspect_disposition(self, field_id, value, authorization):
-        assert field_id in value["field"]
+        assert field_id == value["ciphertext"]
         assert authorization == "synthetic-authorization"
-        return type(
-            "Disposition",
-            (),
-            {"disposition": type("Kind", (), {"value": "verified-current"})()},
-        )()
+        return DispositionResult(EnvelopeDisposition.VERIFIED_CURRENT)
 
 
 class WorkflowStore:
@@ -508,9 +521,7 @@ def test_selector_transaction_stages_each_mask_generation_with_fields(generation
     verification = transaction.read_back()
 
     assert verification == MigrationVerification(expected, True, True)
-    assert store.fields[SELECTOR_MASKS_FIELD_ID]["value"][
-        "/synthetic/root/a.png"
-    ]["id"].startswith("managed-")
+    assert set(artifacts.values) == {"managed-0"}
     assert legacy_masks.bytes["/synthetic/root/a.png"] == source_bytes
     transaction.finalize(original)
     assert legacy_masks.retired == ["/synthetic/root/a.png"]

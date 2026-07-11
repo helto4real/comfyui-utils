@@ -25,6 +25,7 @@ from helto_privacy import (
     ProfileResource,
     ResourceKind,
     generate_artifact_owner_id,
+    run_blocking_adapter,
 )
 
 from .mask_storage import MASK_CACHE_DIR
@@ -301,7 +302,7 @@ class SelectorManagedArtifacts:
             image_path,
             authorized_roots=authorized_roots,
         )
-        source_revision = await asyncio.to_thread(
+        source_revision = await run_blocking_adapter(
             _source_revision,
             authorized_path,
             authorized_roots,
@@ -325,7 +326,7 @@ class SelectorManagedArtifacts:
                         raise SelectorManagedArtifactError()
                     return current.reference, value
 
-            encoded_revision, encoded = await asyncio.to_thread(
+            encoded_revision, encoded = await run_blocking_adapter(
                 _encode_thumbnail,
                 authorized_path,
                 authorized_roots,

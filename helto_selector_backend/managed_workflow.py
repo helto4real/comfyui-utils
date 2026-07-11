@@ -23,6 +23,7 @@ from helto_privacy import (
     LegacyReaderBinding,
     PrivacyProfile,
     PrivacyScope,
+    PrivateByDefaultModeAdapter,
     ProfileResource,
     ProtectedField,
     ProtectedOperation,
@@ -265,29 +266,7 @@ def build_selector_privacy_profile() -> PrivacyProfile:
     )
 
 
-class SelectorModeAdapter:
-    """Server-owned declaration with a strict private default."""
-
-    def __init__(self, declarations: Mapping[str, object] | None = None) -> None:
-        self._declarations = dict(declarations or {})
-
-    def read_declared_mode(self, scope_id: str) -> str:
-        value = self._declarations.get(scope_id, "private")
-        return "public" if value in {False, "public"} else "private"
-
-    def write_declared_mode(self, scope_id: str, mode: object) -> None:
-        if mode not in {"private", "public"}:
-            raise ValueError("Invalid selector privacy mode.")
-        self._declarations[scope_id] = mode
-
-    def prepare_mode_transition(self, *_args) -> None:
-        return None
-
-    def commit_mode_transition(self, *_args) -> None:
-        return None
-
-    def rollback_mode_transition(self, *_args) -> None:
-        return None
+SelectorModeAdapter = PrivateByDefaultModeAdapter
 
 
 class SelectorWorkflowStateAdapter:
@@ -628,20 +607,6 @@ def _reference_payload(reference: object) -> object:
         return dict(reference)
     raise TypeError("Selector artifact reference is invalid.")
 
-
-def _protected_envelope(result: object) -> object:
-    envelope = getattr(result, "envelope", None)
-    if isinstance(envelope, Mapping):
-        return dict(envelope)
-    if isinstance(result, Mapping):
-        return dict(result)
-    raise TypeError("Selector protected field result is invalid.")
-
-
-def _verified_current(result: object) -> bool:
-    disposition = getattr(result, "disposition", None)
-    value = getattr(disposition, "value", disposition)
-    return value == "verified-current"
 
 def _string_list(value: object) -> list[str]:
     if not isinstance(value, list):

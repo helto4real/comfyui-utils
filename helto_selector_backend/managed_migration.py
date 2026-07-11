@@ -15,6 +15,9 @@ from helto_privacy import (
     MigrationVerification,
     UTILS_WORKFLOW_READER_IDS,
     generate_artifact_owner_id,
+    is_verified_current_disposition,
+    protected_envelope_mapping,
+    run_blocking_adapter,
     utils_raw_xor_source,
 )
 
@@ -22,9 +25,7 @@ from .managed_workflow import (
     SELECTOR_MASKS_FIELD_ID,
     _FIELD_LOCATIONS,
     _normalize_field_value,
-    _protected_envelope,
     _reference_payload,
-    _verified_current,
     SelectorWorkflowStateAdapter,
     build_selector_privacy_profile,
 )
@@ -157,7 +158,7 @@ class SelectorMigrationCoordinator:
             self._managed_artifacts,
             loop,
         )
-        return await asyncio.to_thread(
+        return await run_blocking_adapter(
             self._migrate_in_worker,
             gateway,
             authorizations,
@@ -335,7 +336,7 @@ class SelectorWorkflowMigrationTransaction:
                 field_value["value"],
                 self._protect_authorization,
             )
-            self._protected[field_id] = _protected_envelope(protected)
+            self._protected[field_id] = protected_envelope_mapping(protected)
 
     def commit(self) -> None:
         if self._protected is None or self._captured_original is None:
@@ -350,7 +351,7 @@ class SelectorWorkflowMigrationTransaction:
         current_format = self._protected is not None and stored == self._protected
         if current_format:
             current_format = all(
-                _verified_current(
+                is_verified_current_disposition(
                     self._workflow.inspect_disposition(
                         field_id,
                         stored[field_id],
