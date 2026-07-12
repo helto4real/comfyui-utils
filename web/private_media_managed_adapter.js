@@ -5,7 +5,19 @@ export function createPrivateMediaLeaseAdapter(resolveArtifactLeaseURL) {
     if (typeof resolveArtifactLeaseURL !== "function") {
         throw new TypeError("A shared artifact lease URL resolver is required.");
     }
-    const previewKinds = new Set(["private-image-preview", "private-video-preview"]);
+    const previewKinds = new Set([
+        "image-comparer-preview",
+        "load-video-thumbnail",
+        "save-image-preview",
+        "save-video-avi-preview",
+        "save-video-gif-preview",
+        "save-video-mkv-preview",
+        "save-video-mov-preview",
+        "save-video-mp4-preview",
+        "save-video-webm-preview",
+        "save-video-webp-preview",
+        "video-comparer-preview",
+    ]);
     return Object.freeze({
         async url(record, artifactHandle = null, apiURL = (path) => path) {
             if (!record || record.private !== true) {

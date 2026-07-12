@@ -82,12 +82,8 @@ def _preview_images_for_slot(images=None, mask=None) -> torch.Tensor | None:
 
 def _private_image_records(images, filename_prefix: str, cls: type[io.ComfyNode]) -> list[dict]:
     records = []
-    metadata = ui.ImageSaveHelper._create_png_metadata(cls)
-    for index, image in enumerate(images):
-        pil_image = ui.ImageSaveHelper._convert_tensor_to_pil(image)
-        buffer = BytesIO()
-        pil_image.save(buffer, format="PNG", pnginfo=metadata, compress_level=1)
-        path = write_encrypted_temp_bytes(buffer.getvalue(), ".png", "image_comparer")
+    for index, encoded in enumerate(_encode_preview_bytes(images, cls)):
+        path = write_encrypted_temp_bytes(encoded, ".png", "image_comparer")
         records.append(
             private_media_record(
                 path,
@@ -97,6 +93,40 @@ def _private_image_records(images, filename_prefix: str, cls: type[io.ComfyNode]
             )
         )
     return records
+
+
+def _encode_preview_bytes(images, cls: type[io.ComfyNode]) -> list[bytes]:
+    encoded = []
+    metadata = ui.ImageSaveHelper._create_png_metadata(cls)
+    for image in images:
+        pil_image = ui.ImageSaveHelper._convert_tensor_to_pil(image)
+        buffer = BytesIO()
+        pil_image.save(buffer, format="PNG", pnginfo=metadata, compress_level=1)
+        encoded.append(buffer.getvalue())
+    return encoded
+
+
+async def _managed_preview_records(
+    images,
+    cls: type[io.ComfyNode],
+    managed_artifacts,
+    *,
+    owner_key: str,
+    privacy_mode: object = True,
+    mode_facts: object = None,
+    execution: object = None,
+) -> list[dict]:
+    if not _has_tensor(images):
+        return []
+    records = await managed_artifacts.publish_encoded_previews(
+        "HeltoImageComparer",
+        lambda: _encode_preview_bytes(images, cls),
+        owner_key=owner_key,
+        privacy_mode=privacy_mode,
+        mode_facts=mode_facts,
+        execution=execution,
+    )
+    return [record.to_record() for record in records]
 
 
 def _preview_records(images, filename_prefix: str, cls: type[io.ComfyNode], privacy_mode: bool) -> list[dict]:

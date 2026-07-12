@@ -19,6 +19,7 @@ from ...shared.pause_release import (
     dispatch_pause_release,
     request_pause_release,
 )
+from ...shared.private_media_managed import SAVE_IMAGE_PUBLIC_PREVIEW_SUBFOLDER
 from ...shared.privacy import private_media_record, write_encrypted_temp_bytes
 
 
@@ -388,9 +389,24 @@ class SaveImageAdvanced(io.ComfyNode):
         return saved_paths
 
     @classmethod
+    def _encode_private_preview_bytes(cls, images) -> list[bytes]:
+        metadata = ui.ImageSaveHelper._create_png_metadata(cls)
+        encoded = []
+        for image in images:
+            pil_image = ui.ImageSaveHelper._convert_tensor_to_pil(image)
+            buffer = BytesIO()
+            pil_image.save(
+                buffer,
+                format="PNG",
+                pnginfo=metadata,
+                compress_level=4,
+            )
+            encoded.append(buffer.getvalue())
+        return encoded
+
+    @classmethod
     def _private_preview_records(cls, images, filename_prefix: str) -> list[dict]:
         records = []
-        metadata = ui.ImageSaveHelper._create_png_metadata(cls)
         total = _item_count(images)
         node_id = cls._node_id()
         helto_progress.start(
@@ -400,11 +416,8 @@ class SaveImageAdvanced(io.ComfyNode):
             total=total,
             node_id=node_id,
         )
-        for index, image in enumerate(images):
-            pil_image = ui.ImageSaveHelper._convert_tensor_to_pil(image)
-            buffer = BytesIO()
-            pil_image.save(buffer, format="PNG", pnginfo=metadata, compress_level=4)
-            path = write_encrypted_temp_bytes(buffer.getvalue(), ".png", "save_image_advanced")
+        for index, encoded in enumerate(cls._encode_private_preview_bytes(images)):
+            path = write_encrypted_temp_bytes(encoded, ".png", "save_image_advanced")
             records.append(
                 private_media_record(
                     path,
@@ -428,6 +441,44 @@ class SaveImageAdvanced(io.ComfyNode):
             node_id=node_id,
         )
         return records
+
+    @classmethod
+    async def _managed_private_preview_records(
+        cls,
+        images,
+        managed_artifacts,
+        *,
+        owner_key: str,
+        privacy_mode: object = True,
+        mode_facts: object = None,
+        execution: object = None,
+    ) -> list[dict]:
+        records = await managed_artifacts.publish_encoded_previews(
+            "HeltoSaveImageAdvanced",
+            lambda: cls._encode_private_preview_bytes(images),
+            owner_key=owner_key,
+            privacy_mode=privacy_mode,
+            mode_facts=mode_facts,
+            execution=execution,
+        )
+        return [record.to_record() for record in records]
+
+    @classmethod
+    def _managed_public_preview_records(
+        cls,
+        images,
+        filename_prefix: str,
+    ) -> list[dict]:
+        """Route staged public previews into one transition-safe temp folder."""
+
+        safe_prefix = cls._normalize_filename_prefix(filename_prefix)
+        return ui.ImageSaveHelper.save_images(
+            images,
+            filename_prefix=f"{SAVE_IMAGE_PUBLIC_PREVIEW_SUBFOLDER}/{safe_prefix}",
+            folder_type=io.FolderType.temp,
+            cls=cls,
+            compress_level=4,
+        )
 
     @staticmethod
     def _next_counter(save_dir: str, filename_prefix: str) -> int:

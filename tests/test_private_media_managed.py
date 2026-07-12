@@ -6,6 +6,8 @@ import pytest
 from helto_privacy import ArtifactLease, ArtifactReference
 
 from shared.private_media_managed import (
+    IMAGE_COMPARER_PREVIEW_KIND,
+    LOAD_VIDEO_THUMBNAIL_KIND,
     PRIVATE_MEDIA_ALLOWED_SOURCE_ROOTS,
     PRIVATE_MEDIA_ARTIFACT_CONTRACTS,
     PRIVATE_MEDIA_GENERATED_DERIVATIVES,
@@ -14,6 +16,9 @@ from shared.private_media_managed import (
     PRIVATE_MEDIA_SOURCE_OPERATION_ID,
     PRIVATE_MEDIA_SOURCE_TYPES,
     PRIVATE_MEDIA_VIDEO_PREVIEW_KIND,
+    SAVE_VIDEO_PREVIEW_KINDS_BY_MEDIA_TYPE,
+    SAVE_VIDEO_REPLAY_KIND,
+    VIDEO_COMPARER_PREVIEW_KIND,
     PrivateMediaArtifactCodecAdapter,
     PrivateMediaManagedArtifacts,
     PrivateMediaModeAdapter,
@@ -54,8 +59,12 @@ def test_profile_declares_typed_previews_source_operation_and_private_default():
 
     assert PrivateMediaModeAdapter().read_declared_mode("private-media") == "private"
     assert set(declarations) == {
+        IMAGE_COMPARER_PREVIEW_KIND,
+        LOAD_VIDEO_THUMBNAIL_KIND,
         PRIVATE_MEDIA_IMAGE_PREVIEW_KIND,
-        PRIVATE_MEDIA_VIDEO_PREVIEW_KIND,
+        *SAVE_VIDEO_PREVIEW_KINDS_BY_MEDIA_TYPE.values(),
+        SAVE_VIDEO_REPLAY_KIND,
+        VIDEO_COMPARER_PREVIEW_KIND,
     }
     assert declarations[PRIVATE_MEDIA_IMAGE_PREVIEW_KIND].media_type == "image/png"
     assert declarations[PRIVATE_MEDIA_VIDEO_PREVIEW_KIND].media_type == "video/mp4"
@@ -73,17 +82,26 @@ def test_artifact_and_source_contracts_keep_unrelated_facts_separate():
         "enabled-load-video-folder",
     }
     assert set(PRIVATE_MEDIA_GENERATED_DERIVATIVES) == {
-        "temp/helto_private/**",
-        "temp/helto_video_comparer/**",
-        "temp/helto_load_video/**",
-        "temp/helto_save_video_advanced/**",
         "temp/helto.compare.*",
+        "temp/helto_cache/HeltoLoadVideo/thumbnails/**",
+        "temp/helto_cache/HeltoSaveVideoAdvanced/replay/**",
+        "temp/helto_load_video/**",
+        "temp/helto_private/HeltoSaveVideoAdvanced/replay/**",
+        "temp/helto_private/image_comparer/**",
+        "temp/helto_private/save_image_advanced/**",
+        "temp/helto_private/save_video_advanced/**",
+        "temp/helto_private/video_comparer/**",
+        "temp/helto_save_image_advanced/**",
+        "temp/helto_save_video_advanced/**",
+        "temp/helto_save_video_private_*/**",
+        "temp/helto_video_comparer/**",
     }
-    assert len(PRIVATE_MEDIA_ARTIFACT_CONTRACTS) == 2
-    assert all(
-        contract.plaintext_derivatives == PRIVATE_MEDIA_GENERATED_DERIVATIVES
+    assert len(PRIVATE_MEDIA_ARTIFACT_CONTRACTS) == 12
+    assert {
+        derivative
         for contract in PRIVATE_MEDIA_ARTIFACT_CONTRACTS
-    )
+        for derivative in contract.plaintext_derivatives
+    } == set(PRIVATE_MEDIA_GENERATED_DERIVATIVES)
     assert PRIVATE_MEDIA_SOURCE_CONTRACT.allowed_source_roots == (
         "comfy-input",
         "comfy-output",
@@ -103,11 +121,7 @@ def test_codec_purges_only_declared_generated_temp_derivatives(tmp_path):
     keep_input.write_bytes(b"input")
     keep_output.write_bytes(b"output")
     for relative in (
-        "temp/helto_private/image_comparer/private.png.enc",
-        "temp/helto_video_comparer/preview.mp4",
-        "temp/helto_load_video/preview.mp4",
-        "temp/helto_save_video_advanced/preview.mp4",
-        "temp/helto.compare.synthetic",
+        "temp/helto_private/save_image_advanced/private.png.enc",
     ):
         path = tmp_path / relative
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -118,9 +132,7 @@ def test_codec_purges_only_declared_generated_temp_derivatives(tmp_path):
 
     assert keep_input.read_bytes() == b"input"
     assert keep_output.read_bytes() == b"output"
-    assert not any((tmp_path / "temp").rglob("*.mp4"))
-    assert not (tmp_path / "temp" / "helto_private").exists()
-    assert not (tmp_path / "temp" / "helto.compare.synthetic").exists()
+    assert not any((tmp_path / "temp").rglob("*.png.enc"))
 
 
 def test_node_safe_preview_writes_return_references_for_browser_lease_exchange():
@@ -233,7 +245,7 @@ def test_protected_operation_passes_serve_authorization_to_source_publisher():
     class Authorization:
         async def dispatch(self, request, scope_id, operation_id, invoke):
             assert request == "request"
-            assert scope_id == "private-media"
+            assert scope_id == "load-video"
             assert operation_id == PRIVATE_MEDIA_SOURCE_OPERATION_ID
             return await invoke(issued_authorization)
 

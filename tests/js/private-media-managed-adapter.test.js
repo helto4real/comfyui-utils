@@ -31,14 +31,14 @@ test("preview records exchange an opaque reference through the shared browser ha
 
     assert.equal(
         await adapter.url(
-            { private: true, artifactKind: "private-video-preview", artifact },
+            { private: true, artifactKind: "save-video-mp4-preview", artifact },
             artifactHandle,
             (path) => `/api${path}`,
         ),
         `/api${lease.url}`,
     );
     assert.deepEqual(leased, [{
-        kind: "private-video-preview",
+        kind: "save-video-mp4-preview",
         reference: artifact,
         operation: "preview",
     }]);
@@ -55,6 +55,49 @@ test("source records resolve their already-authorized direct stream lease", asyn
 });
 
 
+test("every browser-visible media-node artifact kind uses the same lease exchange", async () => {
+    const leased = [];
+    const adapter = createPrivateMediaLeaseAdapter((candidate) => candidate.url);
+    const artifactHandle = {
+        async lease(kind) {
+            leased.push(kind);
+            return lease;
+        },
+    };
+    for (const artifactKind of [
+        "image-comparer-preview",
+        "load-video-thumbnail",
+        "save-image-preview",
+        "save-video-avi-preview",
+        "save-video-gif-preview",
+        "save-video-mkv-preview",
+        "save-video-mov-preview",
+        "save-video-mp4-preview",
+        "save-video-webm-preview",
+        "save-video-webp-preview",
+        "video-comparer-preview",
+    ]) {
+        assert.equal(
+            await adapter.url({ private: true, artifactKind, artifact }, artifactHandle),
+            lease.url,
+        );
+    }
+    assert.deepEqual(leased, [
+        "image-comparer-preview",
+        "load-video-thumbnail",
+        "save-image-preview",
+        "save-video-avi-preview",
+        "save-video-gif-preview",
+        "save-video-mkv-preview",
+        "save-video-mov-preview",
+        "save-video-mp4-preview",
+        "save-video-webm-preview",
+        "save-video-webp-preview",
+        "video-comparer-preview",
+    ]);
+});
+
+
 test("private media browser binding rejects legacy token and metadata records", async () => {
     const adapter = createPrivateMediaLeaseAdapter(() => "unreachable");
     for (const record of [
@@ -64,6 +107,8 @@ test("private media browser binding rejects legacy token and metadata records", 
         { private: true, lease, content_type: "video/mp4" },
         { private: false, lease },
         { private: true, artifactKind: "private-video-source", artifact },
+        { private: true, artifactKind: "save-video-replay", artifact },
+        { private: true, artifactKind: "private-video-preview", artifact },
     ]) {
         await assert.rejects(
             () => adapter.url(record),

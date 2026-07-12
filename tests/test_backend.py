@@ -2597,6 +2597,187 @@ Second beat moves toward the doorway. @image1:end
             ]
             self.assertEqual(plain_mp4s, [])
 
+    def test_save_video_inactive_private_encoder_returns_animated_bytes(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        node_cls = extension_module.SaveVideoAdvanced
+        frames = [torch.zeros((4, 6, 3)), torch.ones((4, 6, 3))]
+
+        encoded = node_cls._encode_private_preview_bytes(
+            frames=frames,
+            audio=None,
+            filename_prefix="synthetic",
+            counter=1,
+            frame_rate=2.0,
+            loop_count=0,
+            format="image/webp",
+            format_kwargs={"lossless": True},
+        )
+
+        with Image.open(BytesIO(encoded)) as preview:
+            self.assertEqual(preview.format, "WEBP")
+            self.assertEqual(preview.size, (6, 4))
+
+    def test_save_video_inactive_private_ffmpeg_encoder_uses_anonymous_output(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        node_cls = extension_module.SaveVideoAdvanced
+        globals_ = node_cls._encode_private_preview_bytes.__func__.__globals__
+        if globals_["_find_ffmpeg"]() is None:
+            self.skipTest("ffmpeg is unavailable")
+
+        with patch.dict(
+            globals_,
+            {"ProgressBar": lambda _total: types.SimpleNamespace(update=lambda _value: None)},
+        ):
+            encoded = node_cls._encode_private_preview_bytes(
+                frames=[torch.zeros((8, 8, 3)), torch.ones((8, 8, 3))],
+                audio=None,
+                filename_prefix="synthetic",
+                counter=1,
+                frame_rate=2.0,
+                loop_count=0,
+                format="video/h264-mp4",
+                format_kwargs={},
+            )
+
+        self.assertIn(b"ftyp", encoded[:64])
+
+    def test_save_video_inactive_private_audio_mux_uses_anonymous_output(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        node_cls = extension_module.SaveVideoAdvanced
+        globals_ = node_cls._encode_private_preview_bytes.__func__.__globals__
+        if globals_["_find_ffmpeg"]() is None:
+            self.skipTest("ffmpeg is unavailable")
+
+        with patch.dict(
+            globals_,
+            {"ProgressBar": lambda _total: types.SimpleNamespace(update=lambda _value: None)},
+        ):
+            encoded = node_cls._encode_private_preview_bytes(
+                frames=[torch.zeros((8, 8, 3)), torch.ones((8, 8, 3))],
+                audio={
+                    "waveform": torch.zeros((1, 1, 4_000)),
+                    "sample_rate": 8_000,
+                },
+                filename_prefix="synthetic",
+                counter=1,
+                frame_rate=2.0,
+                loop_count=0,
+                format="video/h264-mp4",
+                format_kwargs={},
+            )
+
+        self.assertIn(b"ftyp", encoded[:64])
+
+    def test_inactive_media_nodes_bind_existing_encoders_to_managed_facade(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        calls = []
+
+        class Record:
+            def __init__(self, index):
+                self.index = index
+
+            def to_record(self):
+                return {"private": True, "artifact": self.index}
+
+        class Managed:
+            async def publish_encoded_previews(self, node_class, encode, **_kwargs):
+                values = encode()
+                calls.append((node_class, values))
+                return [Record(index) for index, _value in enumerate(values)]
+
+            async def load_video_thumbnail(self, cache_key, revision, encode, **_kwargs):
+                value = encode()
+                calls.append(("HeltoLoadVideo", cache_key, revision, value))
+                return Record(0), value
+
+        managed = Managed()
+        image_globals = extension_module.ImageComparer.execute.__func__.__globals__
+        image_helper = image_globals["ui"].ImageSaveHelper
+        original_convert = image_helper._convert_tensor_to_pil
+        image_helper._convert_tensor_to_pil = staticmethod(
+            lambda _image: Image.new("RGB", (3, 2))
+        )
+        try:
+            image_records = asyncio.run(
+                image_globals["_managed_preview_records"](
+                    torch.zeros((1, 2, 3, 3)),
+                    extension_module.ImageComparer,
+                    managed,
+                    owner_key="image/revision",
+                )
+            )
+            save_records = asyncio.run(
+                extension_module.SaveImageAdvanced._managed_private_preview_records(
+                    torch.zeros((1, 2, 3, 3)),
+                    managed,
+                    owner_key="save/revision",
+                )
+            )
+        finally:
+            image_helper._convert_tensor_to_pil = original_convert
+
+        class Video:
+            def save_to(self, target, **_kwargs):
+                target.write(b"synthetic-mp4")
+
+        video_record = asyncio.run(
+            extension_module.VideoComparer._managed_preview_record(
+                Video(),
+                "video_1",
+                24.0,
+                managed,
+                owner_key="video/revision",
+            )
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source = Path(tmpdir) / "source.mp4"
+            source.write_bytes(b"synthetic-source")
+            load_globals = extension_module.HeltoLoadVideo.execute.__func__.__globals__[
+                "preview_result"
+            ].__globals__
+            original = load_globals["generate_thumbnail_bytes"]
+            load_globals["generate_thumbnail_bytes"] = lambda *_args, **_kwargs: b"webp"
+            try:
+                thumbnail = asyncio.run(
+                    load_globals["managed_thumbnail"](source, managed)
+                )
+            finally:
+                load_globals["generate_thumbnail_bytes"] = original
+
+        self.assertEqual(image_records, [{"private": True, "artifact": 0}])
+        self.assertEqual(save_records, [{"private": True, "artifact": 0}])
+        self.assertEqual(video_record, {"private": True, "artifact": 0})
+        self.assertEqual(thumbnail[1], b"webp")
+        self.assertEqual(
+            [call[0] for call in calls],
+            [
+                "HeltoImageComparer",
+                "HeltoSaveImageAdvanced",
+                "HeltoVideoComparer",
+                "HeltoLoadVideo",
+            ],
+        )
+
+    def test_save_image_inactive_public_preview_uses_dedicated_temp_folder(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        node_cls = extension_module.SaveImageAdvanced
+        globals_ = node_cls._managed_public_preview_records.__func__.__globals__
+        helper = globals_["ui"].ImageSaveHelper
+        original = helper.save_images
+        calls = []
+        helper.save_images = lambda images, **kwargs: calls.append((images, kwargs)) or []
+        try:
+            node_cls._managed_public_preview_records(["image"], "../private-name")
+        finally:
+            helper.save_images = original
+
+        self.assertEqual(
+            calls[0][1]["filename_prefix"],
+            "helto_save_image_advanced/private-name",
+        )
+        self.assertEqual(calls[0][1]["folder_type"], globals_["io"].FolderType.temp)
+
     def test_save_image_can_preview_without_saving_output(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()
         node_cls = extension_module.SaveImageAdvanced

@@ -64,10 +64,17 @@ def video_metadata(path: Path) -> dict[str, Any]:
 
 
 def thumbnail_path(video_path: Path, max_size: int = 360) -> Path:
+    return thumbnail_cache_dir() / f"{thumbnail_cache_key(video_path, max_size)}.webp"
+
+
+def thumbnail_cache_key(video_path: Path, max_size: int = 360) -> str:
     video_path = Path(video_path)
     stat = video_path.stat()
-    key = hashlib.sha256(f"{video_path.resolve()}:{stat.st_mtime_ns}:{stat.st_size}:{max_size}".encode("utf-8")).hexdigest()
-    return thumbnail_cache_dir() / f"{key}.webp"
+    return hashlib.sha256(
+        f"{video_path.resolve()}:{stat.st_mtime_ns}:{stat.st_size}:{max_size}".encode(
+            "utf-8"
+        )
+    ).hexdigest()
 
 
 def encrypted_thumbnail_path(video_path: Path, max_size: int = 360) -> Path:
@@ -94,6 +101,29 @@ def generate_thumbnail_bytes(video_path: Path, max_size: int = 360) -> bytes:
             return output.getvalue()
 
     raise ValueError(f"No decodable video frame found in {video_path}")
+
+
+async def managed_thumbnail(
+    video_path: Path,
+    managed_artifacts,
+    *,
+    max_size: int = 360,
+    privacy_mode: object = True,
+    mode_facts: object = None,
+    execution: object = None,
+):
+    """Bind the existing cache key/revision and encoder to managed storage."""
+
+    source = Path(video_path)
+    stat = source.stat()
+    return await managed_artifacts.load_video_thumbnail(
+        thumbnail_cache_key(source, max_size),
+        (stat.st_mtime_ns, stat.st_size, max_size),
+        lambda: generate_thumbnail_bytes(source, max_size=max_size),
+        privacy_mode=privacy_mode,
+        mode_facts=mode_facts,
+        execution=execution,
+    )
 
 
 def make_thumbnail(video_path: Path, max_size: int = 360) -> Path:

@@ -157,6 +157,31 @@ class VideoComparer(io.ComfyNode):
         if not privacy_mode:
             os.makedirs(preview_dir, exist_ok=True)
 
+        cls._encode_preview_to(
+            source,
+            target,
+            frame_rate=frame_rate,
+            audio=audio,
+            metadata=metadata,
+        )
+
+        if privacy_mode:
+            assert isinstance(target, BytesIO)
+            path = write_encrypted_temp_bytes(target.getvalue(), ".mp4", _PREVIEW_SUBFOLDER)
+            return private_media_record(path, content_type="video/mp4", encrypted=True, filename=filename)
+
+        return ui.SavedResult(filename, _PREVIEW_SUBFOLDER, io.FolderType.temp)
+
+    @classmethod
+    def _encode_preview_to(
+        cls,
+        source,
+        target,
+        *,
+        frame_rate: float,
+        audio,
+        metadata: dict,
+    ) -> None:
         if hasattr(source, "save_to"):
             if audio is None:
                 source.save_to(
@@ -193,9 +218,50 @@ class VideoComparer(io.ComfyNode):
             )
             video.save_to(target, format=Types.VideoContainer.MP4, codec=Types.VideoCodec.H264, metadata=metadata)
 
-        if privacy_mode:
-            assert isinstance(target, BytesIO)
-            path = write_encrypted_temp_bytes(target.getvalue(), ".mp4", _PREVIEW_SUBFOLDER)
-            return private_media_record(path, content_type="video/mp4", encrypted=True, filename=filename)
+    @classmethod
+    def _encode_preview_bytes(
+        cls,
+        source,
+        slot: str,
+        frame_rate: float,
+        audio=None,
+    ) -> bytes:
+        target = BytesIO()
+        cls._encode_preview_to(
+            source,
+            target,
+            frame_rate=frame_rate,
+            audio=_materialize_audio(audio, slot),
+            metadata={
+                "node": "HeltoVideoComparer",
+                "slot": slot,
+                "frame_rate": float(frame_rate),
+            },
+        )
+        return target.getvalue()
 
-        return ui.SavedResult(filename, _PREVIEW_SUBFOLDER, io.FolderType.temp)
+    @classmethod
+    async def _managed_preview_record(
+        cls,
+        source,
+        slot: str,
+        frame_rate: float,
+        managed_artifacts,
+        *,
+        owner_key: str,
+        audio=None,
+        privacy_mode: object = True,
+        mode_facts: object = None,
+        execution: object = None,
+    ) -> dict:
+        records = await managed_artifacts.publish_encoded_previews(
+            "HeltoVideoComparer",
+            lambda: [
+                cls._encode_preview_bytes(source, slot, frame_rate, audio)
+            ],
+            owner_key=owner_key,
+            privacy_mode=privacy_mode,
+            mode_facts=mode_facts,
+            execution=execution,
+        )
+        return records[0].to_record()
