@@ -1,4 +1,4 @@
-// Inactive Queue Manager adapter for helto-privacy's settled queue coordinator.
+// Queue Manager adapter for helto-privacy's settled queue coordinator.
 
 export function createManagedQueueLifecycle({
     createPrivacyQueueCoordinator,

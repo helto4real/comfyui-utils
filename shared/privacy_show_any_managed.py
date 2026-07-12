@@ -1,9 +1,4 @@
-"""Inactive shared privacy integration for Privacy Show Any.
-
-The current node and frontend serializers remain live until the coordinated
-Utils profile activates. This module contains the profile fragment and
-consumer-owned adapters for the replacement path.
-"""
+"""Shared privacy integration for Privacy Show Any."""
 
 from __future__ import annotations
 
@@ -230,17 +225,11 @@ class PrivacyShowAnyManagedNodeAdapter:
     def __init__(self, output_factory: Callable[[str, object], object] | None = None) -> None:
         self._output_factory = output_factory or _node_output
 
-    def invoke(
-        self,
-        value: object,
-        workflow: object,
-        protect_authorization: object,
-    ) -> object:
+    def invoke(self, value: object, workflow: object) -> object:
         text = convert_any_to_text(value)
-        protected = workflow.protect(
+        protected = workflow.protect_runtime(
             PRIVACY_SHOW_ANY_FIELD_ID,
             text,
-            protect_authorization,
         )
         envelope = protected_envelope_text(protected)
         return self._output_factory(

@@ -1,15 +1,13 @@
-# Selector shared workflow and operations staging
+# Selector shared workflow and operations
 
-The coordinated selector replacement is staged in
+The active selector binding lives in
 `helto_selector_backend/managed_workflow.py` and
 `web/selector_privacy_adapter.js`; atomic legacy coordination lives in the
-focused `helto_selector_backend/managed_migration.py` service module. It is
-intentionally not installed yet: the
-current selector remains usable while the rest of the `comfyui-utils` privacy
-profile is assembled. The complete Utils profile will activate all slices at
-once; it must not install this selector-only profile as a partial runtime.
+focused `helto_selector_backend/managed_migration.py` service module. Only the
+complete Utils profile is installed; selector-only partial activation is not
+supported.
 
-The staged selector slice declares one private-by-default `selector` scope,
+The selector slice declares one private-by-default `selector` scope,
 one workflow resource containing `selected_images`, `edited_masks`, and
 `edited_bboxes`, and one semantic execution projection containing exactly the
 three normalized product values. The server adapter and browser adapter retain
@@ -37,7 +35,7 @@ mask bytes, stages current envelopes and all managed mask artifacts, commits
 the three fields together, then reads every field and artifact back. The shared
 `complete_many(...)` migration API closes all field and mask obligations under
 one receipt. A failure restores the exact field bytes, retains every legacy
-mask source, retires staged managed artifacts, and leaves all obligations open.
+mask source, retires incomplete managed artifacts, and leaves all obligations open.
 Legacy mask files are unlinked only during finalization after the receipt is
 durable.
 
@@ -50,6 +48,16 @@ loop; direct event-loop-thread use is rejected to prevent deadlock. Protected
 mask migration mints the separate read, protect, disposition, and completion
 capabilities from the same authenticated request before invoking the
 coordinator.
+
+There is one deliberately narrower browser-load bridge for workflows whose
+field envelope is already current but whose `edited_masks` value still names a
+legacy mask file. The `selector.mask-migrate` operation reads that file through
+the declared reader, writes a managed artifact, and returns the current
+reference for the browser to re-save. It intentionally leaves the legacy source
+and its migration obligation in place until the re-saved workflow can be
+audited and finalized through the full coordinator. This bridge is isolated in
+`_migrate_legacy_mask_references(...)`; after workflows have been checked and
+re-saved, it and the exact legacy readers can be removed together.
 
 The fixture `tests/fixtures/historical/utils_legacy_formats.json` was generated
 by the genuine Utils writers at commit

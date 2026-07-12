@@ -1,2 +1,2 @@
-helto-privacy @ git+https://github.com/helto4real/helto-privacy.git@v0.3.0
+helto-privacy @ git+https://github.com/helto4real/helto-privacy.git@4753baa7e2e3e842d315777b13c03f09cda150d3
 cryptography>=42.0

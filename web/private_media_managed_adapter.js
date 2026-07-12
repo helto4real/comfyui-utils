@@ -1,5 +1,4 @@
-// Inactive browser binding for shared opaque artifact lease URLs. The media
-// node cutover supplies resolveArtifactLeaseURL from helto-privacy.
+// Browser binding for shared opaque artifact lease URLs.
 
 export function createPrivateMediaLeaseAdapter(resolveArtifactLeaseURL) {
     if (typeof resolveArtifactLeaseURL !== "function") {

@@ -1,9 +1,4 @@
-"""Inactive Utils binding for shared media-node artifact lifecycles.
-
-The current token route and node producers remain live until the coordinated
-suite activates. This module is the complete replacement seam staged by the
-media-node cutover.
-"""
+"""Active Utils binding for shared media-node artifact lifecycles."""
 
 from __future__ import annotations
 
@@ -46,6 +41,7 @@ PRIVATE_MEDIA_SOURCE_RESOURCE_ID = "private-media-source"
 PRIVATE_MEDIA_MODE_ADAPTER_ID = "private-media-mode-state"
 PRIVATE_MEDIA_ARTIFACT_ADAPTER_ID = "private-media-artifact-codec"
 PRIVATE_MEDIA_SOURCE_OPERATION_ADAPTER_ID = "private-media-source-operation"
+PRIVATE_MEDIA_PRODUCT_OPERATION_ADAPTER_ID = "private-media-product-operations"
 
 MEDIA_NODE_MODE_SCOPES = {
     "HeltoImageComparer": "image-comparer",
@@ -80,11 +76,20 @@ SAVE_VIDEO_PREVIEW_KINDS_BY_MEDIA_TYPE = {
 SAVE_VIDEO_REPLAY_KIND = "save-video-replay"
 VIDEO_COMPARER_PREVIEW_KIND = "video-comparer-preview"
 
-# Compatibility names for the already-staged U6 publication seam. They now
+# Compatibility names for the original U6 publication seam. They now
 # identify the concrete save-node declarations instead of generic kinds.
 PRIVATE_MEDIA_IMAGE_PREVIEW_KIND = SAVE_IMAGE_PREVIEW_KIND
 PRIVATE_MEDIA_VIDEO_PREVIEW_KIND = SAVE_VIDEO_PREVIEW_KIND
 PRIVATE_MEDIA_SOURCE_OPERATION_ID = "serve-source-media"
+PRIVATE_MEDIA_PRODUCT_OPERATION_IDS = (
+    "load-video.folders-load",
+    "load-video.folder-save",
+    "load-video.folder-delete",
+    "load-video.videos-load",
+    "load-video.thumbnail",
+    "save-image.release",
+    "save-video.release",
+)
 
 PRIVATE_MEDIA_ALLOWED_SOURCE_ROOTS = (
     "comfy-input",
@@ -316,7 +321,10 @@ def build_private_media_profile() -> PrivacyProfile:
             ProfileResource(
                 PRIVATE_MEDIA_SOURCE_RESOURCE_ID,
                 ResourceKind.WORKFLOW,
-                (PRIVATE_MEDIA_SOURCE_OPERATION_ADAPTER_ID,),
+                (
+                    PRIVATE_MEDIA_SOURCE_OPERATION_ADAPTER_ID,
+                    PRIVATE_MEDIA_PRODUCT_OPERATION_ADAPTER_ID,
+                ),
             ),
         ),
         server_adapters=(
@@ -332,6 +340,11 @@ def build_private_media_profile() -> PrivacyProfile:
             ),
             AdapterSlot(
                 PRIVATE_MEDIA_SOURCE_OPERATION_ADAPTER_ID,
+                ResourceKind.WORKFLOW,
+                PRIVATE_MEDIA_SOURCE_RESOURCE_ID,
+            ),
+            AdapterSlot(
+                PRIVATE_MEDIA_PRODUCT_OPERATION_ADAPTER_ID,
                 ResourceKind.WORKFLOW,
                 PRIVATE_MEDIA_SOURCE_RESOURCE_ID,
             ),
@@ -351,6 +364,55 @@ def build_private_media_profile() -> PrivacyProfile:
                 PRIVATE_MEDIA_SOURCE_RESOURCE_ID,
                 PRIVATE_MEDIA_SOURCE_OPERATION_ADAPTER_ID,
                 "/helto-utils/private-media/source",
+            ),
+            ProtectedOperation(
+                "load-video.folders-load",
+                PRIVATE_MEDIA_SOURCE_RESOURCE_ID,
+                PRIVATE_MEDIA_PRODUCT_OPERATION_ADAPTER_ID,
+                "/helto-utils/load-video/folders/load",
+                "POST",
+            ),
+            ProtectedOperation(
+                "load-video.folder-save",
+                PRIVATE_MEDIA_SOURCE_RESOURCE_ID,
+                PRIVATE_MEDIA_PRODUCT_OPERATION_ADAPTER_ID,
+                "/helto-utils/load-video/folders/save",
+                "POST",
+            ),
+            ProtectedOperation(
+                "load-video.folder-delete",
+                PRIVATE_MEDIA_SOURCE_RESOURCE_ID,
+                PRIVATE_MEDIA_PRODUCT_OPERATION_ADAPTER_ID,
+                "/helto-utils/load-video/folders/delete",
+                "POST",
+            ),
+            ProtectedOperation(
+                "load-video.videos-load",
+                PRIVATE_MEDIA_SOURCE_RESOURCE_ID,
+                PRIVATE_MEDIA_PRODUCT_OPERATION_ADAPTER_ID,
+                "/helto-utils/load-video/videos/load",
+                "POST",
+            ),
+            ProtectedOperation(
+                "load-video.thumbnail",
+                PRIVATE_MEDIA_SOURCE_RESOURCE_ID,
+                PRIVATE_MEDIA_PRODUCT_OPERATION_ADAPTER_ID,
+                "/helto-utils/load-video/thumbnail",
+                "POST",
+            ),
+            ProtectedOperation(
+                "save-image.release",
+                PRIVATE_MEDIA_SOURCE_RESOURCE_ID,
+                PRIVATE_MEDIA_PRODUCT_OPERATION_ADAPTER_ID,
+                "/helto-utils/save-image/release",
+                "POST",
+            ),
+            ProtectedOperation(
+                "save-video.release",
+                PRIVATE_MEDIA_SOURCE_RESOURCE_ID,
+                PRIVATE_MEDIA_PRODUCT_OPERATION_ADAPTER_ID,
+                "/helto-utils/save-video/release",
+                "POST",
             ),
         ),
     )
@@ -483,7 +545,12 @@ def authorize_load_video_source(source: object) -> RootBoundSource:
     if not isinstance(alias, str) or not isinstance(filename, str):
         raise ValueError("Private media source request is invalid.")
 
-    from nodes.load_video.video_config import folder_by_alias, resolve_video_path
+    try:
+        from ..nodes.load_video.video_config import folder_by_alias, resolve_video_path
+    except ImportError as exc:
+        if str(exc) != "attempted relative import beyond top-level package":
+            raise
+        from nodes.load_video.video_config import folder_by_alias, resolve_video_path
 
     path = resolve_video_path(alias, filename)
     root = Path(folder_by_alias(alias or "input").path).resolve()
@@ -591,7 +658,7 @@ _PREVIEW_KIND_BY_NODE = {
 
 
 class MediaNodeManagedArtifacts:
-    """Inactive product orchestration for all Utils media-node derivatives.
+    """Product orchestration for all Utils media-node derivatives.
 
     Encoders, source revisions/cache keys, output routing, and replay payload
     serialization remain consumer inputs. The shared handles own ciphertext,

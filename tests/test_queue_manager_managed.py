@@ -29,6 +29,7 @@ from shared.queue_manager_managed import (
     QUEUE_SCHEMA,
     QUEUE_OPERATION_IDS,
     QUEUE_OPERATION_ADAPTER_IDS,
+    QUEUE_SCOPE_ID,
     QUEUE_SINGLETON_ID,
     QUEUE_SINGLETON_RESOURCE_ID,
     QueueManagerModeAdapter,
@@ -49,7 +50,7 @@ HISTORICAL_FIXTURE = (
 )
 
 
-pytestmark = pytest.mark.usefixtures("inactive_coordinated_suite_test_boundary")
+pytestmark = pytest.mark.usefixtures("coordinated_suite_test_boundary")
 
 
 class Request:
@@ -62,7 +63,28 @@ def authorization(pack, token: str, operation: str):
     return authorize_privacy_request(Request(token), operation, pack_id=pack.profile.id)
 
 
-def installed_queue(tmp_path: Path, monkeypatch):
+def migration_authorizations(pack, token: str) -> dict[str, object]:
+    return {
+        "read_authorization": authorization(pack, token, "migration.read"),
+        "complete_authorization": authorization(pack, token, "migration.complete"),
+        "protect_authorization": authorization(pack, token, "singleton.replace"),
+        "reveal_authorization": authorization(pack, token, "singleton.reveal"),
+    }
+
+
+def queue_migration(pack, store):
+    return QueueManagerMigrationCoordinator(
+        pack.migration,
+        pack.singletons(QUEUE_SINGLETON_RESOURCE_ID),
+        store,
+    )
+
+
+def installed_queue(
+    tmp_path: Path,
+    monkeypatch,
+    store: QueueManagerSingletonStore | None = None,
+):
     monkeypatch.setenv("HELTO_PRIVACY_KEYSTORE", str(tmp_path / "keystore.json"))
     monkeypatch.setenv("HELTO_PRIVACY_SESSION_DIR", str(tmp_path / "session"))
     monkeypatch.setenv(
@@ -79,7 +101,7 @@ def installed_queue(tmp_path: Path, monkeypatch):
     singletons.reset_singleton_runtime_for_tests()
     migration.reset_migration_runtime_for_tests()
     register_legacy_reader_units(utils_legacy_reader_units())
-    store = QueueManagerSingletonStore(tmp_path / "queue.sqlite3")
+    store = store or QueueManagerSingletonStore(tmp_path / "queue.sqlite3")
     pack = install(
         build_queue_manager_privacy_profile(),
         {
@@ -153,6 +175,10 @@ def test_normalization_is_private_by_default_and_semantic_comparison_ignores_clo
     normalized = normalize_managed_queue_state({"privacy_enabled": False})
     assert normalized["privacy_enabled"] is True
     assert normalized["paused"] is True
+    mode = QueueManagerModeAdapter()
+    assert mode.read_declared_mode(QUEUE_SCOPE_ID) == "private"
+    with pytest.raises(ValueError, match="always private"):
+        mode.write_declared_mode(QUEUE_SCOPE_ID, "public")
 
     left = {**normalized, "updated_at": 1}
     right = {**normalized, "updated_at": 999}
@@ -267,9 +293,8 @@ def test_store_rejects_malformed_current_row(tmp_path):
 
 
 def test_current_json_migrates_only_after_managed_readback(tmp_path, monkeypatch):
-    pack, _unused_store, token = installed_queue(tmp_path, monkeypatch)
+    pack, target, token = installed_queue(tmp_path, monkeypatch)
     source = tmp_path / "queue_manager_state.json"
-    target = QueueManagerSingletonStore(tmp_path / "managed.sqlite3")
     state = normalize_managed_queue_state({
         "queue": [{"id": "json-current", "title": "private json", "status": "pending"}],
     })
@@ -281,11 +306,10 @@ def test_current_json_migrates_only_after_managed_readback(tmp_path, monkeypatch
         "payload": json.dumps(payload, sort_keys=True, separators=(",", ":")),
     }), encoding="utf-8")
 
-    receipt = QueueManagerMigrationCoordinator(pack.migration, target).migrate_json(
+    receipt = queue_migration(pack, target).migrate_json(
         source,
         generation="current",
-        read_authorization=authorization(pack, token, "migration.read"),
-        complete_authorization=authorization(pack, token, "migration.complete"),
+        **migration_authorizations(pack, token),
     )
     snapshot = target.read_singleton(QUEUE_SINGLETON_ID)
     migrated = json.loads(
@@ -302,7 +326,7 @@ def test_current_json_migrates_only_after_managed_readback(tmp_path, monkeypatch
 
 
 def test_current_sqlite_migrates_and_retires_legacy_container(tmp_path, monkeypatch):
-    pack, _unused_store, token = installed_queue(tmp_path, monkeypatch)
+    pack, target, token = installed_queue(tmp_path, monkeypatch)
     path = tmp_path / "queue.sqlite3"
     state = normalize_managed_queue_state({
         "history": [{"id": "sqlite-current", "title": "private sqlite", "status": "completed"}],
@@ -336,14 +360,13 @@ def test_current_sqlite_migrates_and_retires_legacy_container(tmp_path, monkeypa
     connection.commit()
     connection.close()
 
-    receipt = QueueManagerMigrationCoordinator(
-        pack.migration,
-        QueueManagerSingletonStore(path),
+    receipt = queue_migration(
+        pack,
+        target,
     ).migrate_sqlite(
         path,
         generation="current",
-        read_authorization=authorization(pack, token, "migration.read"),
-        complete_authorization=authorization(pack, token, "migration.complete"),
+        **migration_authorizations(pack, token),
     )
     connection = sqlite3.connect(path)
     tables = {
@@ -360,15 +383,14 @@ def test_current_sqlite_migrates_and_retires_legacy_container(tmp_path, monkeypa
 
 @pytest.mark.parametrize("container", ("json", "sqlite"))
 def test_current_plaintext_state_is_rewritten_private(container, tmp_path, monkeypatch):
-    pack, _unused_store, token = installed_queue(tmp_path, monkeypatch)
+    pack, target, token = installed_queue(tmp_path, monkeypatch)
     state = {
         **normalize_managed_queue_state({
             "queue": [{"id": "plaintext-current", "title": "must encrypt"}],
         }),
         "privacy_enabled": False,
     }
-    target = QueueManagerSingletonStore(tmp_path / "managed.sqlite3")
-    coordinator = QueueManagerMigrationCoordinator(pack.migration, target)
+    coordinator = queue_migration(pack, target)
     if container == "json":
         source = tmp_path / "queue_manager_state.json"
         source.write_text(json.dumps({
@@ -380,8 +402,7 @@ def test_current_plaintext_state_is_rewritten_private(container, tmp_path, monke
         coordinator.migrate_json(
             source,
             generation="current",
-            read_authorization=authorization(pack, token, "migration.read"),
-            complete_authorization=authorization(pack, token, "migration.complete"),
+            **migration_authorizations(pack, token),
         )
     else:
         source = tmp_path / "queue_manager_state.sqlite3"
@@ -411,8 +432,7 @@ def test_current_plaintext_state_is_rewritten_private(container, tmp_path, monke
         coordinator.migrate_sqlite(
             source,
             generation="current",
-            read_authorization=authorization(pack, token, "migration.read"),
-            complete_authorization=authorization(pack, token, "migration.complete"),
+            **migration_authorizations(pack, token),
         )
 
     snapshot = target.read_singleton(QUEUE_SINGLETON_ID)
@@ -429,17 +449,6 @@ def test_current_plaintext_state_is_rewritten_private(container, tmp_path, monke
 
 
 def test_failed_migration_readback_rolls_back_and_keeps_source(tmp_path, monkeypatch):
-    pack, _unused_store, token = installed_queue(tmp_path, monkeypatch)
-    source = tmp_path / "queue_manager_state.json"
-    state = normalize_managed_queue_state({"queue": [{"id": "must-survive"}]})
-    payload = PrivacyEnvelopeCodec(QUEUE_SCHEMA).encrypt_state({"state": state})
-    source.write_text(json.dumps({
-        "version": 1,
-        "privacy_enabled": True,
-        "server_session_id": "synthetic-session",
-        "payload": json.dumps(payload, sort_keys=True, separators=(",", ":")),
-    }), encoding="utf-8")
-
     class CorruptOnceStore(QueueManagerSingletonStore):
         corrupt_once = True
 
@@ -451,13 +460,22 @@ def test_failed_migration_readback_rolls_back_and_keeps_source(tmp_path, monkeyp
             return snapshot
 
     target = CorruptOnceStore(tmp_path / "managed.sqlite3")
+    pack, target, token = installed_queue(tmp_path, monkeypatch, target)
+    source = tmp_path / "queue_manager_state.json"
+    state = normalize_managed_queue_state({"queue": [{"id": "must-survive"}]})
+    payload = PrivacyEnvelopeCodec(QUEUE_SCHEMA).encrypt_state({"state": state})
+    source.write_text(json.dumps({
+        "version": 1,
+        "privacy_enabled": True,
+        "server_session_id": "synthetic-session",
+        "payload": json.dumps(payload, sort_keys=True, separators=(",", ":")),
+    }), encoding="utf-8")
 
     with pytest.raises(MigrationError) as exc_info:
-        QueueManagerMigrationCoordinator(pack.migration, target).migrate_json(
+        queue_migration(pack, target).migrate_json(
             source,
             generation="current",
-            read_authorization=authorization(pack, token, "migration.read"),
-            complete_authorization=authorization(pack, token, "migration.complete"),
+            **migration_authorizations(pack, token),
         )
 
     assert exc_info.value.code == "migration_transaction_failed"
@@ -466,7 +484,7 @@ def test_failed_migration_readback_rolls_back_and_keeps_source(tmp_path, monkeyp
 
 
 def test_finalize_pending_migration_recovers_after_restart(tmp_path, monkeypatch):
-    pack, _unused_store, token = installed_queue(tmp_path, monkeypatch)
+    pack, target, token = installed_queue(tmp_path, monkeypatch)
     source = tmp_path / "queue_manager_state.json"
     state = normalize_managed_queue_state({"queue": [{"id": "recoverable"}]})
     payload = PrivacyEnvelopeCodec(QUEUE_SCHEMA).encrypt_state({"state": state})
@@ -476,7 +494,6 @@ def test_finalize_pending_migration_recovers_after_restart(tmp_path, monkeypatch
         "server_session_id": "synthetic-session",
         "payload": json.dumps(payload, sort_keys=True, separators=(",", ":")),
     }), encoding="utf-8")
-    target = QueueManagerSingletonStore(tmp_path / "managed.sqlite3")
     original_unlink = Path.unlink
     fail_once = True
 
@@ -488,23 +505,21 @@ def test_finalize_pending_migration_recovers_after_restart(tmp_path, monkeypatch
         return original_unlink(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "unlink", interrupted_unlink)
-    coordinator = QueueManagerMigrationCoordinator(pack.migration, target)
+    coordinator = queue_migration(pack, target)
     with pytest.raises(MigrationError) as exc_info:
         coordinator.migrate_json(
             source,
             generation="current",
-            read_authorization=authorization(pack, token, "migration.read"),
-            complete_authorization=authorization(pack, token, "migration.complete"),
+            **migration_authorizations(pack, token),
         )
     assert exc_info.value.code == "migration_finalization_pending"
     assert source.exists()
     assert target.read_singleton(QUEUE_SINGLETON_ID).revision == 1
 
-    receipt = QueueManagerMigrationCoordinator(pack.migration, target).migrate_json(
+    receipt = queue_migration(pack, target).migrate_json(
         source,
         generation="current",
-        read_authorization=authorization(pack, token, "migration.read"),
-        complete_authorization=authorization(pack, token, "migration.complete"),
+        **migration_authorizations(pack, token),
     )
 
     assert receipt.obligation_id.startswith("hp-obligation-")
@@ -520,12 +535,11 @@ def test_genuine_historical_queue_forms_migrate_through_exact_readers(
     container,
     generation,
 ):
-    pack, _unused_store, token = installed_queue(tmp_path, monkeypatch)
+    pack, target, token = installed_queue(tmp_path, monkeypatch)
     token = import_historical_queue_keys(pack, token, tmp_path)
     fixture = json.loads(HISTORICAL_FIXTURE.read_text(encoding="utf-8"))
     item = fixture["generations"][generation]
-    target = QueueManagerSingletonStore(tmp_path / "managed.sqlite3")
-    coordinator = QueueManagerMigrationCoordinator(pack.migration, target)
+    coordinator = queue_migration(pack, target)
 
     if container == "json":
         source = tmp_path / "queue_manager_state.json"
@@ -533,8 +547,7 @@ def test_genuine_historical_queue_forms_migrate_through_exact_readers(
         receipt = coordinator.migrate_json(
             source,
             generation=generation,
-            read_authorization=authorization(pack, token, "migration.read"),
-            complete_authorization=authorization(pack, token, "migration.complete"),
+            **migration_authorizations(pack, token),
         )
     else:
         source = tmp_path / "queue_manager_state.sqlite3"
@@ -569,8 +582,7 @@ def test_genuine_historical_queue_forms_migrate_through_exact_readers(
         receipt = coordinator.migrate_sqlite(
             source,
             generation=generation,
-            read_authorization=authorization(pack, token, "migration.read"),
-            complete_authorization=authorization(pack, token, "migration.complete"),
+            **migration_authorizations(pack, token),
         )
 
     snapshot = target.read_singleton(QUEUE_SINGLETON_ID)

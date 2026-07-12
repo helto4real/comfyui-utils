@@ -1,9 +1,4 @@
-"""Inactive shared privacy profile for Prompt Enhancer.
-
-The existing Prompt Enhancer serializers and routes remain authoritative until
-the coordinated Utils profile activation.  This module supplies the complete
-consumer-owned profile fragment and adapters for that later atomic cutover.
-"""
+"""Shared privacy profile for Prompt Enhancer."""
 
 from __future__ import annotations
 
@@ -24,6 +19,7 @@ from helto_privacy import (
     PrivateByDefaultModeAdapter,
     ProfileResource,
     ProtectedField,
+    ProtectedOperation,
     ResourceKind,
     SemanticExecutionProjection,
     SingletonDeclaration,
@@ -56,11 +52,18 @@ PROMPT_ENHANCER_BROWSER_ADAPTER_ID = "prompt-enhancer-workflow-browser"
 PROMPT_ENHANCER_PROJECTION_ADAPTER_ID = "prompt-enhancer-execution-projection"
 PROMPT_ENHANCER_DISPATCH_ADAPTER_ID = "prompt-enhancer-execution-dispatch"
 PROMPT_PROVIDER_SETTINGS_STORE_ADAPTER_ID = "prompt-provider-settings-store"
+PROMPT_PROVIDER_OPERATION_ADAPTER_ID = "prompt-provider-operations"
 
 PROMPT_ENHANCER_SCRIPT_FIELD_ID = "prompt-enhancer-script"
 PROMPT_ENHANCER_VARIABLES_FIELD_ID = "prompt-enhancer-variables"
 PROMPT_ENHANCER_EXECUTION_PROJECTION_ID = "prompt-enhancer-generate"
 PROMPT_PROVIDER_SETTINGS_SINGLETON_ID = "prompt-provider-settings"
+PROMPT_PROVIDER_OPERATION_IDS = (
+    "prompt-provider.settings-load",
+    "prompt-provider.settings-save",
+    "prompt-provider.model-download",
+    "prompt-provider.model-unload",
+)
 PROMPT_PROVIDER_SETTINGS_PLAINTEXT_BINDING_ID = (
     "prompt-provider-settings-plaintext-v1"
 )
@@ -143,6 +146,7 @@ def build_prompt_enhancer_privacy_profile() -> PrivacyProfile:
                 (
                     PROMPT_ENHANCER_STATE_ADAPTER_ID,
                     PROMPT_ENHANCER_BROWSER_ADAPTER_ID,
+                    PROMPT_PROVIDER_OPERATION_ADAPTER_ID,
                 ),
             ),
             ProfileResource(
@@ -184,6 +188,11 @@ def build_prompt_enhancer_privacy_profile() -> PrivacyProfile:
                 PROMPT_PROVIDER_SETTINGS_STORE_ADAPTER_ID,
                 ResourceKind.SINGLETON,
                 PROMPT_PROVIDER_SETTINGS_RESOURCE_ID,
+            ),
+            AdapterSlot(
+                PROMPT_PROVIDER_OPERATION_ADAPTER_ID,
+                ResourceKind.WORKFLOW,
+                PROMPT_ENHANCER_WORKFLOW_RESOURCE_ID,
             ),
         ),
         browser_adapters=(
@@ -231,6 +240,36 @@ def build_prompt_enhancer_privacy_profile() -> PrivacyProfile:
                 PROMPT_ENHANCER_WORKFLOW_RESOURCE_ID,
                 PROMPT_ENHANCER_PROJECTION_ADAPTER_ID,
                 PROMPT_ENHANCER_DISPATCH_ADAPTER_ID,
+            ),
+        ),
+        protected_operations=(
+            ProtectedOperation(
+                "prompt-provider.settings-load",
+                PROMPT_ENHANCER_WORKFLOW_RESOURCE_ID,
+                PROMPT_PROVIDER_OPERATION_ADAPTER_ID,
+                "/helto-utils/prompt-provider/settings",
+                "GET",
+            ),
+            ProtectedOperation(
+                "prompt-provider.settings-save",
+                PROMPT_ENHANCER_WORKFLOW_RESOURCE_ID,
+                PROMPT_PROVIDER_OPERATION_ADAPTER_ID,
+                "/helto-utils/prompt-provider/settings",
+                "POST",
+            ),
+            ProtectedOperation(
+                "prompt-provider.model-download",
+                PROMPT_ENHANCER_WORKFLOW_RESOURCE_ID,
+                PROMPT_PROVIDER_OPERATION_ADAPTER_ID,
+                "/helto-utils/prompt-provider/download",
+                "POST",
+            ),
+            ProtectedOperation(
+                "prompt-provider.model-unload",
+                PROMPT_ENHANCER_WORKFLOW_RESOURCE_ID,
+                PROMPT_PROVIDER_OPERATION_ADAPTER_ID,
+                "/helto-utils/prompt-provider/unload",
+                "POST",
             ),
         ),
         legacy_bindings=tuple(legacy_bindings),

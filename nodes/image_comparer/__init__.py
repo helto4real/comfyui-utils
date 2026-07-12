@@ -6,7 +6,7 @@ import torch
 
 from comfy_api.latest import io, ui
 
-from ...shared.privacy import private_media_record, write_encrypted_temp_bytes
+from ...shared.managed_privacy import utils_media_artifacts
 
 
 def _has_tensor(value) -> bool:
@@ -80,21 +80,6 @@ def _preview_images_for_slot(images=None, mask=None) -> torch.Tensor | None:
     return None
 
 
-def _private_image_records(images, filename_prefix: str, cls: type[io.ComfyNode]) -> list[dict]:
-    records = []
-    for index, encoded in enumerate(_encode_preview_bytes(images, cls)):
-        path = write_encrypted_temp_bytes(encoded, ".png", "image_comparer")
-        records.append(
-            private_media_record(
-                path,
-                content_type="image/png",
-                encrypted=True,
-                filename=f"{filename_prefix}_{index + 1:05}.png",
-            )
-        )
-    return records
-
-
 def _encode_preview_bytes(images, cls: type[io.ComfyNode]) -> list[bytes]:
     encoded = []
     metadata = ui.ImageSaveHelper._create_png_metadata(cls)
@@ -134,7 +119,7 @@ def _preview_records(images, filename_prefix: str, cls: type[io.ComfyNode], priv
         return []
 
     if privacy_mode:
-        return _private_image_records(images, filename_prefix, cls)
+        raise RuntimeError("Private previews require managed artifacts.")
 
     return ui.ImageSaveHelper.save_images(
         images,
@@ -168,13 +153,14 @@ class ImageComparer(io.ComfyNode):
         )
 
     @classmethod
-    def execute(
+    async def execute(
         cls,
         original=None,
         new=None,
         original_mask=None,
         new_mask=None,
         privacy_mode: bool = True,
+        unique_id: str | None = None,
     ) -> io.NodeOutput:
         if isinstance(original_mask, bool) and new_mask is None and privacy_mode is True:
             privacy_mode = original_mask
@@ -183,9 +169,27 @@ class ImageComparer(io.ComfyNode):
         original_preview = _preview_images_for_slot(original, original_mask)
         new_preview = _preview_images_for_slot(new, new_mask)
 
-        result = {
-            "a_images": _preview_records(original_preview, "helto.compare.original", cls, privacy_mode),
-            "b_images": _preview_records(new_preview, "helto.compare.new", cls, privacy_mode),
-        }
+        if privacy_mode:
+            managed = utils_media_artifacts()
+            owner = str(unique_id or "helto-image-comparer")
+            result = {
+                "a_images": await _managed_preview_records(
+                    original_preview,
+                    cls,
+                    managed,
+                    owner_key=f"{owner}:original",
+                ),
+                "b_images": await _managed_preview_records(
+                    new_preview,
+                    cls,
+                    managed,
+                    owner_key=f"{owner}:new",
+                ),
+            }
+        else:
+            result = {
+                "a_images": _preview_records(original_preview, "helto.compare.original", cls, False),
+                "b_images": _preview_records(new_preview, "helto.compare.new", cls, False),
+            }
 
         return io.NodeOutput(ui=result)

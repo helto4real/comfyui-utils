@@ -1,9 +1,8 @@
-"""Inactive shared-privacy binding for Queue Manager state.
+"""Active shared-privacy binding for Queue Manager state.
 
-The live queue route remains authoritative until the coordinated Utils profile
-activation.  This module owns only Queue Manager product facts and adapters;
-encryption, authorization, revision verification, and legacy-reader policy stay
-inside :mod:`helto_privacy`.
+This module owns only Queue Manager product facts and adapters; encryption,
+authorization, revision verification, and legacy-reader policy stay inside
+:mod:`helto_privacy`.
 """
 
 from __future__ import annotations
@@ -36,9 +35,6 @@ from helto_privacy import (
     UTILS_QUEUE_JSON_READER_IDS,
     UTILS_QUEUE_SQLITE_READER_IDS,
 )
-
-from .queue_manager_store import default_queue_manager_state, normalize_queue_manager_state
-
 
 QUEUE_PROFILE_ID = "helto.comfyui-utils"
 QUEUE_DISTRIBUTION = "comfyui-utils"
@@ -194,7 +190,42 @@ def build_queue_manager_privacy_profile() -> PrivacyProfile:
     )
 
 
-QueueManagerModeAdapter = PrivateByDefaultModeAdapter
+class QueueManagerModeAdapter(PrivateByDefaultModeAdapter):
+    """Keep persisted queue state private; no public storage writer exists."""
+
+    def write_declared_mode(self, scope_id: str, mode: object) -> None:
+        if scope_id != QUEUE_SCOPE_ID or mode != "private":
+            raise ValueError("Queue Manager persistence is always private.")
+        super().write_declared_mode(scope_id, mode)
+
+
+def default_queue_manager_state() -> dict[str, object]:
+    return {
+        "version": 1,
+        "privacy_enabled": True,
+        "paused": True,
+        "resume_required": False,
+        "active_run_id": None,
+        "queue": [],
+        "history": [],
+        "updated_at": None,
+    }
+
+
+def normalize_queue_manager_state(
+    state: Mapping[str, object] | None,
+) -> dict[str, object]:
+    normalized = default_queue_manager_state()
+    if isinstance(state, Mapping):
+        normalized.update(copy.deepcopy(dict(state)))
+    normalized["version"] = 1
+    normalized["privacy_enabled"] = bool(normalized.get("privacy_enabled", True))
+    normalized["paused"] = bool(normalized.get("paused", True))
+    normalized["queue"] = normalized.get("queue") if isinstance(normalized.get("queue"), list) else []
+    normalized["history"] = normalized.get("history") if isinstance(normalized.get("history"), list) else []
+    active = normalized.get("active_run_id")
+    normalized["active_run_id"] = active if isinstance(active, str) and active else None
+    return normalized
 
 
 def normalize_managed_queue_state(value: Mapping[str, object] | None) -> dict[str, object]:

@@ -1,15 +1,11 @@
-"""Inactive shared-workflow integration for the image selector.
-
-The current selector routes and serializers remain live until the coordinated
-suite activates.  This module supplies the complete profile fragment and real
-consumer adapters used by that later atomic cutover.
-"""
+"""Active shared-workflow integration for the image selector."""
 
 from __future__ import annotations
 
 import copy
 import inspect
 import json
+import mimetypes
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
@@ -28,6 +24,7 @@ from helto_privacy import (
     ProtectedField,
     ProtectedOperation,
     ResourceKind,
+    RootBoundSourceLeasePublisher,
     SemanticExecutionProjection,
     UTILS_KEY_BIN_IMPORT_ID,
     UTILS_PRIV1_READER_ID,
@@ -37,6 +34,7 @@ from helto_privacy import (
     UTILS_RAW_XOR_READER_ID,
     UTILS_WORKFLOW_READER_IDS,
     generate_artifact_owner_id,
+    root_bound_source,
 )
 
 from .managed_artifacts import (
@@ -87,9 +85,9 @@ _FIELD_DEFAULTS = {
 _OPERATION_ROUTES = {
     "selector.input-dir": ("/helto_selector/input_dir", "GET"),
     "selector.scan": ("/helto_selector/scan_folders", "POST"),
-    "selector.thumbnail": ("/helto_selector/thumbnail", "GET"),
-    "selector.source-view": ("/helto_selector/view_image", "GET"),
-    "selector.mask-read": ("/helto_selector/mask", "GET"),
+    "selector.thumbnail": ("/helto_selector/thumbnail", "POST"),
+    "selector.source-view": ("/helto_selector/view_image", "POST"),
+    "selector.mask-read": ("/helto_selector/mask", "POST"),
     "selector.image-delete": ("/helto_selector/delete_images", "POST"),
     "selector.image-paste": ("/helto_selector/paste_image", "POST"),
     "selector.mask-write": ("/helto_selector/save_mask", "POST"),
@@ -103,7 +101,7 @@ SELECTOR_OPERATION_IDS = tuple(_OPERATION_ROUTES)
 
 
 def build_selector_privacy_profile() -> PrivacyProfile:
-    """Build the deterministic selector slice for the future Utils profile."""
+    """Build the deterministic selector slice for the active Utils profile."""
 
     workflow_reader_ids = tuple(UTILS_WORKFLOW_READER_IDS.values())
     fields = tuple(
@@ -332,10 +330,11 @@ class SelectorOperationContext:
     workflow: object
     artifacts: object
     migration_authorizations: object | None = None
+    migration: object | None = None
 
 
 class SelectorProtectedOperations:
-    """Bound dispatch seam used by the future replacement route handlers."""
+    """Bound dispatch seam used by the active typed route handlers."""
 
     def __init__(
         self,
@@ -343,11 +342,13 @@ class SelectorProtectedOperations:
         workflow: object,
         artifacts: object,
         adapter: object,
+        migration: object | None = None,
     ) -> None:
         self._authorization = authorization
         self._workflow = workflow
         self._artifacts = artifacts
         self._adapter = adapter
+        self._migration = migration
 
     async def dispatch(
         self,
@@ -389,6 +390,7 @@ class SelectorProtectedOperations:
                     self._workflow,
                     self._artifacts,
                     migration_authorizations,
+                    self._migration,
                 ),
             )
             return await result if inspect.isawaitable(result) else result
@@ -416,6 +418,23 @@ class SelectorProductOperationAdapter:
         self._authorized_roots = authorized_roots
         self._input_directory = input_directory
         self._migration_coordinator = migration_coordinator
+        self._source_publisher = RootBoundSourceLeasePublisher(
+            SELECTOR_PROFILE_ID,
+            "selector.source-view",
+            self._authorize_source,
+        )
+
+    def _authorize_source(self, payload: object):
+        from . import services
+
+        data = dict(payload) if isinstance(payload, Mapping) else {}
+        roots = tuple(self._authorized_roots())
+        path = services.authorize_selector_image_path(
+            str(data.get("path") or ""),
+            authorized_roots=roots,
+        )
+        media_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
+        return root_bound_source(path, roots, media_type=media_type)
 
     async def invoke(
         self,
@@ -438,12 +457,11 @@ class SelectorProductOperationAdapter:
                 return services.unregister_selector_root(str(data.get("folder") or ""))
             return services.register_selector_roots(_string_list(data.get("folders")))
         if operation_id == "selector.source-view":
-            return {
-                "path": services.authorize_selector_image_path(
-                    str(data.get("path") or ""),
-                    authorized_roots=roots,
-                )
-            }
+            publication = await self._source_publisher.publish(
+                data,
+                context.authorization,
+            )
+            return {"private": True, **publication.to_payload()}
         if operation_id == "selector.scan":
             result = services.scan_folders_payload(
                 services.ScanFoldersPayload.from_request_data(data),
@@ -456,8 +474,12 @@ class SelectorProductOperationAdapter:
             result["removed_cache_count"] = retired
             return result
         if operation_id == "selector.thumbnail":
-            reference, value = await artifacts.thumbnail(str(data.get("path") or ""))
-            return {"reference": _reference_payload(reference), "bytes": value}
+            reference, _value = await artifacts.thumbnail(str(data.get("path") or ""))
+            return {
+                "private": True,
+                "artifactKind": "selector-thumbnail",
+                "artifact": _reference_payload(reference),
+            }
         if operation_id == "selector.mask-read":
             image_path = str(data.get("path") or "")
             reference = data.get("reference")
@@ -466,8 +488,17 @@ class SelectorProductOperationAdapter:
                     image_path,
                     authorized_roots=roots,
                 )
-                return {"bytes": services.default_mask_png_payload(authorized)}
-            return {"bytes": await artifacts.read_mask(image_path, reference)}
+                import base64
+
+                encoded = base64.b64encode(
+                    services.default_mask_png_payload(authorized)
+                ).decode("ascii")
+                return {"publicDataUrl": f"data:image/png;base64,{encoded}"}
+            return {
+                "private": True,
+                "artifactKind": "selector-mask",
+                "artifact": reference,
+            }
         if operation_id == "selector.mask-write":
             image_path = str(data.get("path") or "")
             mask_data = str(data.get("mask_data") or "")
@@ -496,16 +527,13 @@ class SelectorProductOperationAdapter:
             )
             return {"status": "success", "retired_count": retired}
         if operation_id == "selector.mask-migrate":
-            if (
-                self._migration_coordinator is None
-                or context.migration_authorizations is None
-            ):
-                raise RuntimeError("Selector migration is not bound.")
-            receipt = await self._migration_coordinator.migrate(
-                context.migration_authorizations
-            )
-            to_payload = getattr(receipt, "to_payload", None)
-            return to_payload() if callable(to_payload) else receipt
+            if self._migration_coordinator is not None:
+                receipt = await self._migration_coordinator.migrate(
+                    context.migration_authorizations
+                )
+                to_payload = getattr(receipt, "to_payload", None)
+                return to_payload() if callable(to_payload) else receipt
+            return await _migrate_legacy_mask_references(data, context)
         if operation_id == "selector.image-delete":
             result = services.delete_images_payload(
                 services.DeleteImagesPayload.from_request_data(data),
@@ -606,6 +634,62 @@ def _reference_payload(reference: object) -> object:
     if isinstance(reference, Mapping):
         return dict(reference)
     raise TypeError("Selector artifact reference is invalid.")
+
+
+async def _migrate_legacy_mask_references(
+    data: Mapping[str, object],
+    context: SelectorOperationContext,
+) -> dict[str, object]:
+    from pathlib import Path
+
+    from .mask_storage import mask_cache_paths
+
+    masks = data.get("masks")
+    if not isinstance(masks, Mapping):
+        raise ValueError("Selector legacy masks are invalid.")
+    updated = dict(masks)
+    migrated = 0
+    for image_path, reference in masks.items():
+        if (
+            not isinstance(image_path, str)
+            or not isinstance(reference, Mapping)
+            or set(reference) != {"key"}
+        ):
+            continue
+        plain_path, encrypted_path = map(Path, mask_cache_paths(image_path))
+        if plain_path.is_file():
+            mask_bytes = plain_path.read_bytes()
+        elif encrypted_path.is_file():
+            if context.migration is None or context.migration_authorizations is None:
+                raise RuntimeError("Selector legacy migration is unavailable.")
+            source = encrypted_path.read_bytes()
+            mask_bytes = None
+            for generation in ("priv3", "priv2", "priv1", "raw-xor"):
+                candidate: object = source
+                if generation == "raw-xor":
+                    from helto_privacy import utils_raw_xor_source
+
+                    candidate = utils_raw_xor_source(source, "selector-mask")
+                discovered = context.migration.discover_and_read(
+                    f"selector-mask-{generation}",
+                    candidate,
+                    context.migration_authorizations.read,
+                )
+                if discovered is not None:
+                    mask_bytes = discovered.value
+                    break
+            if not isinstance(mask_bytes, bytes):
+                raise ValueError("Selector legacy mask is unsupported.")
+        else:
+            raise ValueError("Selector legacy mask source is missing.")
+        current = await context.artifacts.write_mask(
+            image_path,
+            mask_bytes,
+            generate_artifact_owner_id(),
+        )
+        updated[image_path] = _reference_payload(current)
+        migrated += 1
+    return {"masks": updated, "migratedCount": migrated}
 
 
 def _string_list(value: object) -> list[str]:

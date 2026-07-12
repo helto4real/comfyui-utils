@@ -38,7 +38,7 @@ from shared.privacy_show_any_migration import (
 )
 
 
-pytestmark = pytest.mark.usefixtures("inactive_coordinated_suite_test_boundary")
+pytestmark = pytest.mark.usefixtures("coordinated_suite_test_boundary")
 
 
 class Request:
@@ -193,7 +193,6 @@ def test_managed_node_output_contains_one_envelope_and_no_plaintext(tmp_path, mo
     result = adapter.invoke(
         {"prompt": "SYNTHETIC_PRIVATE_DISPLAY_CANARY"},
         pack.workflow("privacy-show-any-workflow"),
-        _authorization(pack, token, "snapshot.protect"),
     )
 
     assert "SYNTHETIC_PRIVATE_DISPLAY_CANARY" in result[0]

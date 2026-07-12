@@ -20,7 +20,6 @@ from ...shared.prompt_enhancer import (
     build_visual_context_prompt,
     build_system_prompt,
     load_system_prompt,
-    decrypt_prompt_text,
     PromptEnhancerProgress,
     provider_model_supports_images,
     resolve_seed,
@@ -114,6 +113,12 @@ class PromptEnhancer(io.ComfyNode):
                 io.String.Input("video_system_prompt_preset", default="default", dynamic_prompts=False),
                 io.Boolean.Input("hide_mode", default=False),
                 io.Boolean.Input("privacy_mode", default=True),
+                io.String.Input(
+                    "private_execution",
+                    default="",
+                    socketless=True,
+                    extra_dict={"hidden": True},
+                ),
                 io.String.Input("ollama_url", default=DEFAULT_OLLAMA_URL),
                 io.Int.Input("ollama_keep_alive", default=DEFAULT_OLLAMA_KEEP_ALIVE, min=-1, max=120, step=1),
                 io.Combo.Input("ollama_keep_alive_unit", options=["seconds", "minutes", "hours"], default="minutes"),
@@ -196,6 +201,7 @@ class PromptEnhancer(io.ComfyNode):
         video_system_prompt_preset: str = "default",
         hide_mode: bool = False,
         privacy_mode: bool = True,
+        private_execution: str = "",
         ollama_url: str = DEFAULT_OLLAMA_URL,
         ollama_keep_alive: int = DEFAULT_OLLAMA_KEEP_ALIVE,
         ollama_keep_alive_unit: str = "minutes",
@@ -206,6 +212,26 @@ class PromptEnhancer(io.ComfyNode):
         vision_model_backend: str = DEFAULT_VISION_BACKEND,
         unique_id: str | None = None,
     ) -> io.NodeOutput:
+        if privacy_mode is not False:
+            import json
+
+            from ...shared.managed_privacy import utils_privacy_pack
+
+            try:
+                reference = json.loads(private_execution)
+            except (TypeError, json.JSONDecodeError):
+                raise ValueError("PRIVACY_EXECUTION_REFERENCE_INVALID") from None
+            resolved = utils_privacy_pack().execution(
+                "prompt-enhancer-execution"
+            ).dispatch(
+                reference,
+                {
+                    "external_prompt": external_prompt,
+                    "seed": seed,
+                },
+            )
+            script = resolved.value["resolved_script"]
+            variables = json.dumps(resolved.value["variables"])
         unique_id = unique_id or getattr(getattr(cls, "hidden", None), "unique_id", None)
         progress = PromptEnhancerProgress(unique_id)
         resolved_seed = resolve_seed(seed)
@@ -222,7 +248,7 @@ class PromptEnhancer(io.ComfyNode):
             MAX_GENERATION_MAX_TOKENS,
         )
         prompt_kind = prompt_type if prompt_type in VIDEO_PROMPT_TYPES else "image"
-        plain_script = decrypt_prompt_text(script)
+        plain_script = str(script or "")
         prompt_source = str(external_prompt or "").strip() or plain_script.strip()
         resolved_script = substitute_prompt_variables(prompt_source, variables, resolved_seed)
         progress.phase_start("media")

@@ -1,14 +1,12 @@
-# Selector managed-artifact staging
+# Selector managed-artifact lifecycle
 
-The selector mask and thumbnail replacement path is staged in
-`helto_selector_backend/managed_artifacts.py`. It is intentionally inactive:
-the existing selector routes continue to use `mask_storage.py` and
-`thumbnail_cache.py` until the selector workflow migration can commit its
-encrypted fields and durable mask references in one receipt.
+The selector uses `helto_selector_backend/managed_artifacts.py` for private
+masks and thumbnails. Product code generates bytes and validates roots;
+`helto-privacy` stores them and issues short-lived browser leases.
 
-The staged contract declares:
+The active contract declares:
 
-- `selector-mask` as a durable adjunct owned by the future workflow-mask
+- `selector-mask` as a durable adjunct owned by the workflow-mask
   transaction, with PNG product bytes and `preview`/`use` lease operations;
 - `selector-thumbnail` as a regenerable source-revision cache with WebP product
   bytes and a `preview` lease operation;
@@ -28,8 +26,6 @@ provenance-recorded historical `HELTO_PRIV3` mask, current WebP regeneration,
 unreadable-cache replacement, opaque leases, startup cleanup, and injected
 storage and retirement failures. They do not inspect live ComfyUI data.
 
-Privacy-bearing test modules explicitly opt into a pytest fixture that bypasses
-only the unpublished suite's outer activation gate. Production activation
-remains mandatory, future activation tests are unaffected unless they opt in,
-and the marked tests still exercise token authorization, keystore state,
-envelope encryption, managed storage, and fail-closed errors.
+Privacy-bearing tests bypass only the unpublished signed-suite gate. They still
+exercise authorization, keystore state, envelope encryption, managed storage,
+legacy conversion, and fail-closed errors.

@@ -2,14 +2,12 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Callable
 from typing import Any
 
 import numpy as np
 import torch
 from PIL import Image, ImageOps
 
-from .crypto import decrypt_selection
 from .mask_storage import edited_mask_path_set, load_mask_image
 
 try:
@@ -112,11 +110,8 @@ def make_mask_batch(tensor_list: list[torch.Tensor]) -> torch.Tensor:
     return torch.cat(padded_tensors, dim=0)
 
 
-def parse_selected_paths(
-    selected_images: str | None,
-    decrypt_func: Callable[[str], str] = decrypt_selection,
-) -> list[str]:
-    raw_selection = decrypt_func(selected_images or "[]")
+def parse_selected_paths(selected_images: str | None) -> list[str]:
+    raw_selection = selected_images or "[]"
     try:
         image_paths = json.loads(raw_selection)
     except Exception as e:
@@ -129,11 +124,8 @@ def parse_selected_paths(
     return [path for path in image_paths if isinstance(path, str)]
 
 
-def parse_edited_masks(
-    edited_masks: str | None,
-    decrypt_func: Callable[[str], str] = decrypt_selection,
-) -> dict[str, Any]:
-    raw_masks = decrypt_func(edited_masks or "{}")
+def parse_edited_masks(edited_masks: str | None) -> dict[str, Any]:
+    raw_masks = edited_masks or "{}"
     try:
         mask_map = json.loads(raw_masks)
     except Exception as e:
@@ -148,9 +140,8 @@ def parse_edited_masks(
 
 def parse_edited_bboxes(
     edited_bboxes: str | None,
-    decrypt_func: Callable[[str], str] = decrypt_selection,
 ) -> dict[str, list[dict[str, float]]]:
-    raw_bboxes = decrypt_func(edited_bboxes or "{}")
+    raw_bboxes = edited_bboxes or "{}"
     try:
         bbox_map = json.loads(raw_bboxes)
     except Exception as e:
@@ -216,11 +207,21 @@ def load_rgb_image_pairs(paths: list[str]) -> list[tuple[str, Image.Image]]:
     return loaded_images
 
 
-def load_masks_for_images(image_pairs: list[tuple[str, Image.Image]], edited_masks: dict[str, Any]) -> list[Image.Image]:
+def load_masks_for_images(
+    image_pairs: list[tuple[str, Image.Image]],
+    edited_masks: dict[str, Any],
+    mask_loader: Callable[[str, object], Image.Image | None] | None = None,
+) -> list[Image.Image]:
     edited_paths = edited_mask_path_set(edited_masks)
     masks = []
     for path, img in image_pairs:
-        mask_img = load_mask_image(path) if path in edited_paths else None
+        mask_img = (
+            mask_loader(path, edited_masks[path])
+            if path in edited_paths and mask_loader is not None
+            else load_mask_image(path)
+            if path in edited_paths
+            else None
+        )
         if mask_img is None:
             mask_img = Image.new("L", img.size, 255)
         elif mask_img.size != img.size:
@@ -369,6 +370,7 @@ def select_images(
     resize_mode: str = DEFAULT_RESIZE_MODE,
     edited_masks: str | None = "{}",
     edited_bboxes: str | None = "{}",
+    mask_loader: Callable[[str, object], Image.Image | None] | None = None,
 ) -> tuple[list[torch.Tensor], torch.Tensor, list[torch.Tensor], torch.Tensor, list[list[dict[str, int]]]]:
     _progress("start", "Reading selected images", phase="selection", percent=0)
     image_paths = parse_selected_paths(selected_images)
@@ -401,7 +403,7 @@ def select_images(
 
     loaded_images = [img for _, img in image_pairs]
     _progress("start", "Loading selector masks", phase="load_masks", value=0, total=len(image_pairs))
-    loaded_masks = load_masks_for_images(image_pairs, edited_mask_map)
+    loaded_masks = load_masks_for_images(image_pairs, edited_mask_map, mask_loader)
     _progress("done", "Loaded selector masks", phase="load_masks", value=len(loaded_masks), total=len(image_pairs))
     _progress("update", "Resizing selected images", phase="resize", percent=35)
     processed_images = resize_images(loaded_images, resize_mode)

@@ -32,16 +32,15 @@ from shared.prompt_enhancer.provider import (
     ollama_keep_alive,
     resolve_seed,
 )
-from shared.prompt_enhancer.variables import decrypt_prompt_text, parse_prompt_variables, substitute_prompt_variables
+from shared.prompt_enhancer.variables import parse_prompt_variables, substitute_prompt_variables
 from shared.prompt_enhancer.video_script import (
     VideoScriptError,
     build_segment_variables,
     parse_video_prompt_script,
 )
-from helto_selector_backend.crypto import encrypt_selection
 
 
-pytestmark = pytest.mark.usefixtures("inactive_coordinated_suite_test_boundary")
+pytestmark = pytest.mark.usefixtures("coordinated_suite_test_boundary")
 
 
 @contextmanager
@@ -452,25 +451,22 @@ class PromptEnhancerProviderTests(unittest.TestCase):
         request.assert_called_once()
         self.assertEqual(request.call_args.args[1], {"model": "llava:latest", "keep_alive": 0, "stream": False})
 
-    def test_prompt_variables_parse_plain_and_encrypted_json(self):
+    def test_prompt_variables_parse_plain_json_and_reject_protected_values(self):
         plain = json_dumps([
             {"name": "style", "mode": "random", "values": ["cinematic", "documentary"], "fixed_index": 4},
             {"name": "bad-name", "values": ["ignored"]},
         ])
-        with isolated_privacy_keystore():
-            encrypted = encrypt_selection(plain)
+        expected = [
+            {
+                "name": "style",
+                "mode": "random",
+                "values": ["cinematic", "documentary"],
+                "fixed_index": 1,
+            }
+        ]
 
-            expected = [
-                {
-                    "name": "style",
-                    "mode": "random",
-                    "values": ["cinematic", "documentary"],
-                    "fixed_index": 1,
-                }
-            ]
-
-            self.assertEqual(parse_prompt_variables(plain), expected)
-            self.assertEqual(parse_prompt_variables(encrypted), expected)
+        self.assertEqual(parse_prompt_variables(plain), expected)
+        self.assertEqual(parse_prompt_variables("__HELTO_ENC__:synthetic"), [])
 
     def test_prompt_variables_substitute_fixed_random_and_unknown_tokens(self):
         variables = [
@@ -491,14 +487,6 @@ class PromptEnhancerProviderTests(unittest.TestCase):
     def test_prompt_variables_ignore_invalid_payloads(self):
         self.assertEqual(parse_prompt_variables("not-json"), [])
         self.assertEqual(substitute_prompt_variables("keep {{style}}", "not-json", 1), "keep {{style}}")
-
-    def test_encrypted_prompt_text_decrypts_and_invalid_values_fail_closed(self):
-        with isolated_privacy_keystore():
-            encrypted = encrypt_selection("secret prompt")
-
-            self.assertEqual(decrypt_prompt_text("plain prompt"), "plain prompt")
-            self.assertEqual(decrypt_prompt_text(encrypted), "secret prompt")
-            self.assertEqual(decrypt_prompt_text("__HELTO_ENC__:not-valid"), "")
 
     def test_video_script_parser_builds_segment_variables(self):
         script = """[rating=SFW]
@@ -1149,32 +1137,6 @@ A character turns around. @image3:character
         self.assertIsNone(generate.call_args.args[1])
         self.assertIn("hello", PromptProviderRegistry().generate(local_request))
 
-    def test_provider_settings_store_hf_token_privately(self):
-        with tempfile.TemporaryDirectory() as tmpdir, isolated_privacy_keystore():
-            saved = local_provider.save_hf_token("token-value", tmpdir)
-            stored = local_provider.settings_path(tmpdir).read_text(encoding="utf-8")
-
-            self.assertTrue(saved["tokenConfigured"])
-            self.assertNotIn("token-value", stored)
-            self.assertIn("hf_token_encrypted", stored)
-            self.assertEqual(local_provider.configured_hf_token(tmpdir), "token-value")
-
-            cleared = local_provider.clear_hf_token(tmpdir)
-
-            self.assertFalse(cleared["tokenConfigured"])
-
-    def test_provider_settings_migrate_legacy_plaintext_token(self):
-        with tempfile.TemporaryDirectory() as tmpdir, isolated_privacy_keystore():
-            path = local_provider.settings_path(tmpdir)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text('{"version": 1, "hf_token": "legacy-token"}', encoding="utf-8")
-
-            self.assertEqual(local_provider.configured_hf_token(tmpdir), "legacy-token")
-            migrated = path.read_text(encoding="utf-8")
-            self.assertNotIn("legacy-token", migrated)
-            self.assertIn("hf_token_encrypted", migrated)
-
-
 class PromptEnhancerRouteTests(unittest.TestCase):
     def setUp(self):
         self._server_module = sys.modules.get("server")
@@ -1245,7 +1207,7 @@ class PromptEnhancerRouteTests(unittest.TestCase):
         self.assertIn('"ollama_error": "offline"', response.text)
         self.assertIn('"model_id": "fallback_text_backend"', response.text)
 
-    def test_provider_model_routes_download_unload_and_settings(self):
+    def test_provider_model_helpers_download_and_unload(self):
         routes = importlib.import_module("shared.prompt_enhancer.routes")
 
         async def fake_to_thread(func, *args):
@@ -1261,32 +1223,6 @@ class PromptEnhancerRouteTests(unittest.TestCase):
         self.assertIn('"model": "fallback_text_backend"', download_response.text)
         self.assertEqual(unload_response.status, 200)
         self.assertIn('"unloaded": ["fallback_text_backend"]', unload_response.text)
-
-        with tempfile.TemporaryDirectory() as tmpdir, isolated_privacy_keystore(), patch.object(routes, "provider_settings_status", lambda: local_provider.provider_settings_status(tmpdir)), \
-                patch.object(routes, "save_hf_token", lambda token: local_provider.save_hf_token(token, tmpdir)), \
-                patch.object(routes, "clear_hf_token", lambda: local_provider.clear_hf_token(tmpdir)):
-            settings_response = asyncio.run(routes._save_provider_settings({"hf_token": "secret"}))
-            clear_response = asyncio.run(routes._save_provider_settings({"clear": True}))
-
-        self.assertEqual(settings_response.status, 200)
-        self.assertIn('"tokenConfigured": true', settings_response.text)
-        self.assertEqual(clear_response.status, 200)
-        self.assertIn('"tokenConfigured": false', clear_response.text)
-
-    def test_provider_mutation_and_credential_routes_require_privacy_token(self):
-        routes = importlib.import_module("shared.prompt_enhancer.routes")
-        denied = types.SimpleNamespace(status=401)
-
-        class Request:
-            async def json(self):
-                return {"model_id": "fallback_text_backend", "hf_token": "secret"}
-
-        request = Request()
-        with patch.object(routes, "aiohttp_check_privacy_token", return_value=denied):
-            self.assertIs(asyncio.run(routes.post_provider_download(request)), denied)
-            self.assertIs(asyncio.run(routes.post_provider_unload(request)), denied)
-            self.assertIs(asyncio.run(routes.get_provider_settings(request)), denied)
-            self.assertIs(asyncio.run(routes.post_provider_settings(request)), denied)
 
     def test_system_prompt_routes_get_save_and_reset(self):
         routes = importlib.import_module("shared.prompt_enhancer.routes")

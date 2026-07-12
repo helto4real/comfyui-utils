@@ -10,9 +10,9 @@ import {
 } from "../../web/prompt_enhancer_privacy_adapter.js";
 
 
-const declaration = (id, name) => ({ id, location: { name } });
-const script = declaration(PROMPT_ENHANCER_SCRIPT_FIELD_ID, "script");
-const variables = declaration(PROMPT_ENHANCER_VARIABLES_FIELD_ID, "variables");
+const context = (fieldId) => ({ fieldId });
+const script = context(PROMPT_ENHANCER_SCRIPT_FIELD_ID);
+const variables = context(PROMPT_ENHANCER_VARIABLES_FIELD_ID);
 const historicalFixture = JSON.parse(readFileSync(
     new URL("../fixtures/historical/utils_legacy_formats.json", import.meta.url),
     "utf8",

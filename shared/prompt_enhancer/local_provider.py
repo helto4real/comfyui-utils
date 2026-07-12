@@ -16,15 +16,6 @@ from urllib.parse import unquote, urlparse
 from PIL import Image
 
 from .progress import PromptEnhancerProgress
-from .provider_settings import (
-    clear_hf_token,
-    configured_hf_token,
-    hf_auth_token,
-    load_provider_settings,
-    provider_settings_status,
-    save_hf_token,
-    settings_path,
-)
 from .provider import (
     DEFAULT_OLLAMA_KEEP_ALIVE,
     effective_generation_token_budget,
@@ -348,7 +339,9 @@ def ensure_model_downloaded(
         from huggingface_hub import hf_hub_download, snapshot_download
     except Exception as exc:  # noqa: BLE001
         raise LocalProviderError("Local model downloads require optional package: huggingface_hub") from exc
-    download_token = hf_auth_token() if auth_token is _LEGACY_AUTH_TOKEN else auth_token
+    if auth_token is _LEGACY_AUTH_TOKEN:
+        raise RuntimeError("Managed provider authorization is required.")
+    download_token = auth_token
 
     if spec.file_urls:
         files = list(zip(model_files_for(spec), model_file_paths_for(spec), strict=True))

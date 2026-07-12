@@ -1,4 +1,4 @@
-// Inactive product adapters for the shared selector workflow profile.
+// Product adapters for the shared selector workflow profile.
 
 export const SELECTOR_SELECTED_FIELD_ID = "selector-selected-images";
 export const SELECTOR_MASKS_FIELD_ID = "selector-edited-masks";
@@ -25,9 +25,9 @@ const FIELD_FACTS = Object.freeze({
 function failure() {
     throw new Error("PRIVACY_SELECTOR_STATE_INVALID");
 }
-function fieldFacts(declaration) {
-    const facts = FIELD_FACTS[declaration?.id];
-    if (!facts || declaration?.location?.name !== facts.widget) failure();
+function fieldFacts(context) {
+    const facts = FIELD_FACTS[context?.fieldId ?? context?.id];
+    if (!facts) failure();
     return facts;
 }
 
@@ -76,16 +76,17 @@ function bboxMap(value) {
     return result;
 }
 
-function normalize(declaration, value) {
+function normalize(context, value) {
     const parsed = parseValue(value);
-    if (declaration.id === SELECTOR_SELECTED_FIELD_ID) return { value: uniqueStrings(parsed) };
-    if (declaration.id === SELECTOR_MASKS_FIELD_ID) return { value: maskMap(parsed) };
-    if (declaration.id === SELECTOR_BBOXES_FIELD_ID) return { value: bboxMap(parsed) };
+    const fieldId = context?.fieldId ?? context?.id;
+    if (fieldId === SELECTOR_SELECTED_FIELD_ID) return { value: uniqueStrings(parsed) };
+    if (fieldId === SELECTOR_MASKS_FIELD_ID) return { value: maskMap(parsed) };
+    if (fieldId === SELECTOR_BBOXES_FIELD_ID) return { value: bboxMap(parsed) };
     return failure();
 }
 
-function widget(node, declaration) {
-    const facts = fieldFacts(declaration);
+function widget(node, context) {
+    const facts = fieldFacts(context);
     const found = node?.widgets?.find((item) => item?.name === facts.widget);
     if (!found) failure();
     return found;
@@ -120,22 +121,40 @@ export function createSelectorModeBrowserAdapter() {
 export function createSelectorWorkflowBrowserAdapter() {
     let sessionLocked = false;
     return {
-        normalize(value, declaration) {
-            fieldFacts(declaration);
-            return normalize(declaration, value);
+        normalize(node, context) {
+            const facts = fieldFacts(context);
+            return normalize(context, node?.[facts.runtime]);
         },
-        readProtected(node, declaration) {
-            return widget(node, declaration).value;
+        readProtected(node, context) {
+            return String(widget(node, context).value || "");
         },
-        writeProtected(node, declaration, protectedValue) {
-            widget(node, declaration).value = protectedValue;
+        writeProtected(node, protectedValue, context) {
+            if (typeof protectedValue !== "string") failure();
+            widget(node, context).value = protectedValue;
         },
-        apply(node, value, declaration) {
-            const facts = fieldFacts(declaration);
-            node[facts.runtime] = structuredClone(normalize(declaration, value).value);
+        apply(node, value, context) {
+            const facts = fieldFacts(context);
+            node[facts.runtime] = structuredClone(normalize(context, value).value);
+            if (
+                (context?.fieldId ?? context?.id) === SELECTOR_MASKS_FIELD_ID
+                && typeof node?.migrateLegacyMasks === "function"
+                && Object.values(node.editedMasks || {}).some((reference) => (
+                    reference
+                    && typeof reference === "object"
+                    && !Array.isArray(reference)
+                    && Object.keys(reference).length === 1
+                    && typeof reference.key === "string"
+                ))
+            ) {
+                queueMicrotask(() => {
+                    node.migrateLegacyMasks().catch((err) => {
+                        console.warn("Failed to migrate legacy selector masks:", err);
+                    });
+                });
+            }
         },
-        clear(node, declaration) {
-            const facts = fieldFacts(declaration);
+        clear(node, context) {
+            const facts = fieldFacts(context);
             node[facts.runtime] = facts.defaultValue();
         },
         reconcileNode(node) {

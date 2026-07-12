@@ -1,9 +1,9 @@
 # Managed media-node lifecycle cutover
 
-`shared/private_media_managed.py` now contains the complete inactive
-replacement for Utils media-node preview, thumbnail-cache, private staging, and
-Save Video replay behavior. It remains staged for the coordinated privacy-suite
-activation, so current live node call sites and workflow schemas are unchanged.
+`shared/private_media_managed.py` owns the active Utils media-node preview,
+thumbnail-cache, source-lease, and Save Video replay binding. Node schemas keep
+their existing `privacy_mode` inputs while private derivatives use managed
+artifacts rather than local encrypted temp files or path tokens.
 
 Each affected node has its own fail-closed mode scope. The legacy
 `privacy_mode` input maps only explicit `false`/`public` to public; missing,
@@ -31,7 +31,7 @@ The artifact inventory is product-specific:
   are served transients.
 - Save Video GIF, WebP, AVI, Matroska, QuickTime, MP4, and WebM previews use
   distinct declarations so the shared response preserves the encoded media
-  type. The inactive encoder writes animated output to memory and FFmpeg video,
+  type. The private encoder writes animated output to memory and FFmpeg video,
   metadata, stderr, and audio-mux output through anonymous file descriptors;
   it never supplies a named private output or staging directory.
 - Load Video WebP thumbnails are regenerable caches keyed by the existing
@@ -51,11 +51,10 @@ Transition cleanup enumerates only generated derivatives: comparer previews,
 Load Video thumbnails/copies, save preview copies, Save Video private staging,
 and plaintext/encrypted legacy replay caches. User-requested saved output files
 and original allowed-root media are not derivatives and are never purged. The
-inactive public Save Image adapter routes previews into the dedicated
+public Save Image adapter routes previews into the dedicated
 `helto_save_image_advanced` temp subfolder so a public-to-private transition can
 delete the exact generated directory without matching user filename prefixes.
 
-Final suite activation will switch the five node producers and browser
-consumers to this staged surface, then delete `shared/private_media_routes.py`,
-the token/encrypted-temp helpers in `shared/privacy.py`, named private staging,
-local replay encryption, and the five legacy token URL builders.
+All five node producers and browser consumers use this surface. The old private
+media route, token URL builders, named private staging, local replay encryption,
+and encrypted-temp helpers have been removed.

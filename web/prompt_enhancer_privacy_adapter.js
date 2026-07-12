@@ -1,4 +1,4 @@
-// Inactive browser adapters for the shared Prompt Enhancer privacy profile.
+// Browser adapters for the shared Prompt Enhancer privacy profile.
 
 export const PROMPT_ENHANCER_SCRIPT_FIELD_ID = "prompt-enhancer-script";
 export const PROMPT_ENHANCER_VARIABLES_FIELD_ID = "prompt-enhancer-variables";
@@ -119,32 +119,33 @@ export function createPromptEnhancerModeBrowserAdapter() {
 export function createPromptEnhancerWorkflowBrowserAdapter() {
     let sessionLocked = false;
     return {
-        normalize(value, declaration) {
-            const field = facts(declaration);
-            const state = editor(value);
-            const live = field.widget === "script" ? state.promptText : state.variables;
-            return normalizeValue(live, declaration);
-        },
-        readProtected(node, declaration) {
-            return widget(node, declaration).value;
-        },
-        writeProtected(node, declaration, protectedValue) {
-            widget(node, declaration).value = protectedValue;
-        },
-        apply(node, value, declaration) {
-            const normalized = normalizeValue(value, declaration).value;
+        normalize(node, context) {
+            const field = facts(context);
             const state = editor(node);
-            if (declaration.id === PROMPT_ENHANCER_SCRIPT_FIELD_ID) {
+            const live = field.widget === "script" ? state.promptText : state.variables;
+            return normalizeValue(live, context);
+        },
+        readProtected(node, context) {
+            return String(widget(node, context).value || "");
+        },
+        writeProtected(node, protectedValue, context) {
+            if (typeof protectedValue !== "string") failure();
+            widget(node, context).value = protectedValue;
+        },
+        apply(node, value, context) {
+            const normalized = normalizeValue(value, context).value;
+            const state = editor(node);
+            if ((context?.fieldId ?? context?.id) === PROMPT_ENHANCER_SCRIPT_FIELD_ID) {
                 state.promptText = normalized;
                 if (state.textarea) state.textarea.value = normalized;
             } else {
                 state.variables = structuredClone(normalized);
             }
         },
-        clear(node, declaration) {
+        clear(node, context) {
             const state = editor(node);
-            facts(declaration);
-            if (declaration.id === PROMPT_ENHANCER_SCRIPT_FIELD_ID) {
+            facts(context);
+            if ((context?.fieldId ?? context?.id) === PROMPT_ENHANCER_SCRIPT_FIELD_ID) {
                 state.promptText = "";
                 if (state.textarea) state.textarea.value = "";
             } else {

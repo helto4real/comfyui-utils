@@ -5,10 +5,7 @@ import re
 from io import BytesIO
 from datetime import date
 
-from aiohttp import web
 import folder_paths
-from helto_privacy import aiohttp_check_privacy_token
-import server
 from comfy_api.latest import io, ui
 from comfy_execution.graph import ExecutionBlocker
 
@@ -16,11 +13,10 @@ from ...shared import progress_api as helto_progress
 from ...shared.pause_release import (
     cancel_pause_release,
     consume_pause_release,
-    dispatch_pause_release,
     request_pause_release,
 )
 from ...shared.private_media_managed import SAVE_IMAGE_PUBLIC_PREVIEW_SUBFOLDER
-from ...shared.privacy import private_media_record, write_encrypted_temp_bytes
+from ...shared.managed_privacy import utils_media_artifacts
 
 
 _COUNTER_RE_TEMPLATE = r"^{prefix}_(?P<counter>\d+)_?\.png$"
@@ -90,7 +86,7 @@ class SaveImageAdvanced(io.ComfyNode):
         return float("NaN")
 
     @classmethod
-    def execute(
+    async def execute(
         cls,
         images=None,
         folder: str = "",
@@ -103,6 +99,7 @@ class SaveImageAdvanced(io.ComfyNode):
         privacy_mode: bool = True,
         save_image: bool = True,
         release_token: str = "",
+        unique_id: str | None = None,
     ) -> io.NodeOutput:
         node_id = cls._node_id()
         cached_preview = cls.state["previews"].get(node_id)
@@ -162,7 +159,11 @@ class SaveImageAdvanced(io.ComfyNode):
 
             if privacy_mode:
                 preview = {
-                    "helto_private_images": cls._private_preview_records(images, filename_prefix),
+                    "helto_private_images": await cls._managed_private_preview_records(
+                        images,
+                        utils_media_artifacts(),
+                        owner_key=str(unique_id or node_id),
+                    ),
                     "images": [],
                 }
             else:
@@ -405,44 +406,6 @@ class SaveImageAdvanced(io.ComfyNode):
         return encoded
 
     @classmethod
-    def _private_preview_records(cls, images, filename_prefix: str) -> list[dict]:
-        records = []
-        total = _item_count(images)
-        node_id = cls._node_id()
-        helto_progress.start(
-            "Creating private image previews",
-            phase="private_preview",
-            value=0,
-            total=total,
-            node_id=node_id,
-        )
-        for index, encoded in enumerate(cls._encode_private_preview_bytes(images)):
-            path = write_encrypted_temp_bytes(encoded, ".png", "save_image_advanced")
-            records.append(
-                private_media_record(
-                    path,
-                    content_type="image/png",
-                    encrypted=True,
-                    filename=f"{filename_prefix}_{index + 1:05}.png",
-                )
-            )
-            helto_progress.update(
-                f"Encrypted preview {index + 1}/{total or index + 1}",
-                phase="private_preview",
-                value=index + 1,
-                total=total,
-                node_id=node_id,
-            )
-        helto_progress.done(
-            "Created private image previews",
-            phase="private_preview",
-            value=total if total is not None else len(records),
-            total=total,
-            node_id=node_id,
-        )
-        return records
-
-    @classmethod
     async def _managed_private_preview_records(
         cls,
         images,
@@ -492,16 +455,3 @@ class SaveImageAdvanced(io.ComfyNode):
             if match:
                 counters.append(int(match.group("counter")))
         return max(counters, default=0) + 1
-
-
-@server.PromptServer.instance.routes.post("/helto_save_image_advanced/release")
-async def release_save_image_advanced(request):
-    try:
-        denied = aiohttp_check_privacy_token(request)
-        if denied is not None:
-            return denied
-        data = await request.json()
-        result, status = dispatch_pause_release(SaveImageAdvanced, data)
-        return web.json_response(result, status=status)
-    except Exception as exc:
-        return web.json_response({"ok": False, "error": str(exc)}, status=400)

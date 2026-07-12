@@ -19,10 +19,8 @@ except ImportError:
 
 try:
     from .video_config import VIDEO_EXTENSIONS, thumbnail_cache_dir
-    from ...shared.privacy import LOAD_VIDEO_CACHE_PURPOSE, decrypt_bytes, encrypt_bytes, private_media_record, remove_plain_file_silent
 except ImportError:
     from video_config import VIDEO_EXTENSIONS, thumbnail_cache_dir
-    from shared.privacy import LOAD_VIDEO_CACHE_PURPOSE, decrypt_bytes, encrypt_bytes, private_media_record, remove_plain_file_silent
 
 
 def _fraction_to_float(value: Any) -> float:
@@ -145,24 +143,14 @@ def thumbnail_bytes(video_path: Path, privacy_mode: bool, max_size: int = 360) -
     encrypted_path = encrypted_thumbnail_path(video_path, max_size=max_size)
 
     if privacy_mode:
-        if encrypted_path.exists():
-            return decrypt_bytes(encrypted_path.read_bytes(), purpose=LOAD_VIDEO_CACHE_PURPOSE)
-        if plain_path.exists():
-            data = plain_path.read_bytes()
-        else:
-            data = generate_thumbnail_bytes(video_path, max_size=max_size)
-        encrypted_path.write_bytes(encrypt_bytes(data, purpose=LOAD_VIDEO_CACHE_PURPOSE))
-        remove_plain_file_silent(plain_path)
-        return data
+        raise RuntimeError("Private thumbnails require managed artifacts.")
 
     if plain_path.exists():
         return plain_path.read_bytes()
-    if encrypted_path.exists():
-        data = decrypt_bytes(encrypted_path.read_bytes(), purpose=LOAD_VIDEO_CACHE_PURPOSE)
-    else:
-        data = generate_thumbnail_bytes(video_path, max_size=max_size)
+    data = generate_thumbnail_bytes(video_path, max_size=max_size)
     plain_path.write_bytes(data)
-    remove_plain_file_silent(encrypted_path)
+    if encrypted_path.exists():
+        encrypted_path.unlink()
     return data
 
 
@@ -172,7 +160,7 @@ def preview_result(video_path: Path, subfolder: str = "helto_load_video", privac
 
     video_path = Path(video_path).resolve()
     if privacy_mode:
-        return private_media_record(video_path, content_type="video/mp4", encrypted=False, filename=video_path.name)
+        raise RuntimeError("Private source previews require shared source leases.")
 
     for folder_type, base_dir in (
         (io.FolderType.output, folder_paths.get_output_directory()),

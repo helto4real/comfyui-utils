@@ -1,9 +1,7 @@
-"""Synthetic consumer-test boundary for the unpublished coordinated suite.
+"""Synthetic boundary for testing the active profile before suite publication.
 
-Production remains gated by exact suite activation. These unit tests patch only
-that outer release gate so their existing token, keystore, envelope, route, and
-artifact assertions can exercise the intended behavior against the local
-unpublished helto-privacy revision.
+Tests patch only the outer signed-suite release gate. Product privacy behavior,
+adapter completeness, authorization, and managed storage remain active.
 """
 
 from __future__ import annotations
@@ -18,6 +16,10 @@ import helto_privacy.keystore as keystore
 
 
 @pytest.fixture
-def inactive_coordinated_suite_test_boundary(monkeypatch):
+def coordinated_suite_test_boundary(monkeypatch, tmp_path):
+    monkeypatch.setenv(
+        "HELTO_PRIVACY_ARTIFACT_ROOT",
+        str(tmp_path / "managed-artifacts"),
+    )
     for module in (artifacts, comfy_ui, envelope, guard, keystore):
         monkeypatch.setattr(module, "require_active_process_suite", lambda: None)

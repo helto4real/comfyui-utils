@@ -3,7 +3,6 @@ import { app } from "/scripts/app.js";
 import { selectorApi } from "./api.js";
 import { ICONS } from "./constants.js";
 import { collapseHiddenWidgetLayout, containPointerEvents, createModal, setWidgetHeight } from "./ui.js";
-import { privacyFetchJson } from "./privacy_common.js";
 import {
     PROMPT_ENHANCER_NODE_CLASS,
     SCRIPT_WIDGET_NAME,
@@ -17,8 +16,6 @@ import {
     deleteSystemPromptPreset,
     fetchSystemPromptPresets,
     hideSerializedSettingsWidgets,
-    isEncryptedText,
-    isEncryptedVariables,
     isPromptEnhancerNode,
     keepFixedPromptSeed,
     isPointInPromptWidget,
@@ -57,10 +54,11 @@ import {
     writePromptText,
     writePromptVariables,
 } from "./prompt_enhancer_helpers.js";
+import { requireUtilsPrivacy } from "./managed_privacy.js";
 import {
-    ensurePrivacyRecoveryRegistered,
-    showAutoPrivacyRecoveryIfIssues,
-} from "./privacy_recovery.js";
+    PROMPT_ENHANCER_SCRIPT_FIELD_ID,
+    PROMPT_ENHANCER_VARIABLES_FIELD_ID,
+} from "./prompt_enhancer_privacy_adapter.js";
 
 const BUTTONS_ADDED = "__heltoPromptEnhancerButtonsAdded";
 const SETTINGS_BUTTON = "__heltoPromptEnhancerSettingsButton";
@@ -367,17 +365,6 @@ async function refreshPromptEditorVariables(node, force = false) {
     if (state.variablesLoadId !== loadId) {
         return state.variables;
     }
-    if (
-        readPromptEnhancerSettings(node).privacyMode
-        && serializedValue
-        && serializedValue !== "[]"
-        && !isEncryptedVariables(serializedValue)
-    ) {
-        const recovery = await showAutoPrivacyRecoveryIfIssues(node.graph ?? app.graph);
-        if (recovery?.result?.appliedCount > 0) {
-            variables = await readPromptVariables(node, selectorApi);
-        }
-    }
     state.variables = variables;
     state.variablesWidgetValue = serializedPromptVariablesValue(node);
     return variables;
@@ -398,17 +385,6 @@ async function loadPromptEditorText(node, force = false) {
         return state.promptText;
     }
 
-    const needsRecovery = readPromptEnhancerSettings(node).privacyMode
-        && text
-        && serializedValue === text
-        && !isEncryptedText(serializedValue);
-    if (needsRecovery) {
-        const recovery = await showAutoPrivacyRecoveryIfIssues(node.graph ?? app.graph);
-        if (recovery?.result?.appliedCount > 0) {
-            text = await readPromptText(node, selectorApi);
-        }
-    }
-
     state.promptText = text;
     state.promptWidgetValue = serializedPromptValue(node);
     if (document.activeElement !== state.textarea && state.textarea.value !== text) {
@@ -425,7 +401,8 @@ function persistPromptEditorText(node, text, privacyMode = readPromptEnhancerSet
         state.promptSaveId = (state.promptSaveId ?? 0) + 1;
     }
     const saveId = state?.promptSaveId ?? 0;
-    const persistPromise = writePromptText(node, plain, privacyMode, selectorApi).then((serialized) => {
+    const persistPromise = writePromptText(node, plain, privacyMode, selectorApi).then(async (serialized) => {
+        if (privacyMode) await settlePromptPrivacyField(node, PROMPT_ENHANCER_SCRIPT_FIELD_ID);
         const activeState = getPromptEditorState(node);
         if (!activeState || activeState.promptSaveId === saveId) {
             if (activeState) activeState.promptWidgetValue = serializedPromptValue(node);
@@ -439,6 +416,13 @@ function persistPromptEditorText(node, text, privacyMode = readPromptEnhancerSet
         state.promptPersistPromise = persistPromise;
     }
     return persistPromise;
+}
+
+async function settlePromptPrivacyField(node, fieldId) {
+    const privacy = await requireUtilsPrivacy();
+    const workflow = privacy.workflow("prompt-enhancer-workflow");
+    workflow.markEdited(node, fieldId);
+    await workflow.settle("manual-save");
 }
 
 function installPromptPrivacySerialization(node) {
@@ -822,15 +806,31 @@ async function refreshModels(node) {
 }
 
 async function postProviderAction(path, payload) {
-    return privacyFetchJson(path, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload || {}),
-    });
+    const privacy = await requireUtilsPrivacy();
+    const operation = path.endsWith("/download")
+        ? "prompt-provider.model-download"
+        : path.endsWith("/unload")
+            ? "prompt-provider.model-unload"
+            : "prompt-provider.settings-save";
+    const result = await privacy.workflow("prompt-enhancer-workflow").invoke(
+        operation,
+        operation === "prompt-provider.settings-save"
+            ? { ...(payload || {}), expectedRevision: providerSettingsRevision }
+            : (payload || {}),
+    );
+    if (Number.isInteger(result?.revision)) providerSettingsRevision = result.revision;
+    return result;
 }
 
+let providerSettingsRevision = 0;
+
 async function fetchProviderSettings() {
-    return privacyFetchJson("/helto_prompt_enhancer/providers/settings");
+    const privacy = await requireUtilsPrivacy();
+    const result = await privacy.workflow("prompt-enhancer-workflow").invoke(
+        "prompt-provider.settings-load",
+    );
+    if (Number.isInteger(result?.revision)) providerSettingsRevision = result.revision;
+    return result;
 }
 
 async function saveProviderSettings(payload) {
@@ -1345,7 +1345,9 @@ async function openVariablesEditor(node) {
         <div class="helto-prompt-enhancer-variable-list" id="helto-pe-variable-list"></div>
     `;
     const modal = createModal("Prompt enhancer variables", content, async () => {
-        await writePromptVariables(node, variables, readPromptEnhancerSettings(node).privacyMode, selectorApi);
+        const privacyMode = readPromptEnhancerSettings(node).privacyMode;
+        await writePromptVariables(node, variables, privacyMode, selectorApi);
+        if (privacyMode) await settlePromptPrivacyField(node, PROMPT_ENHANCER_VARIABLES_FIELD_ID);
         const state = getPromptEditorState(node);
         if (state) {
             state.variables = variables;
@@ -1587,6 +1589,7 @@ function openSettingsModal(node) {
         }
         await persistPromptEditorText(node, promptText, privacyMode);
         await writePromptVariables(node, variables, privacyMode, selectorApi);
+        if (privacyMode) await settlePromptPrivacyField(node, PROMPT_ENHANCER_VARIABLES_FIELD_ID);
         const state = getPromptEditorState(node);
         if (state) {
             state.promptText = promptText;
@@ -1686,7 +1689,6 @@ function ensurePromptEnhancerUi(node) {
 }
 
 schedulePromptEnhancerSeedQueuePatch();
-ensurePrivacyRecoveryRegistered();
 
 app.registerExtension({
     name: "Helto.PromptEnhancer",

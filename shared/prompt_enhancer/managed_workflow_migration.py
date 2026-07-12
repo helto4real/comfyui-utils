@@ -9,13 +9,11 @@ from typing import Protocol
 
 from helto_privacy import (
     MigrationVerification,
-    PrivacyEnvelopeCodec,
     is_verified_current_disposition,
     protected_envelope_mapping,
 )
 
 from .managed_privacy import (
-    PROMPT_ENHANCER_SCHEMA,
     _FIELD_LOCATIONS,
     _normalize_field,
     build_prompt_enhancer_privacy_profile,
@@ -35,6 +33,7 @@ class PromptEnhancerMigrationAuthorizations:
     complete: object
     protect: object
     inspect: object
+    reveal: object
 
 
 class PromptEnhancerWorkflowMigrationCoordinator:
@@ -81,6 +80,7 @@ class PromptEnhancerWorkflowMigrationCoordinator:
             self._store,
             authorizations.protect,
             authorizations.inspect,
+            authorizations.reveal,
             captured_original=original,
         )
         return self._migration.complete_many(
@@ -98,6 +98,7 @@ class PromptEnhancerWorkflowMigrationTransaction:
         store: PromptEnhancerWorkflowStore,
         protect_authorization: object,
         inspect_authorization: object,
+        reveal_authorization: object,
         *,
         captured_original: Mapping[str, object] | None = None,
     ) -> None:
@@ -105,6 +106,7 @@ class PromptEnhancerWorkflowMigrationTransaction:
         self._store = store
         self._protect_authorization = protect_authorization
         self._inspect_authorization = inspect_authorization
+        self._reveal_authorization = reveal_authorization
         self._original = (
             copy.deepcopy(dict(captured_original))
             if captured_original is not None
@@ -172,9 +174,11 @@ class PromptEnhancerWorkflowMigrationTransaction:
         normalized = {
             field_id: _normalize_field(
                 field_id,
-                PrivacyEnvelopeCodec(PROMPT_ENHANCER_SCHEMA).decrypt_state(
-                    stored[field_id]
-                )["value"],
+                self._workflow.reveal(
+                    field_id,
+                    stored[field_id],
+                    self._reveal_authorization,
+                ).value["value"],
             )
             for field_id in _FIELD_LOCATIONS
         }

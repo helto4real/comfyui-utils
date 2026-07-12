@@ -1,0 +1,21 @@
+[project]
+name = "comfyui-utils"
+version = "0.1.0"
+description = "Helto ComfyUI workflow utilities and managed privacy features."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "helto-privacy @ git+https://github.com/helto4real/helto-privacy.git@4753baa7e2e3e842d315777b13c03f09cda150d3",
+    "cryptography>=42.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.comfy]
+PublisherId = "helto"
+DisplayName = "Helto ComfyUI Utils"
+Icon = ""
+web = "web"

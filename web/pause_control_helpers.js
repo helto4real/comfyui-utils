@@ -1,5 +1,3 @@
-export const SAVE_IMAGE_RELEASE_ROUTE = "/helto_save_image_advanced/release";
-export const SAVE_VIDEO_RELEASE_ROUTE = "/helto_save_video_advanced/release";
 export const PAUSE_CONTROL_RUNTIME_WIDGET_NAMES = new Set(["continue", "run again", "queueing", "hide mode"]);
 
 function asNumberSet(values) {

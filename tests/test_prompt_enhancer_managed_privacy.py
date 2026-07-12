@@ -34,6 +34,7 @@ from shared.prompt_enhancer.managed_privacy import (
     PROMPT_ENHANCER_SCRIPT_FIELD_ID,
     PROMPT_ENHANCER_VARIABLES_FIELD_ID,
     PROMPT_PROVIDER_SETTINGS_SINGLETON_ID,
+    PROMPT_PROVIDER_OPERATION_ADAPTER_ID,
     PromptEnhancerExecutionDispatchAdapter,
     PromptEnhancerExecutionProjectionAdapter,
     PromptEnhancerModeAdapter,
@@ -58,7 +59,7 @@ from shared.prompt_enhancer.provider import (
 from shared.prompt_enhancer import local_provider
 
 
-pytestmark = pytest.mark.usefixtures("inactive_coordinated_suite_test_boundary")
+pytestmark = pytest.mark.usefixtures("coordinated_suite_test_boundary")
 
 
 class Request:
@@ -116,6 +117,23 @@ def _authorization(pack, token: str, operation: str):
     return authorize_privacy_request(Request(token), operation, pack_id=pack.profile.id)
 
 
+def _provider_migration(pack, store):
+    return PromptProviderSettingsMigrationCoordinator(
+        pack.migration,
+        pack.singletons("prompt-provider-settings"),
+        store,
+    )
+
+
+def _provider_migration_authorizations(pack, token: str) -> tuple[object, ...]:
+    return (
+        _authorization(pack, token, "migration.read"),
+        _authorization(pack, token, "migration.complete"),
+        _authorization(pack, token, "singleton.replace"),
+        _authorization(pack, token, "singleton.reveal"),
+    )
+
+
 def _installed_pack(tmp_path, monkeypatch, dispatcher=None):
     monkeypatch.setenv("HELTO_PRIVACY_KEYSTORE", str(tmp_path / "keystore.json"))
     monkeypatch.setenv("HELTO_PRIVACY_SESSION_DIR", str(tmp_path / "session"))
@@ -132,6 +150,11 @@ def _installed_pack(tmp_path, monkeypatch, dispatcher=None):
     register_legacy_reader_units(utils_legacy_reader_units())
     store = PromptProviderSettingsStore(tmp_path / "provider_settings.json")
     product_dispatcher = dispatcher or (lambda value, _context, _cancellation: value)
+
+    class ProviderOperations:
+        def invoke(self, payload, context):
+            return context.invoke_prompt_provider_operation(payload)
+
     pack = install(
         build_prompt_enhancer_privacy_profile(),
         {
@@ -142,6 +165,7 @@ def _installed_pack(tmp_path, monkeypatch, dispatcher=None):
                 product_dispatcher
             ),
             "prompt-provider-settings-store": store,
+            PROMPT_PROVIDER_OPERATION_ADAPTER_ID: ProviderOperations(),
         },
     )
     password = "synthetic prompt password"
@@ -268,6 +292,7 @@ def test_grouped_workflow_migration_rewrites_both_fields_in_one_receipt(
             complete=_authorization(pack, token, "migration.complete"),
             protect=_authorization(pack, token, "snapshot.protect"),
             inspect=_authorization(pack, token, "snapshot.disposition"),
+            reveal=_authorization(pack, token, "snapshot.reveal"),
         ),
     )
 
@@ -315,6 +340,7 @@ def test_failed_grouped_workflow_migration_restores_both_original_fields(
                 complete=_authorization(pack, token, "migration.complete"),
                 protect=_authorization(pack, token, "snapshot.protect"),
                 inspect=_authorization(pack, token, "snapshot.disposition"),
+                reveal=_authorization(pack, token, "snapshot.reveal"),
             ),
         )
 
@@ -515,15 +541,9 @@ def test_plaintext_provider_migration_rewrites_then_verifies_before_retirement(
         encoding="utf-8",
     )
     original = store.path.read_bytes()
-    coordinator = PromptProviderSettingsMigrationCoordinator(
-        pack.migration,
-        store,
-    )
+    coordinator = _provider_migration(pack, store)
 
-    receipt = coordinator.migrate(
-        _authorization(pack, token, "migration.read"),
-        _authorization(pack, token, "migration.complete"),
-    )
+    receipt = coordinator.migrate(*_provider_migration_authorizations(pack, token))
 
     assert receipt.disposition == "migrated"
     assert secret not in store.path.read_text(encoding="utf-8")
@@ -544,11 +564,8 @@ def test_encrypted_wrapper_migrates_and_malformed_store_never_defaults(
         json.dumps({"version": 2, "hf_token_encrypted": envelope}),
         encoding="utf-8",
     )
-    coordinator = PromptProviderSettingsMigrationCoordinator(pack.migration, store)
-    coordinator.migrate(
-        _authorization(pack, token, "migration.read"),
-        _authorization(pack, token, "migration.complete"),
-    )
+    coordinator = _provider_migration(pack, store)
+    coordinator.migrate(*_provider_migration_authorizations(pack, token))
     service = PromptProviderSettingsService(
         pack.singletons("prompt-provider-settings"),
         environment_token=lambda: "",
@@ -580,12 +597,9 @@ def test_failed_provider_migration_restores_exact_plaintext_source(tmp_path, mon
         store.path.write_text('{"format":"corrupt"}', encoding="utf-8")
 
     monkeypatch.setattr(store, "_write", corrupt_after_write)
-    coordinator = PromptProviderSettingsMigrationCoordinator(pack.migration, store)
+    coordinator = _provider_migration(pack, store)
 
     with pytest.raises(shared_migration.MigrationError):
-        coordinator.migrate(
-            _authorization(pack, token, "migration.read"),
-            _authorization(pack, token, "migration.complete"),
-        )
+        coordinator.migrate(*_provider_migration_authorizations(pack, token))
 
     assert store.path.read_bytes() == source

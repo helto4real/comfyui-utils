@@ -24,18 +24,15 @@ function node() {
     };
 }
 
-const declarations = {
+const contexts = {
     [SELECTOR_SELECTED_FIELD_ID]: {
-        id: SELECTOR_SELECTED_FIELD_ID,
-        location: { name: "selected_images" },
+        fieldId: SELECTOR_SELECTED_FIELD_ID,
     },
     [SELECTOR_MASKS_FIELD_ID]: {
-        id: SELECTOR_MASKS_FIELD_ID,
-        location: { name: "edited_masks" },
+        fieldId: SELECTOR_MASKS_FIELD_ID,
     },
     [SELECTOR_BBOXES_FIELD_ID]: {
-        id: SELECTOR_BBOXES_FIELD_ID,
-        location: { name: "edited_bboxes" },
+        fieldId: SELECTOR_BBOXES_FIELD_ID,
     },
 };
 
@@ -51,10 +48,10 @@ test("selector browser adapters default private and map the three runtime fields
     state.apply(
         target,
         { value: ["/synthetic/root/a.png"] },
-        declarations[SELECTOR_SELECTED_FIELD_ID],
+        contexts[SELECTOR_SELECTED_FIELD_ID],
     );
     assert.deepEqual(target.selectedPaths, ["/synthetic/root/a.png"]);
-    state.clear(target, declarations[SELECTOR_SELECTED_FIELD_ID]);
+    state.clear(target, contexts[SELECTOR_SELECTED_FIELD_ID]);
     assert.deepEqual(target.selectedPaths, []);
 });
 test("selector browser normalization is canonical and fail closed", () => {
@@ -62,20 +59,23 @@ test("selector browser normalization is canonical and fail closed", () => {
 
     assert.deepEqual(
         state.normalize(
-            '["/synthetic/root/a.png", 12, "/synthetic/root/a.png"]',
-            declarations[SELECTOR_SELECTED_FIELD_ID],
+            { selectedPaths: ["/synthetic/root/a.png", 12, "/synthetic/root/a.png"] },
+            contexts[SELECTOR_SELECTED_FIELD_ID],
         ),
         { value: ["/synthetic/root/a.png"] },
     );
     assert.deepEqual(
         state.normalize(
-            '{"/synthetic/root/a.png":{"id":"managed"}}',
-            declarations[SELECTOR_MASKS_FIELD_ID],
+            { editedMasks: { "/synthetic/root/a.png": { id: "managed" } } },
+            contexts[SELECTOR_MASKS_FIELD_ID],
         ),
         { value: { "/synthetic/root/a.png": { id: "managed" } } },
     );
     assert.throws(
-        () => state.normalize("not-json", declarations[SELECTOR_SELECTED_FIELD_ID]),
+        () => state.normalize(
+            { selectedPaths: "not-json" },
+            contexts[SELECTOR_SELECTED_FIELD_ID],
+        ),
         /PRIVACY_SELECTOR_STATE_INVALID/,
     );
 });
@@ -83,13 +83,29 @@ test("selector browser normalization is canonical and fail closed", () => {
 test("selector browser adapter reads and writes only declared hidden widgets", () => {
     const target = node();
     const state = createSelectorWorkflowBrowserAdapter();
-    const declaration = declarations[SELECTOR_MASKS_FIELD_ID];
+    const context = contexts[SELECTOR_MASKS_FIELD_ID];
 
-    state.writeProtected(target, declaration, "CURRENT_ENVELOPE");
-    assert.equal(state.readProtected(target, declaration), "CURRENT_ENVELOPE");
+    state.writeProtected(target, "CURRENT_ENVELOPE", context);
+    assert.equal(state.readProtected(target, context), "CURRENT_ENVELOPE");
     state.onPrivacySessionChange({ state: "locked" });
     state.reconcileNode(target);
     assert.deepEqual(target.selectedPaths, []);
     assert.deepEqual(target.editedMasks, {});
     assert.deepEqual(target.editedBboxes, {});
+});
+
+test("selector browser adapter schedules replacement of revealed legacy mask references", async () => {
+    const target = node();
+    let migrations = 0;
+    target.migrateLegacyMasks = async () => { migrations += 1; };
+    const state = createSelectorWorkflowBrowserAdapter();
+
+    state.apply(
+        target,
+        { value: { "/synthetic/root/a.png": { key: "legacy-mask-key" } } },
+        contexts[SELECTOR_MASKS_FIELD_ID],
+    );
+    await new Promise((resolve) => queueMicrotask(resolve));
+
+    assert.equal(migrations, 1);
 });

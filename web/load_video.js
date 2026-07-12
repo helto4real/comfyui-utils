@@ -1,10 +1,12 @@
 import { app } from "/scripts/app.js";
 import { api } from "/scripts/api.js";
-import { ensurePrivacyTokenCookieSoon, privacyFetch } from "./privacy_common.js";
+import {
+    requireUtilsPrivacy,
+    resolveUtilsPrivateMediaRecord,
+} from "./managed_privacy.js";
 
 const NODE_CLASS = "HeltoLoadVideo";
 const DISPLAY_NAME = "Load Video";
-const ROUTE_PREFIX = "/helto_load_video";
 const PICKER_BUTTON = "__heltoLoadVideoPickerButton";
 const PREVIEW_REQUEST = "__heltoLoadVideoPreviewRequest";
 const EXECUTED_WRAPPED = "__heltoLoadVideoExecutedWrapped";
@@ -237,30 +239,9 @@ function ensureVideoPreviewMediaType(node) {
     node.previewMediaType = "video";
 }
 
-function routeUrl(path) {
-    ensurePrivacyTokenCookieSoon();
-    return api.apiURL(path);
-}
-
-function privateRecordToUrl(record) {
-    if (!record?.private || !record?.token) {
-        return null;
-    }
-    ensurePrivacyTokenCookieSoon();
-    const params = new URLSearchParams({ token: record.token });
-    return api.apiURL(`/helto_utils/private_media?${params.toString()}${app.getRandParam?.() ?? ""}`);
-}
-
-async function fetchJson(path, options = {}) {
-    const response = await privacyFetch(path, {
-        ...options,
-        fetcher: (route, init) => api.fetchApi(route, init),
-    });
-    const data = await response.json();
-    if (!response.ok || data?.error) {
-        throw new Error(data?.error || response.statusText);
-    }
-    return data;
+async function invokeMediaOperation(operationId, payload = {}) {
+    const privacy = await requireUtilsPrivacy();
+    return privacy.workflow("private-media-source").invoke(operationId, payload);
 }
 
 function getVideoWidget(node) {
@@ -269,14 +250,6 @@ function getVideoWidget(node) {
 
 function getAliasWidget(node) {
     return node.widgets?.find((widget) => widget.name === "video_folder_alias");
-}
-
-function getPrivacyWidget(node) {
-    return node.widgets?.find((widget) => widget.name === "privacy_mode");
-}
-
-function isPrivacyModeEnabled(node) {
-    return Boolean(getPrivacyWidget(node)?.value ?? node.properties?.privacy_mode ?? true);
 }
 
 function hideWidget(widget) {
@@ -288,19 +261,16 @@ function hideWidget(widget) {
     widget.computeSize = () => [0, -4];
 }
 
-function previewPayloadPath(alias, filename, privacyMode = true) {
-    if (!filename) {
-        return "";
-    }
-    const params = new URLSearchParams({ alias: alias || "input", filename, privacy: privacyMode ? "1" : "0" });
-    return `${ROUTE_PREFIX}/preview?${params.toString()}`;
-}
-
-function privatePreviewUrls(output) {
+async function privatePreviewUrls(output) {
     if (!Array.isArray(output?.images)) {
         return [];
     }
-    return output.images.map(privateRecordToUrl).filter(Boolean);
+    const urls = await Promise.all(output.images.map((record) => (
+        record?.private
+            ? resolveUtilsPrivateMediaRecord(record, (path) => api.apiURL(path))
+            : null
+    )));
+    return urls.filter(Boolean);
 }
 
 function previewKeysForNode(node) {
@@ -312,8 +282,8 @@ function previewKeysForNode(node) {
     return keys;
 }
 
-function syncPrivatePreviewUrls(node, output) {
-    const urls = privatePreviewUrls(output);
+async function syncPrivatePreviewUrls(node, output) {
+    const urls = await privatePreviewUrls(output);
     app.nodePreviewImages ??= {};
 
     if (urls.length) {
@@ -328,13 +298,13 @@ function syncPrivatePreviewUrls(node, output) {
     }
 }
 
-function applyNativePreview(node, payload) {
+async function applyNativePreview(node, payload) {
     const output = {
         images: payload?.images || [],
         animated: payload?.animated || [true],
     };
     const nodeId = String(node.id);
-    syncPrivatePreviewUrls(node, output);
+    await syncPrivatePreviewUrls(node, output);
 
     app.nodeOutputs ??= {};
     app.nodeOutputs[nodeId] = output;
@@ -360,18 +330,20 @@ function applyNativePreview(node, payload) {
 async function refreshNativePreview(node) {
     const video = getVideoWidget(node)?.value || "";
     const alias = getAliasWidget(node)?.value || "input";
-    const privacyMode = isPrivacyModeEnabled(node);
     if (!video) {
         return;
     }
 
     const requestId = Symbol("load-video-preview");
     node[PREVIEW_REQUEST] = requestId;
-    const payload = await fetchJson(previewPayloadPath(alias, video, privacyMode));
+    const payload = {
+        images: [await invokeMediaOperation("serve-source-media", { alias, filename: video })],
+        animated: [true],
+    };
     if (node[PREVIEW_REQUEST] !== requestId) {
         return;
     }
-    applyNativePreview(node, payload);
+    await applyNativePreview(node, payload);
 }
 
 async function showFolderDialog(onDone) {
@@ -383,16 +355,12 @@ async function showFolderDialog(onDone) {
     if (!path) {
         return;
     }
-    await fetchJson(`${ROUTE_PREFIX}/folders`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ alias, path }),
-    });
+    await invokeMediaOperation("load-video.folder-save", { alias, path });
     await onDone(alias);
 }
 
 async function removeFolderDialog(onDone) {
-    const data = await fetchJson(`${ROUTE_PREFIX}/folders`);
+    const data = await invokeMediaOperation("load-video.folders-load");
     const removable = (data.folders || []).filter((folder) => folder.alias !== "input");
     if (!removable.length) {
         alert("No custom folders to remove.");
@@ -402,7 +370,7 @@ async function removeFolderDialog(onDone) {
     if (!alias) {
         return;
     }
-    await fetchJson(`${ROUTE_PREFIX}/folders?alias=${encodeURIComponent(alias)}`, { method: "DELETE" });
+    await invokeMediaOperation("load-video.folder-delete", { alias });
     await onDone("input");
 }
 
@@ -522,7 +490,7 @@ async function openPicker(node) {
             thumb.loading = "lazy";
             thumb.decoding = "async";
             thumb.alt = "";
-            thumb.src = routeUrl(video.thumb_url);
+            thumb.src = video.thumb_url;
             const preview = document.createElement("video");
             preview.hidden = true;
             preview.muted = true;
@@ -534,12 +502,26 @@ async function openPicker(node) {
             name.className = "helto-load-video-name";
             name.textContent = video.filename;
             tile.append(media, name);
-            tile.addEventListener("mouseenter", () => {
+            tile.addEventListener("mouseenter", async () => {
                 preview.muted = true;
                 preview.hidden = false;
                 thumb.hidden = true;
-                preview.src = routeUrl(video.video_url);
-                preview.play().catch(() => {});
+                try {
+                    const record = await invokeMediaOperation("serve-source-media", {
+                        alias: folderSelect.value,
+                        filename: video.filename,
+                    });
+                    if (preview.hidden) return;
+                    preview.src = await resolveUtilsPrivateMediaRecord(
+                        record,
+                        (path) => api.apiURL(path),
+                    );
+                    preview.play().catch(() => {});
+                } catch (err) {
+                    preview.hidden = true;
+                    thumb.hidden = false;
+                    console.warn("Failed to load protected video preview:", err);
+                }
             });
             tile.addEventListener("mouseleave", () => {
                 preview.pause();
@@ -569,7 +551,7 @@ async function openPicker(node) {
     };
 
     const loadFolders = async (preferredAlias = null) => {
-        const data = await fetchJson(`${ROUTE_PREFIX}/folders`);
+        const data = await invokeMediaOperation("load-video.folders-load");
         folderSelect.innerHTML = (data.folders || [])
             .map((folder) => `<option value="${escapeHtml(folder.alias)}">${escapeHtml(folder.alias)}${folder.exists ? "" : " (missing)"}</option>`)
             .join("");
@@ -582,13 +564,23 @@ async function openPicker(node) {
     const loadVideos = async () => {
         node.properties ??= {};
         node.properties.helto_load_video_last_folder_alias = folderSelect.value;
-        const params = new URLSearchParams({
+        const data = await invokeMediaOperation("load-video.videos-load", {
             alias: folderSelect.value,
-            recursive: recursive ? "1" : "0",
-            privacy: isPrivacyModeEnabled(node) ? "1" : "0",
+            recursive,
         });
-        const data = await fetchJson(`${ROUTE_PREFIX}/videos?${params.toString()}`);
-        availableVideos = data.videos || [];
+        availableVideos = await Promise.all((data.videos || []).map(async (video) => {
+            const record = await invokeMediaOperation("load-video.thumbnail", {
+                alias: folderSelect.value,
+                filename: video.filename,
+            });
+            return {
+                ...video,
+                thumb_url: await resolveUtilsPrivateMediaRecord(
+                    record,
+                    (path) => api.apiURL(path),
+                ),
+            };
+        }));
         selectedVideo = null;
         renderGrid();
     };
@@ -679,7 +671,9 @@ function wrapOnExecuted(node) {
 
     const originalOnExecuted = node.onExecuted;
     node.onExecuted = function (output, ...args) {
-        syncPrivatePreviewUrls(this, output);
+        syncPrivatePreviewUrls(this, output).catch((err) => {
+            console.warn("Failed to resolve protected Load Video output:", err);
+        });
         return originalOnExecuted?.call(this, output, ...args);
     };
 }

@@ -1,10 +1,4 @@
-"""Inactive selector integration for the shared managed-artifact lifecycle.
-
-The live selector keeps using its existing mask and thumbnail stores until the
-workflow migration can commit durable mask references atomically.  This module
-contains the complete replacement seam without registering routes or changing
-current call sites.
-"""
+"""Selector integration for the shared managed-artifact lifecycle."""
 
 from __future__ import annotations
 

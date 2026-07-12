@@ -48,7 +48,7 @@ from helto_selector_backend.thumbnail_cache import (
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "historical"
-pytestmark = pytest.mark.usefixtures("inactive_coordinated_suite_test_boundary")
+pytestmark = pytest.mark.usefixtures("coordinated_suite_test_boundary")
 
 
 class _ModeAdapter:
@@ -117,7 +117,7 @@ def _profile() -> PrivacyProfile:
 def managed_artifacts(
     tmp_path,
     monkeypatch,
-    inactive_coordinated_suite_test_boundary,
+    coordinated_suite_test_boundary,
 ):
     artifact_root = tmp_path / "managed"
     mask_cache = tmp_path / "legacy-masks"
@@ -466,7 +466,7 @@ def test_startup_sweep_and_plaintext_derivative_policy(managed_artifacts):
     assert not interrupted.exists()
 
 
-def test_inactive_managed_path_does_not_replace_live_selector_modules():
+def test_managed_artifact_module_keeps_product_codecs_consumer_owned():
     from helto_selector_backend import mask_storage, services, thumbnail_cache
 
     assert services.save_mask_data_url is mask_storage.save_mask_data_url

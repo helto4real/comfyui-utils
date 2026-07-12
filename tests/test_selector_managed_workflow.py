@@ -58,7 +58,7 @@ from helto_selector_backend.managed_workflow import (
 )
 
 
-pytestmark = pytest.mark.usefixtures("inactive_coordinated_suite_test_boundary")
+pytestmark = pytest.mark.usefixtures("coordinated_suite_test_boundary")
 
 
 class Node:
@@ -378,7 +378,7 @@ def test_protected_operations_use_bound_authorization_workflow_and_artifacts():
     assert migrated["operation"] == "selector.mask-migrate"
 
 
-def test_product_operation_adapter_applies_real_root_authorization(tmp_path):
+def test_product_operation_adapter_applies_real_root_authorization(tmp_path, monkeypatch):
     image = tmp_path / "synthetic.png"
     image.write_bytes(b"synthetic fixture bytes")
     adapter = SelectorProductOperationAdapter(
@@ -387,15 +387,31 @@ def test_product_operation_adapter_applies_real_root_authorization(tmp_path):
     )
     context = SelectorOperationContext("auth", "workflow", object())
 
+    async def issue_source_lease(**_kwargs):
+        from helto_privacy import ArtifactLease
+
+        return ArtifactLease(f"hp-lease-{'S' * 32}", 60)
+
+    monkeypatch.setattr(
+        "helto_privacy.artifact_publication.issue_root_bound_source_lease",
+        issue_source_lease,
+    )
+
     result = asyncio.run(
         adapter.invoke("selector.source-view", {"path": str(image)}, context)
     )
-    assert result == {"path": str(image)}
+    assert result == {
+        "private": True,
+        "lease": {
+            "url": f"/helto_privacy/artifacts/hp-lease-{'S' * 32}",
+            "expiresInSeconds": 60,
+        },
+    }
 
     outside = tmp_path.parent / f"{tmp_path.name}-outside.png"
     outside.write_bytes(b"synthetic fixture bytes")
     try:
-        with pytest.raises(ValueError):
+        with pytest.raises(Exception) as raised:
             asyncio.run(
                 adapter.invoke(
                     "selector.source-view",
@@ -403,8 +419,119 @@ def test_product_operation_adapter_applies_real_root_authorization(tmp_path):
                     context,
                 )
             )
+        assert getattr(raised.value, "code", "") == "PRIVACY_ARTIFACT_SOURCE_REJECTED"
     finally:
         outside.unlink()
+
+
+def test_product_operation_migrates_legacy_mask_reference_to_managed_artifact(
+    tmp_path,
+    monkeypatch,
+):
+    from helto_privacy import ArtifactReference
+    from helto_selector_backend import mask_storage
+
+    image = tmp_path / "synthetic.png"
+    image.write_bytes(b"synthetic image fixture")
+    plain_mask = tmp_path / "legacy-mask.png"
+    encrypted_mask = tmp_path / "legacy-mask.png.enc"
+    plain_mask.write_bytes(b"synthetic mask fixture")
+    monkeypatch.setattr(
+        mask_storage,
+        "mask_cache_paths",
+        lambda _path: (str(plain_mask), str(encrypted_mask)),
+    )
+
+    class Artifacts:
+        async def write_mask(self, image_path, value, owner_id):
+            assert image_path == str(image)
+            assert value == b"synthetic mask fixture"
+            assert owner_id.startswith("hp-owner-")
+            return ArtifactReference(f"hp-art-{'M' * 32}")
+
+    adapter = SelectorProductOperationAdapter(
+        authorized_roots=lambda: [str(tmp_path)],
+        input_directory=lambda: str(tmp_path),
+    )
+    result = asyncio.run(
+        adapter.invoke(
+            "selector.mask-migrate",
+            {"masks": {str(image): {"key": "legacy"}}},
+            SelectorOperationContext("auth", "workflow", Artifacts()),
+        )
+    )
+
+    assert result["migratedCount"] == 1
+    assert result["masks"][str(image)]["schema"] == "helto.private-artifact-reference"
+
+
+def test_product_operation_migrates_raw_xor_mask_through_explicit_carrier(
+    tmp_path,
+    monkeypatch,
+):
+    from helto_privacy import ArtifactReference
+    from helto_selector_backend import mask_storage
+
+    pack, _state, token = _installed_selector_pack(tmp_path, monkeypatch)
+    image = tmp_path / "synthetic.png"
+    image.write_bytes(b"synthetic image fixture")
+    plain_mask = tmp_path / "legacy-mask.png"
+    encrypted_mask = tmp_path / "legacy-mask.png.enc"
+    encrypted_mask.write_bytes(b"synthetic raw xor mask")
+    monkeypatch.setattr(
+        mask_storage,
+        "mask_cache_paths",
+        lambda _path: (str(plain_mask), str(encrypted_mask)),
+    )
+
+    class Artifacts:
+        async def write_mask(self, image_path, value, owner_id):
+            assert image_path == str(image)
+            assert isinstance(value, bytes)
+            assert owner_id.startswith("hp-owner-")
+            return ArtifactReference(f"hp-art-{'R' * 32}")
+
+    adapter = SelectorProductOperationAdapter(
+        authorized_roots=lambda: [str(tmp_path)],
+        input_directory=lambda: str(tmp_path),
+    )
+    result = asyncio.run(
+        adapter.invoke(
+            "selector.mask-migrate",
+            {"masks": {str(image): {"key": "legacy"}}},
+            SelectorOperationContext(
+                "auth",
+                "workflow",
+                Artifacts(),
+                SelectorMigrationAuthorizations(
+                    _authorization(
+                        pack,
+                        token,
+                        "migration.read",
+                    ),
+                    _authorization(
+                        pack,
+                        token,
+                        "migration.complete",
+                    ),
+                    _authorization(
+                        pack,
+                        token,
+                        "snapshot.protect",
+                    ),
+                    _authorization(
+                        pack,
+                        token,
+                        "snapshot.disposition",
+                    ),
+                ),
+                pack.migration,
+            ),
+        )
+    )
+
+    assert result["migratedCount"] == 1
+    assert result["masks"][str(image)]["id"].startswith("hp-art-")
 
 
 class WorkflowHandle:

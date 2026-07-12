@@ -14,6 +14,7 @@ from shared.private_media_managed import (
     PRIVATE_MEDIA_IMAGE_PREVIEW_KIND,
     PRIVATE_MEDIA_SOURCE_CONTRACT,
     PRIVATE_MEDIA_SOURCE_OPERATION_ID,
+    PRIVATE_MEDIA_PRODUCT_OPERATION_IDS,
     PRIVATE_MEDIA_SOURCE_TYPES,
     PRIVATE_MEDIA_VIDEO_PREVIEW_KIND,
     SAVE_VIDEO_PREVIEW_KINDS_BY_MEDIA_TYPE,
@@ -68,10 +69,14 @@ def test_profile_declares_typed_previews_source_operation_and_private_default():
     }
     assert declarations[PRIVATE_MEDIA_IMAGE_PREVIEW_KIND].media_type == "image/png"
     assert declarations[PRIVATE_MEDIA_VIDEO_PREVIEW_KIND].media_type == "video/mp4"
-    assert [item.id for item in profile.protected_operations] == [
-        PRIVATE_MEDIA_SOURCE_OPERATION_ID
-    ]
-    assert profile.protected_operations[0].route == "/helto-utils/private-media/source"
+    assert {item.id for item in profile.protected_operations} == {
+        PRIVATE_MEDIA_SOURCE_OPERATION_ID,
+        *PRIVATE_MEDIA_PRODUCT_OPERATION_IDS,
+    }
+    assert next(
+        item for item in profile.protected_operations
+        if item.id == PRIVATE_MEDIA_SOURCE_OPERATION_ID
+    ).route == "/helto-utils/private-media/source"
     assert profile.fingerprint == build_private_media_profile().fingerprint
 
 

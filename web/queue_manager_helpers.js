@@ -1,4 +1,3 @@
-import { ensurePrivacyTokenCookieSoon } from "./privacy_common.js";
 
 export const QUEUE_STATUS_PENDING = "pending";
 export const QUEUE_STATUS_SUBMITTING = "submitting";
@@ -532,7 +531,7 @@ export function normalizeQueueState(rawState, options = {}) {
     const sessionChanged = !!storedSessionId && !!currentSessionId && storedSessionId !== currentSessionId;
 
     state.version = 1;
-    state.privacy_enabled = !!state.privacy_enabled;
+    state.privacy_enabled = true;
     state.paused = !!state.paused;
     state.resume_required = !!state.resume_required;
     state.queue = Array.isArray(state.queue) ? state.queue.map(normalizeQueueRun) : [];
@@ -688,6 +687,13 @@ function extensionFromFilename(filename) {
 }
 
 function mediaKindForRecord(record, output) {
+    const artifactKind = String(record?.artifactKind || "").toLowerCase();
+    if (artifactKind.includes("video") || artifactKind.includes("avi") || artifactKind.includes("mkv") || artifactKind.includes("mov") || artifactKind.includes("mp4") || artifactKind.includes("webm")) {
+        return "video";
+    }
+    if (artifactKind.includes("image") || artifactKind.includes("thumbnail")) {
+        return "image";
+    }
     const contentType = String(record?.content_type || "").toLowerCase();
     if (contentType.startsWith("video/")) {
         return "video";
@@ -713,7 +719,11 @@ function normalizeMediaPreviewRecord(record, output, nodeId, key, index) {
     if (!record || typeof record !== "object") {
         return null;
     }
-    const hasPrivateRoute = !!record.private && typeof record.token === "string" && record.token.trim();
+    const privateKeys = Object.keys(record).sort().join(",");
+    const hasPrivateRoute = record.private === true && (
+        privateKeys === "artifact,artifactKind,private"
+        || privateKeys === "lease,private"
+    );
     const hasViewRoute = typeof record.filename === "string" && record.filename.trim() && typeof record.type === "string" && record.type.trim();
     if (!hasPrivateRoute && !hasViewRoute) {
         return null;
@@ -728,7 +738,7 @@ function normalizeMediaPreviewRecord(record, output, nodeId, key, index) {
         nodeId,
         key,
         index,
-        label: record.filename || `${kind} preview`,
+        label: record.filename || record.artifactKind || `${kind} preview`,
     };
 }
 
@@ -770,11 +780,7 @@ export function mediaRecordToPreviewUrl(preview, options = {}) {
     }
     const apiURL = typeof options.apiURL === "function" ? options.apiURL : (route) => route;
     const randParam = typeof options.getRandParam === "function" ? options.getRandParam() : "";
-    if (record.private && record.token) {
-        ensurePrivacyTokenCookieSoon();
-        const params = new URLSearchParams({ token: record.token });
-        return apiURL(appendOptionalParams(`/helto_utils/private_media?${params.toString()}`, randParam));
-    }
+    if (record.private) return null;
 
     if (!record.filename || !record.type) {
         return null;

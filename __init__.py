@@ -11,6 +11,13 @@ if __package__:
     from comfy_api.latest import ComfyExtension, io
 
     from .shared import progress_api as _helto_progress_api
+    from .shared.managed_privacy import (
+        install_utils_privacy,
+        prompt_execution_dispatch,
+        queue_operation_bindings,
+        selector_execution_dispatch,
+    )
+    from .shared.managed_privacy_routes import register_managed_privacy_routes
     from .nodes.aspect_ratio_calculator import AspectRatioCalculator
     from .nodes.image_comparer import ImageComparer
     from .nodes.load_video import HeltoLoadVideo
@@ -23,10 +30,15 @@ if __package__:
     from .nodes.video_comparer import VideoComparer
     from .nodes.wan_video_params import HeltoVideoParams
     from .helto_image_selector import HeltoImageSelector
-    from .shared import private_media_routes  # noqa: F401
-    from .shared import queue_manager_routes  # noqa: F401
 
     register_helto_privacy_ui(legacy_key_dir=_PACKAGE_ROOT / "config")
+    install_utils_privacy(
+        _PACKAGE_ROOT,
+        selector_dispatch=selector_execution_dispatch,
+        prompt_dispatch=prompt_execution_dispatch,
+        queue_operations=queue_operation_bindings(),
+    )
+    register_managed_privacy_routes()
     _helto_progress_api.install_public_alias()
 
     class HeltoUtilsExtension(ComfyExtension):

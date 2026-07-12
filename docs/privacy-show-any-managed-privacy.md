@@ -1,11 +1,10 @@
-# Privacy Show Any managed privacy staging
+# Privacy Show Any managed privacy
 
-Privacy Show Any now has a complete, inactive `helto-privacy` profile fragment.
-The current backend encryption call and frontend serialization hooks remain the
-live path until the coordinated Utils profile is assembled, verified, and
-explicitly activated.
+Privacy Show Any is bound to the complete Utils `helto-privacy` profile. The
+backend uses the bound workflow handle and the frontend uses the shared snapshot
+coordinator.
 
-The staged fragment declares one private-by-default `privacy-show-any` scope and
+The fragment declares one private-by-default `privacy-show-any` scope and
 one logical protected text field. Its property location and mirrored widget
 location are both explicit profile facts. A save or legacy migration protects
 the normalized text once and writes that exact settled envelope to both

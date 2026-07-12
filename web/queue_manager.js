@@ -1,6 +1,9 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { privacyFetchJson } from "./privacy_common.js";
+import {
+    requireUtilsPrivacy,
+    resolveUtilsPrivateMediaRecord,
+} from "./managed_privacy.js";
 import {
     attachHeltoMediaPreviewHover,
     hideHeltoMediaPreviewThumbnail,
@@ -44,7 +47,6 @@ import {
     workflowWithFixedSeedControls,
 } from "./queue_manager_helpers.js";
 
-const STATE_ROUTE = "/helto_queue_manager/state";
 const PATCHED_KEY = "__heltoQueueManagerPatched";
 const STYLE_ID = "helto-queue-manager-styles";
 const FALLBACK_PANEL_ID = "helto-queue-manager-fallback";
@@ -68,15 +70,17 @@ function routeUrl(route) {
 }
 
 async function jsonFetch(route, options = {}) {
-    if (String(route || "").startsWith("/helto_queue_manager/")) {
-        return privacyFetchJson(routeUrl(route), options);
-    }
     const response = await fetch(routeUrl(route), options);
     const payload = await response.json().catch(() => ({}));
     if (!response.ok || payload?.ok === false) {
         throw new Error(payload?.error || `Request failed: ${route}`);
     }
     return payload;
+}
+
+async function queueOperation(operationId, payload = undefined) {
+    const privacy = await requireUtilsPrivacy();
+    return privacy.workflow("queue-manager-operations").invoke(operationId, payload);
 }
 
 function messageFromPromptError(payload) {
@@ -135,6 +139,14 @@ function previewUrl(preview) {
         getPreviewFormatParam: app?.getPreviewFormatParam?.bind(app),
         getRandParam: app?.getRandParam?.bind(app),
     });
+}
+
+async function resolvedPreviewUrl(preview) {
+    const record = preview?.record || preview;
+    if (record?.private) {
+        return resolveUtilsPrivateMediaRecord(record, routeUrl);
+    }
+    return previewUrl(preview);
 }
 
 function isActiveRunStatus(status) {
@@ -654,6 +666,7 @@ class HeltoQueueManager {
         this.saving = false;
         this.saveTimer = null;
         this.stateRevision = 0;
+        this.storeRevision = 0;
         this.submitting = false;
         this.bypass = false;
         this.promptResults = new Map();
@@ -677,7 +690,8 @@ class HeltoQueueManager {
 
     async loadState() {
         try {
-            const payload = await jsonFetch(STATE_ROUTE);
+            const payload = await queueOperation("queue-manager.load");
+            this.storeRevision = payload.revision;
             const sessionChanged = !!payload.stored_server_session_id
                 && !!payload.server_session_id
                 && payload.stored_server_session_id !== payload.server_session_id;
@@ -723,14 +737,11 @@ class HeltoQueueManager {
         let needsFollowUpSave = false;
         this.saving = true;
         try {
-            const payload = await jsonFetch(STATE_ROUTE, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    state: stateSnapshot,
-                    privacy_enabled: !!stateSnapshot.privacy_enabled,
-                }),
+            const payload = await queueOperation("queue-manager.save", {
+                state: stateSnapshot,
+                expectedRevision: this.storeRevision,
             });
+            this.storeRevision = payload.revision;
             const saved = applyQueueStateSaveResponse(
                 this.state,
                 payload.state,
@@ -1125,9 +1136,14 @@ class HeltoQueueManager {
         const run = this.findRun(runId, "history");
         if (!runCanBeRerun(run)) return;
         this.activeTab = "running";
-        await this.enqueuePromptData(cloneJson(run.prompt), {
-            title: run.title,
-        });
+        await app.loadGraphData(workflowWithFixedSeedControls(cloneJson(run.prompt.workflow)));
+        const privacy = await requireUtilsPrivacy();
+        const rebuilt = await privacy.workflow("queue-manager-operations").runWithSnapshot(
+            "replay",
+            ({ graphToPrompt }) => graphToPrompt(app.rootGraph ?? app.graph),
+        );
+        await queueOperation("queue-manager.rerun");
+        await this.enqueuePromptData(rebuilt, { title: run.title });
     }
 
     deletePendingRun(runId) {
@@ -1143,14 +1159,6 @@ class HeltoQueueManager {
     clearHistory() {
         if (!this.state.history.length) return;
         this.setState(clearQueueHistory(this.state));
-    }
-
-    setPrivacy(enabled) {
-        this.setState({
-            ...this.state,
-            privacy_enabled: !!enabled,
-        }, { save: false });
-        this.saveNow();
     }
 
     setActiveTab(tab) {
@@ -1177,10 +1185,10 @@ class HeltoQueueManager {
         return (source === "history" ? this.state.history : this.state.queue).find((item) => item.id === runId);
     }
 
-    previewRun(runId, source) {
+    async previewRun(runId, source) {
         const run = this.findRun(runId, source);
         const preview = latestMediaPreviewFromHistory(run?.comfy_history);
-        const url = previewUrl(preview);
+        const url = await resolvedPreviewUrl(preview);
         if (!run || !preview || !url) return;
         hideHeltoMediaPreviewThumbnail();
         openHeltoMediaPreview({
@@ -1202,9 +1210,9 @@ class HeltoQueueManager {
         const previewHref = previewUrl(preview);
         const title = escapeHtml(run.title);
         const error = run.error ? escapeHtml(run.error) : "";
-        const canPreview = !!preview && !!previewHref;
+        const canPreview = !!preview;
         const previewTitle = canPreview ? `Preview latest ${preview.kind}` : "No image or video output available";
-        const previewAttrs = canPreview
+        const previewAttrs = canPreview && previewHref
             ? `data-preview-url="${escapeHtml(previewHref)}" data-preview-kind="${escapeHtml(preview.kind)}" data-preview-title="${title}" data-preview-label="${escapeHtml(preview.label || preview.kind)}"`
             : "";
         const previewButton = `<button class="helto-qm-icon-btn" data-action="preview-${source}" data-run-id="${escapeHtml(run.id)}" ${previewAttrs} title="${escapeHtml(previewTitle)}" aria-label="${escapeHtml(previewTitle)}" ${canPreview ? "" : "disabled"}>${QUEUE_ICONS.preview}</button>`;
@@ -1295,7 +1303,6 @@ class HeltoQueueManager {
         if (!this.root) return;
         this.root.querySelector("[data-action='resume']")?.addEventListener("click", () => this.resumeQueue());
         this.root.querySelector("[data-action='pause']")?.addEventListener("click", () => this.pauseQueue());
-        this.root.querySelector("[data-action='privacy']")?.addEventListener("click", () => this.setPrivacy(!this.state.privacy_enabled));
         this.root.querySelector("[data-action='clear-history']")?.addEventListener("click", () => this.clearHistory());
         this.root.querySelectorAll("[data-tab]").forEach((button) => {
             button.addEventListener("click", () => this.setActiveTab(button.dataset.tab));
@@ -1318,11 +1325,11 @@ class HeltoQueueManager {
             button.addEventListener("click", () => this.loadWorkflow(button.dataset.runId, "history"));
         });
         root.querySelectorAll("[data-action='preview-queue']").forEach((button) => {
-            button.addEventListener("click", () => this.previewRun(button.dataset.runId, "queue"));
+            button.addEventListener("click", () => this.previewRun(button.dataset.runId, "queue").catch(console.warn));
             this.attachPreviewHover(button);
         });
         root.querySelectorAll("[data-action='preview-history']").forEach((button) => {
-            button.addEventListener("click", () => this.previewRun(button.dataset.runId, "history"));
+            button.addEventListener("click", () => this.previewRun(button.dataset.runId, "history").catch(console.warn));
             this.attachPreviewHover(button);
         });
         root.querySelectorAll("[data-action='rerun-history']").forEach((button) => {
@@ -1348,7 +1355,25 @@ class HeltoQueueManager {
     }
 
     attachPreviewHover(button) {
-        if (button.disabled || !button.dataset.previewUrl) return;
+        if (button.disabled) return;
+        if (!button.dataset.previewUrl) {
+            button.addEventListener("mouseenter", async () => {
+                const source = button.dataset.action === "preview-history" ? "history" : "queue";
+                const run = this.findRun(button.dataset.runId, source);
+                const preview = latestMediaPreviewFromHistory(run?.comfy_history);
+                try {
+                    button.dataset.previewUrl = await resolvedPreviewUrl(preview);
+                    button.dataset.previewKind = preview?.kind || "image";
+                    button.dataset.previewTitle = run?.title || "Preview";
+                    button.dataset.previewLabel = preview?.label || preview?.kind || "preview";
+                    this.attachPreviewHover(button);
+                    button.dispatchEvent(new MouseEvent("mouseenter", { bubbles: false }));
+                } catch (err) {
+                    console.warn("Failed to resolve protected queue preview:", err);
+                }
+            }, { once: true });
+            return;
+        }
         attachHeltoMediaPreviewHover(button, () => ({
             url: button.dataset.previewUrl,
             kind: button.dataset.previewKind,
@@ -1379,7 +1404,6 @@ class HeltoQueueManager {
                     <button class="helto-qm-icon-btn is-primary" data-action="resume" title="Resume queue" aria-label="Resume queue" ${resumeDisabled ? "disabled" : ""}>${QUEUE_ICONS.play}</button>
                     <button class="helto-qm-icon-btn" data-action="pause" title="Pause queue" aria-label="Pause queue" ${pauseDisabled ? "disabled" : ""}>${QUEUE_ICONS.pause}</button>
                     <span class="helto-qm-toolbar-spacer"></span>
-                    <button class="helto-qm-icon-btn ${this.state.privacy_enabled ? "is-active" : ""}" data-action="privacy" title="${this.state.privacy_enabled ? "Disable encrypted persistence" : "Enable encrypted persistence"}" aria-label="${this.state.privacy_enabled ? "Disable encrypted persistence" : "Enable encrypted persistence"}" aria-pressed="${this.state.privacy_enabled ? "true" : "false"}">${this.state.privacy_enabled ? QUEUE_ICONS.lock : QUEUE_ICONS.unlock}</button>
                 </div>
                 ${this.state.resume_required ? `<div class="helto-qm-banner">Queue paused after restart.</div>` : ""}
                 <div class="helto-qm-status">

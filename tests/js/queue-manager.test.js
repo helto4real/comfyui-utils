@@ -30,9 +30,6 @@ import {
     runCanBeRerun,
     workflowWithFixedSeedControls,
 } from "../../web/queue_manager_helpers.js";
-import {
-    encryptedOrReusePrivacyValue,
-} from "../../web/privacy_envelope.js";
 
 function privacyEnvelopeText(text, keyId = "test-key") {
     return JSON.stringify({
@@ -401,63 +398,6 @@ test("captureQueuedPromptBatches captures a fresh serialized seed for each batch
     assert.equal(seedWidget.value, 103);
 });
 
-test("captureQueuedPromptBatches reuses private envelopes across workflow and executable payload serialization", async () => {
-    const selectorApi = countingPrivacyApi();
-    const privateNode = {
-        privateState: { b: 2, a: 1 },
-        widgets: [],
-    };
-    const serializePrivateState = async () => {
-        const plainJson = JSON.stringify(privateNode.privateState);
-        return encryptedOrReusePrivacyValue(privateNode, "selected_images", plainJson, {
-            selectorApi,
-            canonicalValue: privateNode.privateState,
-        });
-    };
-    privateNode.widgets.push({ name: "selected_images", serializeValue: serializePrivateState });
-    const graph = { nodes: [privateNode] };
-    const captured = [];
-    const graphToPrompt = async () => {
-        const workflowValue = await privateNode.widgets[0].serializeValue();
-        const executableValue = await privateNode.widgets[0].serializeValue();
-        return {
-            workflow: { nodes: [{ widgets_values: [workflowValue] }] },
-            output: { 1: { inputs: { selected_images: executableValue } } },
-        };
-    };
-
-    await captureQueuedPromptBatches({
-        graph,
-        batchCount: 2,
-        graphToPrompt,
-        enqueuePromptData: async (promptData) => {
-            captured.push(promptData);
-            return { prompt_id: `prompt-${captured.length}` };
-        },
-    });
-
-    const firstWorkflowValue = captured[0].workflow.nodes[0].widgets_values[0];
-    assert.equal(captured[0].output[1].inputs.selected_images, firstWorkflowValue);
-    assert.equal(captured[1].workflow.nodes[0].widgets_values[0], firstWorkflowValue);
-    assert.equal(captured[1].output[1].inputs.selected_images, firstWorkflowValue);
-    assert.equal(selectorApi.encryptCount, 1);
-
-    privateNode.privateState = { a: 1, b: 3 };
-    await captureQueuedPromptBatches({
-        graph,
-        graphToPrompt,
-        enqueuePromptData: async (promptData) => {
-            captured.push(promptData);
-            return { prompt_id: `prompt-${captured.length}` };
-        },
-    });
-
-    const changedWorkflowValue = captured[2].workflow.nodes[0].widgets_values[0];
-    assert.notEqual(changedWorkflowValue, firstWorkflowValue);
-    assert.equal(captured[2].output[1].inputs.selected_images, changedWorkflowValue);
-    assert.equal(selectorApi.encryptCount, 2);
-});
-
 test("createQueueRun stores partial execution targets and preview method", () => {
     const promptData = { workflow: {}, output: { 1: {} } };
     const targets = ["1:2"];
@@ -699,11 +639,9 @@ test("latestMediaPreviewFromHistory finds private image outputs", () => {
         outputs: {
             7: {
                 helto_private_images: [{
-                    filename: "secret.png",
-                    type: "private",
                     private: true,
-                    token: "abc.def",
-                    content_type: "image/png",
+                    artifactKind: "save-image-preview",
+                    artifact: { opaque: "synthetic-image-reference" },
                 }],
                 images: [],
             },
@@ -711,7 +649,7 @@ test("latestMediaPreviewFromHistory finds private image outputs", () => {
     });
 
     assert.equal(preview.kind, "image");
-    assert.equal(preview.record.token, "abc.def");
+    assert.equal(preview.record.artifactKind, "save-image-preview");
     assert.equal(preview.key, "helto_private_images");
 });
 
@@ -750,11 +688,9 @@ test("latestMediaPreviewFromHistory detects private video outputs", () => {
         outputs: {
             13: {
                 images: [{
-                    filename: "clip.mp4",
-                    type: "private",
                     private: true,
-                    token: "video.token",
-                    content_type: "video/mp4",
+                    artifactKind: "save-video-mp4-preview",
+                    artifact: { opaque: "synthetic-video-reference" },
                 }],
                 animated: [true],
             },
@@ -762,16 +698,16 @@ test("latestMediaPreviewFromHistory detects private video outputs", () => {
     });
 
     assert.equal(preview.kind, "video");
-    assert.equal(preview.record.token, "video.token");
+    assert.equal(preview.record.artifactKind, "save-video-mp4-preview");
 });
 
 test("latestMediaPreviewFromHistory ignores unsupported outputs", () => {
     assert.equal(latestMediaPreviewFromHistory({ outputs: { 1: { helto_pause_control: [{ mode: "ready" }] } } }), null);
 });
 
-test("mediaRecordToPreviewUrl builds private and view URLs", () => {
+test("mediaRecordToPreviewUrl defers private artifacts and builds public view URLs", () => {
     const privateUrl = mediaRecordToPreviewUrl(
-        { record: { private: true, token: "abc.def" } },
+        { record: { private: true, artifactKind: "save-image-preview", artifact: { opaque: "synthetic" } } },
         { apiURL: (route) => `/api${route}`, getRandParam: () => "&r=1" },
     );
     const imageUrl = mediaRecordToPreviewUrl(
@@ -783,7 +719,7 @@ test("mediaRecordToPreviewUrl builds private and view URLs", () => {
         },
     );
 
-    assert.equal(privateUrl, "/api/helto_utils/private_media?token=abc.def&r=1");
+    assert.equal(privateUrl, null);
     assert.equal(imageUrl, "/api/view?filename=new.png&type=output&subfolder=run&format=webp&r=2");
 });
 

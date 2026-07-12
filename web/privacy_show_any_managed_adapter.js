@@ -1,4 +1,4 @@
-// Inactive browser adapter for the shared Privacy Show Any workflow profile.
+// Browser adapter for the shared Privacy Show Any workflow profile.
 
 export const PRIVACY_SHOW_ANY_FIELD_ID = "privacy-show-any-text";
 

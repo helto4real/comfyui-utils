@@ -14,11 +14,8 @@ from pathlib import Path
 from string import Template
 from typing import Any
 
-from aiohttp import web
 import folder_paths
-from helto_privacy import aiohttp_check_privacy_token
 import numpy as np
-import server
 import torch
 from comfy.cli_args import args as comfy_args
 from comfy.utils import ProgressBar
@@ -28,21 +25,13 @@ from PIL import Image, ExifTags
 from PIL.PngImagePlugin import PngInfo
 
 from ...shared import progress_api as helto_progress
+from ...shared.managed_privacy import utils_media_artifacts
 from ...shared.pause_release import (
     cancel_pause_release,
     consume_pause_release,
-    dispatch_pause_release,
     request_pause_release,
 )
-from ...shared.privacy import (
-    SAVE_VIDEO_REPLAY_PURPOSE,
-    content_type_for_path,
-    decrypt_bytes,
-    encrypt_bytes,
-    private_media_record,
-    write_encrypted_temp_file,
-)
-from ...shared.temp_cache import private_temp_cache_dir, public_temp_cache_dir
+from ...shared.temp_cache import public_temp_cache_dir
 
 
 _COUNTER_RE_TEMPLATE = r"^{prefix}_(?P<counter>\d+)(?:-audio)?\.[^.]+$"
@@ -466,7 +455,7 @@ class SaveVideoAdvanced(io.ComfyNode):
         return float("NaN")
 
     @classmethod
-    def execute(
+    async def execute(
         cls,
         images=None,
         audio=None,
@@ -485,6 +474,7 @@ class SaveVideoAdvanced(io.ComfyNode):
         pause_mode: bool = False,
         privacy_mode: bool = True,
         release_token: str = "",
+        unique_id: str | None = None,
         **kwargs,
     ) -> io.NodeOutput:
         node_id = cls._node_id()
@@ -492,7 +482,16 @@ class SaveVideoAdvanced(io.ComfyNode):
         release = cls._consume_release(node_id, release_token)
 
         if release is not None:
-            stored = cls._load_replay_bundle(node_id)
+            current = cls.state["media"].get(node_id) or {}
+            stored = (
+                await utils_media_artifacts().consume_replay(
+                    node_id,
+                    int(current.get("revision", 0)),
+                    privacy_mode=current.get("privacy_mode", True),
+                )
+                if current.get("managed")
+                else cls._load_replay_bundle(node_id)
+            )
             if stored is not None:
                 cls.state["media"][node_id]["paused"] = False
                 control = cls._pause_control_payload(node_id, mode="released", released=True)
@@ -563,7 +562,7 @@ class SaveVideoAdvanced(io.ComfyNode):
 
         try:
             helto_progress.update("Saving video output", phase="save_video", percent=30, node_id=node_id)
-            output_files = cls._save_video(
+            output_files = [] if privacy_mode and not save_output else cls._save_video(
                 frames=frames,
                 audio=audio,
                 save_dir=save_dir,
@@ -575,24 +574,56 @@ class SaveVideoAdvanced(io.ComfyNode):
                 save_output=save_output,
                 format_kwargs=kwargs,
             )
-            final_path = output_files[-1]
             helto_progress.update("Creating video preview", phase="preview", percent=75, node_id=node_id)
             if privacy_mode:
-                preview = ui.PreviewVideo([cls._private_preview_record(final_path)])
+                record = await cls._publish_managed_private_preview(
+                    utils_media_artifacts(),
+                    owner_key=str(unique_id or node_id),
+                    frames=frames,
+                    audio=audio,
+                    filename_prefix=filename_prefix,
+                    counter=counter,
+                    frame_rate=float(frame_rate),
+                    loop_count=int(loop_count),
+                    format=format,
+                    format_kwargs=kwargs,
+                )
+                preview = ui.PreviewVideo([record.to_record()])
             else:
+                final_path = output_files[-1]
                 preview = ui.PreviewVideo([cls._preview_result(final_path)])
 
             returned_files = output_files if save_output or not privacy_mode else []
             filenames = (save_output, returned_files)
             helto_progress.update("Storing replay bundle", phase="store", percent=88, node_id=node_id)
-            revision = cls._store_replay_bundle(
-                node_id,
-                images=decoded_images,
-                audio=audio,
-                filenames=filenames,
-                paused=bool(pause_mode),
-                privacy_mode=bool(privacy_mode),
-            )
+            if privacy_mode:
+                previous = cls.state["media"].get(node_id) or {}
+                revision = int(previous.get("revision", 0)) + 1
+                await utils_media_artifacts().store_replay(
+                    node_id,
+                    revision,
+                    {
+                        "images": cls._to_cpu_value(decoded_images),
+                        "audio": cls._to_cpu_value(audio),
+                        "filenames": filenames,
+                    },
+                    privacy_mode=True,
+                )
+                cls.state["media"][node_id] = {
+                    "managed": True,
+                    "privacy_mode": True,
+                    "revision": revision,
+                    "paused": bool(pause_mode),
+                }
+            else:
+                revision = cls._store_replay_bundle(
+                    node_id,
+                    images=decoded_images,
+                    audio=audio,
+                    filenames=filenames,
+                    paused=bool(pause_mode),
+                    privacy_mode=False,
+                )
             control = cls._pause_control_payload(
                 node_id,
                 mode="paused" if pause_mode else "ready",
@@ -675,9 +706,7 @@ class SaveVideoAdvanced(io.ComfyNode):
         buffer = BytesIO()
         torch.save(payload, buffer)
         if encrypted:
-            output_path = private_temp_cache_dir("HeltoSaveVideoAdvanced", "replay") / f"{uuid.uuid4().hex}.pt.enc"
-            output_path.write_bytes(encrypt_bytes(buffer.getvalue(), purpose=SAVE_VIDEO_REPLAY_PURPOSE))
-            return output_path
+            raise RuntimeError("Private replay requires managed artifacts.")
 
         output_dir = public_temp_cache_dir("HeltoSaveVideoAdvanced", "replay")
         output_path = output_dir / f"{uuid.uuid4().hex}.pt"
@@ -697,7 +726,7 @@ class SaveVideoAdvanced(io.ComfyNode):
         try:
             data = path.read_bytes()
             if stored.get("encrypted"):
-                data = decrypt_bytes(data, purpose=SAVE_VIDEO_REPLAY_PURPOSE)
+                return None
 
             buffer = BytesIO(data)
             return torch.load(buffer, map_location="cpu", weights_only=True)
@@ -722,7 +751,8 @@ class SaveVideoAdvanced(io.ComfyNode):
             node_id,
             revision,
             media_label="video",
-            is_available=lambda stored: Path(stored.get("path", "")).is_file(),
+            is_available=lambda stored: bool(stored.get("managed"))
+            or Path(stored.get("path", "")).is_file(),
         )
 
     @classmethod
@@ -744,7 +774,13 @@ class SaveVideoAdvanced(io.ComfyNode):
         revision: int | None = None,
     ) -> dict:
         stored = cls.state["media"].get(node_id)
-        has_media = bool(stored and Path(stored.get("path", "")).is_file())
+        has_media = bool(
+            stored
+            and (
+                stored.get("managed") is True
+                or Path(stored.get("path", "")).is_file()
+            )
+        )
         if stored is not None:
             revision = int(stored.get("revision", 0)) if revision is None else revision
             paused = bool(stored.get("paused", False)) if paused is None else paused
@@ -1505,17 +1541,6 @@ class SaveVideoAdvanced(io.ComfyNode):
         return ui.SavedResult(os.path.basename(preview_path), "helto_save_video_advanced", io.FolderType.temp)
 
     @classmethod
-    def _private_preview_record(cls, path: str) -> dict[str, Any]:
-        encrypted_path = write_encrypted_temp_file(path, "save_video_advanced")
-        preview_filename = f"video_{_safe_node_id(cls._node_id())}_{uuid.uuid4().hex}{Path(path).suffix or '.bin'}"
-        return private_media_record(
-            encrypted_path,
-            content_type=content_type_for_path(path),
-            encrypted=True,
-            filename=preview_filename,
-        )
-
-    @classmethod
     def _node_id(cls) -> str:
         hidden = getattr(cls, "hidden", None)
         unique_id = getattr(hidden, "unique_id", None)
@@ -1570,16 +1595,3 @@ class SaveVideoAdvanced(io.ComfyNode):
             if match:
                 counters.append(int(match.group("counter")))
         return max(counters, default=0) + 1
-
-
-@server.PromptServer.instance.routes.post("/helto_save_video_advanced/release")
-async def release_save_video_advanced(request):
-    try:
-        denied = aiohttp_check_privacy_token(request)
-        if denied is not None:
-            return denied
-        data = await request.json()
-        result, status = dispatch_pause_release(SaveVideoAdvanced, data)
-        return web.json_response(result, status=status)
-    except Exception as exc:
-        return web.json_response({"ok": False, "error": str(exc)}, status=400)

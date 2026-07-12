@@ -1,4 +1,4 @@
-"""Inactive shared-singleton persistence for Prompt Enhancer credentials."""
+"""Shared-singleton persistence for Prompt Enhancer credentials."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ from pathlib import Path
 
 from helto_privacy import (
     MigrationVerification,
-    PrivacyEnvelopeCodec,
     SingletonSnapshot,
 )
 from helto_privacy.guard import require_current_authorization
@@ -17,7 +16,6 @@ from helto_privacy.guard import require_current_authorization
 from ..private_json import write_private_json
 from .managed_privacy import (
     PROMPT_ENHANCER_PROFILE_ID,
-    PROMPT_ENHANCER_SCHEMA,
     PROMPT_PROVIDER_SETTINGS_PLAINTEXT_BINDING_ID,
     PROMPT_PROVIDER_SETTINGS_SINGLETON_ID,
     PROMPT_PROVIDER_SETTINGS_WRAPPER_BINDING_ID,
@@ -260,11 +258,23 @@ class PromptProviderCredentialDispatchAdapter:
 class PromptProviderSettingsMigrationCoordinator:
     """Rewrite either exact legacy wrapper only after shared read verification."""
 
-    def __init__(self, migration_handle: object, store: PromptProviderSettingsStore) -> None:
+    def __init__(
+        self,
+        migration_handle: object,
+        singleton_handle: object,
+        store: PromptProviderSettingsStore,
+    ) -> None:
         self._migration = migration_handle
+        self._singletons = singleton_handle
         self._store = store
 
-    def migrate(self, read_authorization: object, complete_authorization: object):
+    def migrate(
+        self,
+        read_authorization: object,
+        complete_authorization: object,
+        protect_authorization: object,
+        reveal_authorization: object,
+    ):
         try:
             source = json.loads(self._store.path.read_text(encoding="utf-8"))
         except Exception:
@@ -279,15 +289,15 @@ class PromptProviderSettingsMigrationCoordinator:
             source,
             read_authorization,
         )
-        normalized = (
-            dict(discovered.value)
-            if isinstance(discovered.value, Mapping)
-            and set(discovered.value) == {"hf_token"}
-            else PrivacyEnvelopeCodec(PROMPT_ENHANCER_SCHEMA).decrypt_state(
-                discovered.value
-            )
+        if not isinstance(discovered.value, Mapping):
+            raise ValueError("Provider migration value is invalid.")
+        normalized = dict(discovered.value)
+        transaction = _ProviderSettingsMigrationTransaction(
+            self._singletons,
+            self._store,
+            protect_authorization,
+            reveal_authorization,
         )
-        transaction = _ProviderSettingsMigrationTransaction(self._store)
         return self._migration.complete(
             discovered.obligation.id,
             normalized,
@@ -297,10 +307,19 @@ class PromptProviderSettingsMigrationCoordinator:
 
 
 class _ProviderSettingsMigrationTransaction:
-    def __init__(self, store: PromptProviderSettingsStore) -> None:
+    def __init__(
+        self,
+        singleton_handle: object,
+        store: PromptProviderSettingsStore,
+        protect_authorization: object,
+        reveal_authorization: object,
+    ) -> None:
         if not store.path.is_file():
             raise ValueError("Provider migration source is missing.")
+        self._singletons = singleton_handle
         self._store = store
+        self._protect_authorization = protect_authorization
+        self._reveal_authorization = reveal_authorization
         self._original = store.path.read_bytes()
         self._expected: dict[str, str] | None = None
         self._replacement: SingletonSnapshot | None = None
@@ -317,10 +336,12 @@ class _ProviderSettingsMigrationTransaction:
         ):
             raise ValueError("Provider migration value is invalid.")
         self._expected = {"hf_token": value["hf_token"].strip()}
-        protected = PrivacyEnvelopeCodec(PROMPT_ENHANCER_SCHEMA).encrypt_state(
-            self._expected
+        protected = self._singletons.protect_field(
+            PROMPT_PROVIDER_SETTINGS_SINGLETON_ID,
+            self._expected,
+            self._protect_authorization,
         )
-        self._replacement = SingletonSnapshot(1, protected)
+        self._replacement = SingletonSnapshot(1, protected.protected)
 
     def stage_durable_adjuncts(self, _normalized: object) -> None:
         return None
@@ -332,9 +353,10 @@ class _ProviderSettingsMigrationTransaction:
 
     def read_back(self) -> MigrationVerification:
         snapshot = self._store.read_singleton(PROMPT_PROVIDER_SETTINGS_SINGLETON_ID)
-        value = PrivacyEnvelopeCodec(PROMPT_ENHANCER_SCHEMA).decrypt_state(
-            snapshot.protected
-        )
+        value = self._singletons.reveal_field(
+            PROMPT_PROVIDER_SETTINGS_SINGLETON_ID,
+            self._reveal_authorization,
+        ).value
         return MigrationVerification(
             normalized=value,
             current_format=(

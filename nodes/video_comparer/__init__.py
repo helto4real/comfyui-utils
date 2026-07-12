@@ -11,7 +11,7 @@ import folder_paths
 import torch
 from comfy_api.latest import InputImpl, Types, io, ui
 
-from ...shared.privacy import private_media_record, write_encrypted_temp_bytes
+from ...shared.managed_privacy import utils_media_artifacts
 
 
 _PREVIEW_SUBFOLDER = "helto_video_comparer"
@@ -118,7 +118,7 @@ class VideoComparer(io.ComfyNode):
         return float("NaN")
 
     @classmethod
-    def execute(
+    async def execute(
         cls,
         video_1,
         video_2,
@@ -126,13 +126,37 @@ class VideoComparer(io.ComfyNode):
         audio_2=None,
         frame_rate: float = 24.0,
         privacy_mode: bool = True,
+        unique_id: str | None = None,
     ) -> io.NodeOutput:
+        if privacy_mode:
+            managed = utils_media_artifacts()
+            owner = str(unique_id or "helto-video-comparer")
+            videos = [
+                await cls._managed_preview_record(
+                    video_1,
+                    "video_1",
+                    frame_rate,
+                    managed,
+                    owner_key=f"{owner}:video-1",
+                    audio=audio_1,
+                ),
+                await cls._managed_preview_record(
+                    video_2,
+                    "video_2",
+                    frame_rate,
+                    managed,
+                    owner_key=f"{owner}:video-2",
+                    audio=audio_2,
+                ),
+            ]
+        else:
+            videos = [
+                cls._preview_result(video_1, "video_1", frame_rate, audio_1, privacy_mode=False),
+                cls._preview_result(video_2, "video_2", frame_rate, audio_2, privacy_mode=False),
+            ]
         result = {
             "video_comparison": [{
-                "videos": [
-                    cls._preview_result(video_1, "video_1", frame_rate, audio_1, privacy_mode=privacy_mode),
-                    cls._preview_result(video_2, "video_2", frame_rate, audio_2, privacy_mode=privacy_mode),
-                ],
+                "videos": videos,
                 "frame_rate": float(frame_rate),
             }]
         }
@@ -166,9 +190,7 @@ class VideoComparer(io.ComfyNode):
         )
 
         if privacy_mode:
-            assert isinstance(target, BytesIO)
-            path = write_encrypted_temp_bytes(target.getvalue(), ".mp4", _PREVIEW_SUBFOLDER)
-            return private_media_record(path, content_type="video/mp4", encrypted=True, filename=filename)
+            raise RuntimeError("Private previews require managed artifacts.")
 
         return ui.SavedResult(filename, _PREVIEW_SUBFOLDER, io.FolderType.temp)
 

@@ -8,11 +8,9 @@ import sqlite3
 from collections.abc import Mapping
 from pathlib import Path
 
-from helto_privacy import MigrationVerification, PrivacyEnvelopeCodec, SingletonSnapshot
+from helto_privacy import MigrationVerification, SingletonSnapshot
 
 from .queue_manager_managed import (
-    QUEUE_PURPOSE,
-    QUEUE_SCHEMA,
     QUEUE_SINGLETON_ID,
     QueueManagerSingletonStore,
     decode_managed_queue_state,
@@ -28,8 +26,14 @@ _LEGACY_TABLE = "queue_manager_state"
 class QueueManagerMigrationCoordinator:
     """Migrate current wrappers or one declared historical generation."""
 
-    def __init__(self, migration_handle: object, store: QueueManagerSingletonStore) -> None:
+    def __init__(
+        self,
+        migration_handle: object,
+        singleton_handle: object,
+        store: QueueManagerSingletonStore,
+    ) -> None:
         self._migration = migration_handle
+        self._singletons = singleton_handle
         self._store = store
 
     def migrate_json(
@@ -39,6 +43,8 @@ class QueueManagerMigrationCoordinator:
         generation: str,
         read_authorization: object | None = None,
         complete_authorization: object | None = None,
+        protect_authorization: object | None = None,
+        reveal_authorization: object | None = None,
     ) -> object:
         path = Path(source_path)
         try:
@@ -47,7 +53,14 @@ class QueueManagerMigrationCoordinator:
             raise ValueError("Queue Manager JSON migration source is invalid.") from None
         if not isinstance(source, Mapping):
             raise ValueError("Queue Manager JSON migration source is invalid.")
-        transaction = QueueManagerMigrationTransaction(self._store, path, "json")
+        transaction = QueueManagerMigrationTransaction(
+            self._singletons,
+            self._store,
+            path,
+            "json",
+            protect_authorization,
+            reveal_authorization,
+        )
         discovered = self._migration.discover_and_read(
             queue_legacy_binding_id("json", generation),
             source,
@@ -69,10 +82,19 @@ class QueueManagerMigrationCoordinator:
         generation: str,
         read_authorization: object | None = None,
         complete_authorization: object | None = None,
+        protect_authorization: object | None = None,
+        reveal_authorization: object | None = None,
     ) -> object:
         path = Path(source_path)
         row = _read_legacy_sqlite_row(path)
-        transaction = QueueManagerMigrationTransaction(self._store, path, "sqlite")
+        transaction = QueueManagerMigrationTransaction(
+            self._singletons,
+            self._store,
+            path,
+            "sqlite",
+            protect_authorization,
+            reveal_authorization,
+        )
         source = {**row, "payload": base64.b64encode(row["payload"]).decode("ascii")}
         discovered = self._migration.discover_and_read(
             queue_legacy_binding_id("sqlite", generation),
@@ -94,13 +116,19 @@ class QueueManagerMigrationTransaction:
 
     def __init__(
         self,
+        singleton_handle: object,
         store: QueueManagerSingletonStore,
         source_path: Path,
         container: str,
+        protect_authorization: object,
+        reveal_authorization: object,
     ) -> None:
         if container not in {"json", "sqlite"} or not source_path.is_file():
             raise ValueError("Queue Manager migration source is missing.")
+        self._singletons = singleton_handle
         self._store = store
+        self._protect_authorization = protect_authorization
+        self._reveal_authorization = reveal_authorization
         self._source_path = source_path
         self._container = container
         self._source_bytes = source_path.read_bytes()
@@ -114,11 +142,12 @@ class QueueManagerMigrationTransaction:
         if not isinstance(normalized, Mapping):
             raise ValueError("Queue Manager migration state is invalid.")
         self._expected = normalize_managed_queue_state(normalized)
-        protected = PrivacyEnvelopeCodec(QUEUE_SCHEMA).encrypt_bytes(
+        protected = self._singletons.protect_blob(
+            QUEUE_SINGLETON_ID,
             encode_managed_queue_state(self._expected),
-            QUEUE_PURPOSE,
+            self._protect_authorization,
         )
-        self._replacement = SingletonSnapshot(1, protected)
+        self._replacement = SingletonSnapshot(1, protected.protected)
 
     def stage_durable_adjuncts(self, _normalized: object) -> None:
         return None
@@ -134,10 +163,10 @@ class QueueManagerMigrationTransaction:
     def read_back(self) -> MigrationVerification:
         snapshot = self._store.read_singleton(QUEUE_SINGLETON_ID)
         try:
-            value = PrivacyEnvelopeCodec(QUEUE_SCHEMA).decrypt_bytes(
-                snapshot.protected,
-                QUEUE_PURPOSE,
-            )
+            value = self._singletons.reveal_blob(
+                QUEUE_SINGLETON_ID,
+                self._reveal_authorization,
+            ).value
             normalized = decode_managed_queue_state(value)
         except Exception:
             raise RuntimeError("Queue Manager migration read-back failed.") from None

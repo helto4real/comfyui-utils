@@ -1,11 +1,10 @@
-# Prompt Enhancer managed privacy staging
+# Prompt Enhancer managed privacy
 
-Prompt Enhancer now has a complete, inactive `helto-privacy` profile fragment.
-The existing serializers, routes, and provider settings file remain the live
-path until the coordinated Utils profile is assembled, verified, and explicitly
-activated.
+Prompt Enhancer is bound to the complete Utils `helto-privacy` profile. Local
+workflow encryption, credential persistence, and credential routes are no
+longer authoritative.
 
-The staged fragment declares one private-by-default `prompt-enhancer` scope,
+The fragment declares one private-by-default `prompt-enhancer` scope,
 the `script` and `variables` workflow fields, one semantic execution projection,
 and one revisioned `prompt-provider-settings` singleton. Script and variable
 plaintext is applied only to the in-memory editor state; protected widget values
@@ -30,8 +29,8 @@ metadata, receipts, or object representations.
 The credential-aware provider adapter covers writer generation, visual-context
 generation, and explicit model downloads. It passes the token separately from
 `PromptEnhancerRequest`, so request representations and normal product state
-cannot retain it. The old registry and provider calls remain unchanged for the
-live pre-activation path.
+cannot retain it. Provider calls receive credentials only through the
+authorized dispatch adapter.
 
 Migration recognizes only these exact sources:
 
