@@ -7,6 +7,8 @@ from collections.abc import Callable, Mapping
 
 from helto_privacy import (
     AdapterSlot,
+    ExternalJsonValueTransitionAdapter,
+    ExternalTransitionPolicy,
     FieldLocation,
     FieldLocationKind,
     LegacyKeyFormat,
@@ -19,6 +21,7 @@ from helto_privacy import (
     ProfileResource,
     ProtectedField,
     ProtectedOperation,
+    ProtectedStateAuthority,
     ResourceKind,
     UTILS_KEY_BIN_IMPORT_ID,
     UTILS_PRIVACY_KEY_BIN_IMPORT_ID,
@@ -52,6 +55,10 @@ PRIVACY_SHOW_ANY_MODE_PROPERTY = "helto_privacy_show_any_privacy_mode"
 PRIVACY_SHOW_ANY_DISPLAY_OPERATION_ID = "privacy-show-any.display-result"
 PRIVACY_SHOW_ANY_DISPLAY_ROUTE = "/helto-privacy-show-any/display-result"
 TEXT_UI_KEY = "helto_privacy_show_any"
+_WORKFLOW_TRANSITION_POLICY = ExternalTransitionPolicy(
+    max_original_bytes_per_owner=16 * 1024 * 1024,
+    max_target_bytes_per_owner=16 * 1024 * 1024,
+)
 
 def privacy_show_any_legacy_binding_id(generation: str) -> str:
     if generation not in UTILS_WORKFLOW_READER_IDS:
@@ -136,6 +143,8 @@ def build_privacy_show_any_profile() -> PrivacyProfile:
                 ),
                 PRIVACY_SHOW_ANY_SCHEMA,
                 PRIVACY_SHOW_ANY_FIELD_ID,
+                ProtectedStateAuthority.EXTERNAL_BROWSER_WORKFLOW,
+                _WORKFLOW_TRANSITION_POLICY,
                 legacy_reader_ids=reader_ids,
                 mirror_locations=(
                     FieldLocation(
@@ -187,7 +196,10 @@ def build_privacy_show_any_profile() -> PrivacyProfile:
 PrivacyShowAnyModeAdapter = PrivateByDefaultModeAdapter
 
 
-class PrivacyShowAnyWorkflowStateAdapter:
+class PrivacyShowAnyWorkflowStateAdapter(ExternalJsonValueTransitionAdapter):
+    def __init__(self) -> None:
+        super().__init__(PRIVACY_SHOW_ANY_SCHEMA)
+
     def capture(self, source: object, _declaration: object) -> object:
         if isinstance(source, Mapping):
             return copy.deepcopy(source.get("value", source))
@@ -208,16 +220,6 @@ class PrivacyShowAnyWorkflowStateAdapter:
             target["value"] = ""
         else:
             setattr(target, "value", "")
-
-    def prepare_mode_transition(self, *_args) -> None:
-        return None
-
-    def commit_mode_transition(self, *_args) -> None:
-        return None
-
-    def rollback_mode_transition(self, *_args) -> None:
-        return None
-
 
 class PrivacyShowAnyManagedNodeAdapter:
     """Future node execution path that never encrypts outside the handle."""

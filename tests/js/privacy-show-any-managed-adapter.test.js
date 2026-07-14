@@ -88,6 +88,24 @@ test("one protected write is mirrored exactly and failed writes roll back", () =
 });
 
 
+test("workflow projection updates the detached state widget slot and mirrored property", () => {
+    const target = node();
+    const stateWidget = target.widgets[0];
+    target.__heltoPrivacyShowAnyStateWidget = stateWidget;
+    target.widgets = [];
+    const serialized = { widgets_values: ["OLD"], properties: {} };
+    const adapter = createPrivacyShowAnyWorkflowBrowserAdapter();
+
+    adapter.writeWorkflowProjection(target, serialized, "CURRENT_ENVELOPE", context);
+
+    assert.equal(serialized.widgets_values[0], "CURRENT_ENVELOPE");
+    assert.equal(
+        serialized.properties.helto_privacy_show_any_encrypted_text_state,
+        "CURRENT_ENVELOPE",
+    );
+});
+
+
 test("normalize reads bounded live state and lock clears only plaintext", () => {
     const target = node();
     const adapter = createPrivacyShowAnyWorkflowBrowserAdapter();

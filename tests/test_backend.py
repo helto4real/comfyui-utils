@@ -886,6 +886,7 @@ class NodeSchemaContractTests(unittest.TestCase):
             "edited_bboxes",
             "batching_mode",
             "privacy_mode",
+            "privacy_mode_reference",
             "private_execution",
         ])
         self.assertEqual([output_def.id for output_def in schema.outputs], ["images", "image_batch", "masks", "mask_batch", "bboxes"])
@@ -2182,7 +2183,8 @@ Second beat moves toward the doorway. @image1:end
         class ModelLike:
             pass
 
-        result = text_node.execute(ModelLike())
+        with isolated_privacy_keystore():
+            result = text_node.execute(ModelLike())
 
         self.assertIn("cannot be converted to meaningful text", result[0])
 
@@ -2930,12 +2932,21 @@ Second beat moves toward the doorway. @image1:end
     @staticmethod
     def _import_node_with_fake_comfy_api():
         class FakeSchema:
-            def __init__(self, node_id, display_name, category, inputs, outputs):
+            def __init__(
+                self,
+                node_id,
+                display_name,
+                category,
+                inputs,
+                outputs,
+                hidden=None,
+            ):
                 self.node_id = node_id
                 self.display_name = display_name
                 self.category = category
                 self.inputs = inputs
                 self.outputs = outputs
+                self.hidden = hidden or []
 
         class FakeField:
             def __init__(self, id=None, display_name=None, is_output_list=False, **kwargs):
@@ -2963,6 +2974,9 @@ Second beat moves toward the doorway. @image1:end
         class FakeBoundingBox:
             Output = FakeField
 
+        class FakeHidden:
+            unique_id = object()
+
         class FakeIO:
             ComfyNode = object
             Schema = FakeSchema
@@ -2971,6 +2985,7 @@ Second beat moves toward the doorway. @image1:end
             Image = FakeImage
             Mask = FakeMask
             BoundingBox = FakeBoundingBox
+            Hidden = FakeHidden
             NodeOutput = FakeNodeOutput
 
         previous_comfy_api = sys.modules.get("comfy_api")
@@ -3160,7 +3175,11 @@ Second beat moves toward the doorway. @image1:end
                 return lambda handler: handler
 
         class FakePromptServer:
-            instance = types.SimpleNamespace(routes=FakeRoutes())
+            class App:
+                def __init__(self):
+                    self.middlewares = []
+
+            instance = types.SimpleNamespace(routes=FakeRoutes(), app=App())
 
         class FakeWeb:
             Response = object

@@ -114,6 +114,12 @@ class PromptEnhancer(io.ComfyNode):
                 io.Boolean.Input("hide_mode", default=False),
                 io.Boolean.Input("privacy_mode", default=True),
                 io.String.Input(
+                    "privacy_mode_reference",
+                    default="",
+                    socketless=True,
+                    extra_dict={"hidden": True},
+                ),
+                io.String.Input(
                     "private_execution",
                     default="",
                     socketless=True,
@@ -201,6 +207,7 @@ class PromptEnhancer(io.ComfyNode):
         video_system_prompt_preset: str = "default",
         hide_mode: bool = False,
         privacy_mode: bool = True,
+        privacy_mode_reference: str = "",
         private_execution: str = "",
         ollama_url: str = DEFAULT_OLLAMA_URL,
         ollama_keep_alive: int = DEFAULT_OLLAMA_KEEP_ALIVE,
@@ -212,7 +219,34 @@ class PromptEnhancer(io.ComfyNode):
         vision_model_backend: str = DEFAULT_VISION_BACKEND,
         unique_id: str | None = None,
     ) -> io.NodeOutput:
-        if privacy_mode is not False:
+        unique_id = unique_id or getattr(getattr(cls, "hidden", None), "unique_id", None)
+        private_required = privacy_mode is not False
+        if privacy_mode_reference:
+            if unique_id is None:
+                raise ValueError("PRIVACY_SUBJECT_MODE_REFERENCE_INVALID")
+            from ...shared.managed_privacy_execution import (
+                consume_utils_subject_mode,
+                utils_subject_requires_private_execution,
+            )
+            from ...shared.prompt_enhancer.managed_privacy import (
+                PROMPT_ENHANCER_SUBJECT_MODE_BINDING_ID,
+            )
+
+            with consume_utils_subject_mode(
+                privacy_mode_reference,
+                PROMPT_ENHANCER_SUBJECT_MODE_BINDING_ID,
+                unique_id,
+            ) as lease:
+                private_required = utils_subject_requires_private_execution(
+                    lease,
+                    PROMPT_ENHANCER_SUBJECT_MODE_BINDING_ID,
+                )
+        elif unique_id is not None:
+            raise ValueError("PRIVACY_SUBJECT_MODE_REFERENCE_INVALID")
+
+        if private_required:
+            if not private_execution:
+                raise ValueError("PRIVACY_EXECUTION_REFERENCE_INVALID")
             import json
 
             from ...shared.managed_privacy import utils_privacy_pack
@@ -229,10 +263,10 @@ class PromptEnhancer(io.ComfyNode):
                     "external_prompt": external_prompt,
                     "seed": seed,
                 },
+                subject_id=unique_id,
             )
             script = resolved.value["resolved_script"]
             variables = json.dumps(resolved.value["variables"])
-        unique_id = unique_id or getattr(getattr(cls, "hidden", None), "unique_id", None)
         progress = PromptEnhancerProgress(unique_id)
         resolved_seed = resolve_seed(seed)
         settings = PromptEnhancerSettings(

@@ -21,5 +21,17 @@ def coordinated_suite_test_boundary(monkeypatch, tmp_path):
         "HELTO_PRIVACY_ARTIFACT_ROOT",
         str(tmp_path / "managed-artifacts"),
     )
+    monkeypatch.setenv(
+        "HELTO_PRIVACY_MODE_STATE",
+        str(tmp_path / "privacy-mode-state.json"),
+    )
+    monkeypatch.setenv(
+        "HELTO_PRIVACY_EXTERNAL_OPERATION_STATE",
+        str(tmp_path / "external-operation-state.json"),
+    )
+    monkeypatch.setenv(
+        "HELTO_PRIVACY_RECORD_RELOCATION_STATE",
+        str(tmp_path / "record-relocation-state.json"),
+    )
     for module in (artifacts, comfy_ui, envelope, guard, keystore):
         monkeypatch.setattr(module, "require_active_process_suite", lambda: None)

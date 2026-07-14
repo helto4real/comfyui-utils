@@ -24,11 +24,11 @@ export { UTILS_PRIVACY_PROFILE_FINGERPRINT, UTILS_PRIVACY_PROFILE_ID };
 
 const browserAdapters = Object.freeze({
     "privacy-show-any-mode-browser": createPrivacyShowAnyModeBrowserAdapter(),
-    "privacy-show-any-workflow-browser": createPrivacyShowAnyWorkflowBrowserAdapter(),
+    "privacy-show-any-workflow-browser": createPrivacyShowAnyWorkflowBrowserAdapter({ app }),
     "prompt-enhancer-mode-browser": createPromptEnhancerModeBrowserAdapter(),
-    "prompt-enhancer-workflow-browser": createPromptEnhancerWorkflowBrowserAdapter(),
+    "prompt-enhancer-workflow-browser": createPromptEnhancerWorkflowBrowserAdapter({ app }),
     "selector-mode-browser": createSelectorModeBrowserAdapter(),
-    "selector-workflow-browser": createSelectorWorkflowBrowserAdapter(),
+    "selector-workflow-browser": createSelectorWorkflowBrowserAdapter({ app }),
 });
 
 async function connect() {

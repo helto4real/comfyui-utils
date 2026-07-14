@@ -225,6 +225,15 @@ def test_profile_declares_one_private_selector_snapshot_and_all_operations():
     assert profile.fingerprint == build_selector_privacy_profile().fingerprint
 
 
+def test_selector_external_transition_codec_accepts_legacy_public_shapes():
+    state = SelectorWorkflowStateAdapter()
+
+    assert state.classify_mode_transition_representation(b"[]", object()) == "public"
+    assert state.encode_public_mode_transition([], object()) == b'{"value":[]}'
+    assert state.classify_mode_transition_representation(b"{}", object()) == "public"
+    assert state.encode_public_mode_transition({}, object()) == b'{"value":{}}'
+
+
 @pytest.mark.parametrize("generation", ("raw-xor", "priv1", "priv2", "priv3"))
 def test_profile_bindings_decode_genuine_workflow_and_mask_generations(generation):
     profile = build_selector_privacy_profile()

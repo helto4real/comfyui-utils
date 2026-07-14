@@ -1,5 +1,13 @@
 // Product adapters for the shared selector workflow profile.
 
+import {
+    createUtilsExternalWorkflowTransition,
+    isUtilsCurrentModeEnvelope,
+    managedNodeType,
+    parseUtilsModeTransitionStorage,
+    serializedWidgetIndex,
+} from "./managed_mode_transition.js";
+
 export const SELECTOR_SELECTED_FIELD_ID = "selector-selected-images";
 export const SELECTOR_MASKS_FIELD_ID = "selector-edited-masks";
 export const SELECTOR_BBOXES_FIELD_ID = "selector-edited-bboxes";
@@ -21,12 +29,14 @@ const FIELD_FACTS = Object.freeze({
         defaultValue: () => ({}),
     }),
 });
+const CURRENT_SCHEMA = "helto.comfyui-utils";
+const NODE_TYPE = "HeltoImageSelector";
 
 function failure() {
     throw new Error("PRIVACY_SELECTOR_STATE_INVALID");
 }
 function fieldFacts(context) {
-    const facts = FIELD_FACTS[context?.fieldId ?? context?.id];
+    const facts = FIELD_FACTS[context?.field?.id ?? context?.fieldId ?? context?.id];
     if (!facts) failure();
     return facts;
 }
@@ -78,7 +88,7 @@ function bboxMap(value) {
 
 function normalize(context, value) {
     const parsed = parseValue(value);
-    const fieldId = context?.fieldId ?? context?.id;
+    const fieldId = context?.field?.id ?? context?.fieldId ?? context?.id;
     if (fieldId === SELECTOR_SELECTED_FIELD_ID) return { value: uniqueStrings(parsed) };
     if (fieldId === SELECTOR_MASKS_FIELD_ID) return { value: maskMap(parsed) };
     if (fieldId === SELECTOR_BBOXES_FIELD_ID) return { value: bboxMap(parsed) };
@@ -118,8 +128,78 @@ export function createSelectorModeBrowserAdapter() {
     };
 }
 
-export function createSelectorWorkflowBrowserAdapter() {
+export function createSelectorWorkflowBrowserAdapter({ app = null } = {}) {
     let sessionLocked = false;
+    const owners = new Set();
+
+    function applyValue(node, value, context) {
+        const facts = fieldFacts(context);
+        node[facts.runtime] = structuredClone(normalize(context, value).value);
+        if (
+            (context?.field?.id ?? context?.fieldId ?? context?.id) === SELECTOR_MASKS_FIELD_ID
+            && typeof node?.migrateLegacyMasks === "function"
+            && Object.values(node.editedMasks || {}).some((reference) => (
+                reference
+                && typeof reference === "object"
+                && !Array.isArray(reference)
+                && Object.keys(reference).length === 1
+                && typeof reference.key === "string"
+            ))
+        ) {
+            queueMicrotask(() => {
+                node.migrateLegacyMasks().catch((err) => {
+                    console.warn("Failed to migrate legacy selector masks:", err);
+                });
+            });
+        }
+    }
+
+    function clearValue(node, context) {
+        const facts = fieldFacts(context);
+        node[facts.runtime] = facts.defaultValue();
+    }
+
+    function reconcileOwner(node) {
+        if (managedNodeType(node) !== NODE_TYPE) failure();
+        owners.add(node);
+        transition.synchronizeOwner(node);
+        if (sessionLocked) clearRuntime(node);
+    }
+
+    function detachedWidgetValue(node, serializedNode, context) {
+        if (!Array.isArray(serializedNode?.widgets_values)) failure();
+        const target = widget(node, context);
+        const index = serializedWidgetIndex(node, target);
+        if (!Number.isInteger(index) || index < 0 || index >= serializedNode.widgets_values.length) {
+            failure();
+        }
+        const value = serializedNode.widgets_values[index];
+        if (typeof value !== "string") failure();
+        return value;
+    }
+
+    const transition = createUtilsExternalWorkflowTransition({
+        app,
+        owners,
+        registerNode: reconcileOwner,
+        readStorage(node, context) {
+            return String(widget(node, context).value || "");
+        },
+        writeStorage(node, value, context) {
+            widget(node, context).value = value;
+        },
+        readDetachedStorage: detachedWidgetValue,
+        reloadRuntime(node, value, context) {
+            const payload = parseUtilsModeTransitionStorage(value, failure);
+            if (isUtilsCurrentModeEnvelope(payload, CURRENT_SCHEMA)) clearValue(node, context);
+            else applyValue(node, payload, context);
+        },
+        reconcileRuntime(node) {
+            if (sessionLocked) clearRuntime(node);
+        },
+        fail: failure,
+    });
+
     return {
         normalize(node, context) {
             const facts = fieldFacts(context);
@@ -130,39 +210,36 @@ export function createSelectorWorkflowBrowserAdapter() {
         },
         writeProtected(node, protectedValue, context) {
             if (typeof protectedValue !== "string") failure();
-            widget(node, context).value = protectedValue;
+            transition.withInternalMutation(() => {
+                widget(node, context).value = protectedValue;
+            });
+        },
+        writeWorkflowProjection(node, serializedNode, protectedValue, context) {
+            if (typeof protectedValue !== "string" || !Array.isArray(serializedNode?.widgets_values)) {
+                failure();
+            }
+            const target = widget(node, context);
+            const index = serializedWidgetIndex(node, target);
+            if (!Number.isInteger(index) || index < 0 || index >= serializedNode.widgets_values.length) {
+                failure();
+            }
+            serializedNode.widgets_values[index] = protectedValue;
         },
         apply(node, value, context) {
-            const facts = fieldFacts(context);
-            node[facts.runtime] = structuredClone(normalize(context, value).value);
-            if (
-                (context?.fieldId ?? context?.id) === SELECTOR_MASKS_FIELD_ID
-                && typeof node?.migrateLegacyMasks === "function"
-                && Object.values(node.editedMasks || {}).some((reference) => (
-                    reference
-                    && typeof reference === "object"
-                    && !Array.isArray(reference)
-                    && Object.keys(reference).length === 1
-                    && typeof reference.key === "string"
-                ))
-            ) {
-                queueMicrotask(() => {
-                    node.migrateLegacyMasks().catch((err) => {
-                        console.warn("Failed to migrate legacy selector masks:", err);
-                    });
-                });
-            }
+            transition.requireMutable();
+            applyValue(node, value, context);
         },
         clear(node, context) {
-            const facts = fieldFacts(context);
-            node[facts.runtime] = facts.defaultValue();
+            transition.requireMutable();
+            clearValue(node, context);
         },
         reconcileNode(node) {
-            if (sessionLocked) clearRuntime(node);
+            reconcileOwner(node);
         },
         reconcileNodeDefinition() {},
         onPrivacySessionChange(snapshot) {
             sessionLocked = snapshot?.state !== "ready" && snapshot?.state !== "unlocked";
         },
+        ...transition,
     };
 }

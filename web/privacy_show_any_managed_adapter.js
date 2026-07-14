@@ -1,5 +1,12 @@
 // Browser adapter for the shared Privacy Show Any workflow profile.
 
+import {
+    createUtilsExternalWorkflowTransition,
+    isUtilsCurrentModeEnvelope,
+    managedNodeType,
+    parseUtilsModeTransitionStorage,
+} from "./managed_mode_transition.js";
+
 export const PRIVACY_SHOW_ANY_FIELD_ID = "privacy-show-any-text";
 
 const NODE_TYPE = "HeltoPrivacyShowAny";
@@ -10,13 +17,16 @@ const DISPLAY_TEXT = "__heltoPrivacyShowAnyText";
 const DISPLAY_WIDGET = "__heltoPrivacyShowAnyWidget";
 const PRIVACY_BLOCKED = "__heltoPrivacyShowAnyBlocked";
 const MAX_TEXT_CHARS = 200_000;
+const CURRENT_SCHEMA = "helto.comfyui-utils";
 
 function failure(code = "PRIVACY_SHOW_ANY_STATE_INVALID") {
     throw new Error(code);
 }
 
 function requireContext(context) {
-    if ((context?.fieldId ?? context?.id) !== PRIVACY_SHOW_ANY_FIELD_ID) failure();
+    if ((context?.field?.id ?? context?.fieldId ?? context?.id) !== PRIVACY_SHOW_ANY_FIELD_ID) {
+        failure();
+    }
 }
 
 function stateWidget(node) {
@@ -76,8 +86,93 @@ export function createPrivacyShowAnyModeBrowserAdapter() {
     };
 }
 
-export function createPrivacyShowAnyWorkflowBrowserAdapter() {
+export function createPrivacyShowAnyWorkflowBrowserAdapter({ app = null } = {}) {
     let sessionLocked = false;
+    const owners = new Set();
+
+    function writeProtectedExact(node, protectedValue, context) {
+        requireContext(context);
+        requireActive(node);
+        if (typeof protectedValue !== "string") failure();
+        const target = stateWidget(node);
+        node.properties ??= {};
+        const oldWidget = target.value;
+        const hadProperty = Object.hasOwn(node.properties, STATE_PROPERTY);
+        const oldProperty = node.properties[STATE_PROPERTY];
+        try {
+            target.value = protectedValue;
+            node.properties[STATE_PROPERTY] = protectedValue;
+        } catch {
+            target.value = oldWidget;
+            try {
+                if (hadProperty) node.properties[STATE_PROPERTY] = oldProperty;
+                else delete node.properties[STATE_PROPERTY];
+            } catch {
+                // The original property remains authoritative when its owner rejects writes.
+            }
+            failure("PRIVACY_SHOW_ANY_MIRROR_WRITE_FAILED");
+        }
+    }
+
+    function applyValue(node, value, context) {
+        requireContext(context);
+        requireActive(node);
+        const plain = value && typeof value === "object" && "value" in value
+            ? value.value
+            : value;
+        node[DISPLAY_TEXT] = boundedText(plain);
+        syncDisplay(node);
+    }
+
+    function reconcileOwner(node) {
+        if (managedNodeType(node) !== NODE_TYPE) failure();
+        owners.add(node);
+        transition.synchronizeOwner(node);
+        if (sessionLocked) clearPlaintext(node);
+    }
+
+    function detachedStorage(node, serializedNode, context) {
+        requireContext(context);
+        const propertyValue = serializedNode?.properties?.[STATE_PROPERTY];
+        const widgetValue = Array.isArray(serializedNode?.widgets_values)
+            ? serializedNode.widgets_values[0]
+            : undefined;
+        if (
+            typeof propertyValue === "string"
+            && typeof widgetValue === "string"
+            && propertyValue
+            && widgetValue
+            && propertyValue !== widgetValue
+        ) failure();
+        const value = widgetValue || propertyValue;
+        if (typeof value !== "string") failure();
+        return value;
+    }
+
+    const transition = createUtilsExternalWorkflowTransition({
+        app,
+        owners,
+        registerNode: reconcileOwner,
+        readStorage(node, context) {
+            requireContext(context);
+            const widgetValue = String(stateWidget(node).value || "");
+            const propertyValue = String(node?.properties?.[STATE_PROPERTY] || "");
+            if (widgetValue && propertyValue && widgetValue !== propertyValue) failure();
+            return widgetValue || propertyValue;
+        },
+        writeStorage: writeProtectedExact,
+        readDetachedStorage: detachedStorage,
+        reloadRuntime(node, value, context) {
+            const payload = parseUtilsModeTransitionStorage(value, failure);
+            if (isUtilsCurrentModeEnvelope(payload, CURRENT_SCHEMA)) clearPlaintext(node);
+            else applyValue(node, payload, context);
+        },
+        reconcileRuntime(node) {
+            if (sessionLocked) clearPlaintext(node);
+        },
+        fail: failure,
+    });
+
     return {
         normalize(node, context) {
             requireContext(context);
@@ -93,38 +188,28 @@ export function createPrivacyShowAnyWorkflowBrowserAdapter() {
             return widgetValue || propertyValue;
         },
         writeProtected(node, protectedValue, context) {
+            transition.withInternalMutation(() => {
+                writeProtectedExact(node, protectedValue, context);
+            });
+        },
+        writeWorkflowProjection(node, serializedNode, protectedValue, context) {
             requireContext(context);
-            requireActive(node);
-            if (typeof protectedValue !== "string") failure();
-            const widget = stateWidget(node);
-            node.properties ??= {};
-            const oldWidget = widget.value;
-            const hadProperty = Object.hasOwn(node.properties, STATE_PROPERTY);
-            const oldProperty = node.properties[STATE_PROPERTY];
-            try {
-                widget.value = protectedValue;
-                node.properties[STATE_PROPERTY] = protectedValue;
-            } catch {
-                widget.value = oldWidget;
-                try {
-                    if (hadProperty) node.properties[STATE_PROPERTY] = oldProperty;
-                    else delete node.properties[STATE_PROPERTY];
-                } catch {
-                    // The original property remains authoritative when its owner rejects writes.
-                }
-                failure("PRIVACY_SHOW_ANY_MIRROR_WRITE_FAILED");
+            if (typeof protectedValue !== "string" || !serializedNode || typeof serializedNode !== "object") {
+                failure();
             }
+            serializedNode.properties ??= {};
+            serializedNode.properties[STATE_PROPERTY] = protectedValue;
+            if (!Array.isArray(serializedNode.widgets_values) || !serializedNode.widgets_values.length) {
+                failure();
+            }
+            serializedNode.widgets_values[0] = protectedValue;
         },
         apply(node, value, context) {
-            requireContext(context);
-            requireActive(node);
-            const plain = value && typeof value === "object" && "value" in value
-                ? value.value
-                : value;
-            node[DISPLAY_TEXT] = boundedText(plain);
-            syncDisplay(node);
+            transition.requireMutable();
+            applyValue(node, value, context);
         },
         clear(node, context) {
+            transition.requireMutable();
             requireContext(context);
             clearPlaintext(node);
         },
@@ -134,12 +219,13 @@ export function createPrivacyShowAnyWorkflowBrowserAdapter() {
             clearPlaintext(node);
         },
         reconcileNode(node) {
-            if (sessionLocked) clearPlaintext(node);
+            reconcileOwner(node);
         },
         reconcileNodeDefinition() {},
         onPrivacySessionChange(snapshot) {
             sessionLocked = snapshot?.state !== "ready" && snapshot?.state !== "unlocked";
         },
+        ...transition,
     };
 }
 

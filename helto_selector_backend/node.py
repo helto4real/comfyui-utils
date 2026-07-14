@@ -33,6 +33,7 @@ class HeltoImageSelector(io.ComfyNode):
             node_id="HeltoImageSelector",
             display_name="Helto Multi-Image Selector",
             category="image",
+            hidden=[io.Hidden.unique_id],
             inputs=[
                 io.String.Input(
                     "selected_images",
@@ -71,6 +72,12 @@ class HeltoImageSelector(io.ComfyNode):
                     extra_dict={"hidden": True},
                 ),
                 io.String.Input(
+                    "privacy_mode_reference",
+                    default="",
+                    socketless=True,
+                    extra_dict={"hidden": True},
+                ),
+                io.String.Input(
                     "private_execution",
                     default="",
                     socketless=True,
@@ -95,9 +102,46 @@ class HeltoImageSelector(io.ComfyNode):
         edited_bboxes: str = "{}",
         batching_mode: bool = False,
         privacy_mode: bool = True,
+        privacy_mode_reference: str = "",
         private_execution: str = "",
+        unique_id: str | None = None,
     ) -> io.NodeOutput:
-        if privacy_mode is not False:
+        subject_id = unique_id or getattr(getattr(cls, "hidden", None), "unique_id", None)
+        private_required = privacy_mode is not False
+        if privacy_mode_reference:
+            if subject_id is None:
+                raise ValueError("PRIVACY_SUBJECT_MODE_REFERENCE_INVALID")
+            try:
+                from ..shared.managed_privacy_execution import (
+                    consume_utils_subject_mode,
+                    utils_subject_requires_private_execution,
+                )
+                from .managed_workflow import SELECTOR_SUBJECT_MODE_BINDING_ID
+            except ImportError as exc:
+                if str(exc) != "attempted relative import beyond top-level package":
+                    raise
+                from shared.managed_privacy_execution import (
+                    consume_utils_subject_mode,
+                    utils_subject_requires_private_execution,
+                )
+                from helto_selector_backend.managed_workflow import (
+                    SELECTOR_SUBJECT_MODE_BINDING_ID,
+                )
+            with consume_utils_subject_mode(
+                privacy_mode_reference,
+                SELECTOR_SUBJECT_MODE_BINDING_ID,
+                subject_id,
+            ) as lease:
+                private_required = utils_subject_requires_private_execution(
+                    lease,
+                    SELECTOR_SUBJECT_MODE_BINDING_ID,
+                )
+        elif subject_id is not None:
+            raise ValueError("PRIVACY_SUBJECT_MODE_REFERENCE_INVALID")
+
+        if private_required:
+            if not private_execution:
+                raise ValueError("PRIVACY_EXECUTION_REFERENCE_INVALID")
             try:
                 from ..shared.managed_privacy import utils_privacy_pack
             except ImportError as exc:
@@ -109,6 +153,7 @@ class HeltoImageSelector(io.ComfyNode):
             resolved = await utils_privacy_pack().execution("selector-execution").dispatch(
                 reference,
                 {"resize_mode": resize_mode},
+                subject_id=subject_id,
             )
             tensor_list, image_batch, mask_list, mask_batch, bboxes = resolved.value
         else:

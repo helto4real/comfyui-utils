@@ -19,6 +19,7 @@ from helto_privacy import (
     ArtifactError,
     PrivacyProfile,
     PrivacyScope,
+    PrivateByDefaultModeAdapter,
     ProfileResource,
     ResourceKind,
     UTILS_PRIV3_READER_ID,
@@ -51,21 +52,8 @@ FIXTURES = Path(__file__).parent / "fixtures" / "historical"
 pytestmark = pytest.mark.usefixtures("coordinated_suite_test_boundary")
 
 
-class _ModeAdapter:
-    def read_declared_mode(self, _scope_id):
-        return "private"
-
-    def write_declared_mode(self, _scope_id, _mode):
-        return None
-
-    def prepare_mode_transition(self, *_args):
-        return None
-
-    def commit_mode_transition(self, *_args):
-        return None
-
-    def rollback_mode_transition(self, *_args):
-        return None
+class _ModeAdapter(PrivateByDefaultModeAdapter):
+    pass
 
 
 class _ImportedKeys:
@@ -372,10 +360,17 @@ def test_storage_failure_leaves_no_reference_or_plaintext_artifact(
     service, _adapter, _pack, artifact_root, root, _token = managed_artifacts
     image_path = root / "source.png"
     _write_image(image_path, (1, 2, 3))
+    original_write = shared_artifacts.atomic_write_private_bytes
+
+    def fail_artifact_payload(path, payload):
+        if Path(path).suffix == ".hpa":
+            raise OSError("synthetic fault")
+        return original_write(path, payload)
+
     monkeypatch.setattr(
         shared_artifacts,
         "atomic_write_private_bytes",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("synthetic fault")),
+        fail_artifact_payload,
     )
 
     with pytest.raises(ArtifactError) as failure:
@@ -387,7 +382,7 @@ def test_storage_failure_leaves_no_reference_or_plaintext_artifact(
     assert not list(artifact_root.rglob("*.webp"))
 
 
-def test_cleanup_failure_keeps_previous_thumbnail_authoritative(
+def test_cleanup_failure_invalidates_previous_thumbnail_and_recovers_on_next_read(
     managed_artifacts,
     monkeypatch,
 ):
@@ -420,8 +415,16 @@ def test_cleanup_failure_keeps_previous_thumbnail_authoritative(
     reference_after_failure, bytes_after_failure = asyncio.run(
         service.thumbnail(str(image_path), regenerate=False)
     )
-    assert reference_after_failure == previous_reference
-    assert bytes_after_failure == previous_bytes
+    assert reference_after_failure != previous_reference
+    assert bytes_after_failure != previous_bytes
+    with pytest.raises(ArtifactError) as invalidated:
+        asyncio.run(
+            service.handle.read(
+                SELECTOR_THUMBNAIL_ARTIFACT_KIND,
+                previous_reference,
+            )
+        )
+    assert invalidated.value.code == "PRIVACY_ARTIFACT_REFERENCE_INVALID"
     assert previous_path.exists()
 
     monkeypatch.setattr(Path, "unlink", original_unlink)

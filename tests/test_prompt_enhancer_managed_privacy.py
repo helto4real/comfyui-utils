@@ -224,6 +224,16 @@ def test_profile_declares_prompt_snapshot_execution_singleton_and_history():
     assert profile.fingerprint == build_prompt_enhancer_privacy_profile().fingerprint
 
 
+def test_prompt_external_transition_codec_accepts_legacy_public_shapes():
+    state = PromptEnhancerWorkflowStateAdapter()
+
+    assert state.classify_mode_transition_representation(b"raw prompt", object()) == "public"
+    assert state.encode_public_mode_transition("raw prompt", object()) == (
+        b'{"value":"raw prompt"}'
+    )
+    assert state.classify_mode_transition_representation(b"[]", object()) == "public"
+
+
 @pytest.mark.parametrize("generation", ("raw-xor", "priv1", "priv2", "priv3"))
 def test_profile_decodes_genuine_prompt_enhancer_workflow_generations(generation):
     fixture = json.loads(
@@ -417,9 +427,14 @@ def test_current_snapshot_executes_once_and_lock_blocks_before_product(tmp_path,
         PROMPT_ENHANCER_EXECUTION_PROJECTION_ID,
         fields,
         _authorization(pack, token, "execution.prepare"),
+        subject_id="synthetic-prompt-node",
     )
 
-    result = execution.dispatch(prepared.reference, {"seed": 1, "external_prompt": ""})
+    result = execution.dispatch(
+        prepared.reference,
+        {"seed": 1, "external_prompt": ""},
+        subject_id="synthetic-prompt-node",
+    )
     assert result.value["resolved_script"] == "A cinematic portrait"
     assert len(calls) == 1
 
@@ -427,10 +442,15 @@ def test_current_snapshot_executes_once_and_lock_blocks_before_product(tmp_path,
         PROMPT_ENHANCER_EXECUTION_PROJECTION_ID,
         fields,
         _authorization(pack, token, "execution.prepare"),
+        subject_id="synthetic-prompt-node",
     )
     lock_keystore()
     with pytest.raises(ExecutionError):
-        execution.dispatch(prepared.reference, {"seed": 1, "external_prompt": ""})
+        execution.dispatch(
+            prepared.reference,
+            {"seed": 1, "external_prompt": ""},
+            subject_id="synthetic-prompt-node",
+        )
     assert len(calls) == 1
 
 

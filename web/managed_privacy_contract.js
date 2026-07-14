@@ -1,6 +1,6 @@
 export const UTILS_PRIVACY_PROFILE_ID = "helto.comfyui-utils";
 export const UTILS_PRIVACY_PROFILE_FINGERPRINT =
-    "834a150df10bf4972982bd34fa08e6e0af616e99e20bf506caaa0f893cbd2e69";
+    "517c7d90d335ac12fd30e7fb0eafba9976b8fb8c1be9cdfa55aa508463760cbe";
 
 export function requireActiveUtilsSuite(status) {
     if (

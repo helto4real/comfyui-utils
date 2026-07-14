@@ -290,6 +290,27 @@ class QueueManagerSingletonStore:
         _require_singleton(singleton_id)
         return _QueueStoreTransaction(self, expected_revision, replacement)
 
+    def rollback_singleton_replace(
+        self,
+        singleton_id: str,
+        expected: SingletonSnapshot,
+        replacement: SingletonSnapshot,
+    ) -> bool:
+        """Replace one exact committed snapshot with a newer rollback snapshot."""
+
+        _require_singleton(singleton_id)
+        if (
+            not isinstance(expected, SingletonSnapshot)
+            or not isinstance(replacement, SingletonSnapshot)
+            or replacement.revision != expected.revision + 1
+        ):
+            raise ValueError("Queue Manager persistence is invalid.")
+        return self._replace(
+            expected.revision,
+            replacement,
+            expected_snapshot=expected,
+        )
+
     def prepare_mode_transition(self, *_args) -> None:
         return None
 
@@ -320,19 +341,39 @@ class QueueManagerSingletonStore:
             """
         )
 
-    def _replace(self, expected_revision: int, replacement: SingletonSnapshot) -> bool:
+    def _replace(
+        self,
+        expected_revision: int,
+        replacement: SingletonSnapshot,
+        *,
+        expected_snapshot: SingletonSnapshot | None = None,
+    ) -> bool:
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
             self._ensure_schema(connection)
             row = connection.execute(
-                f"SELECT revision FROM {_STORE_TABLE} WHERE id = ?",
+                f"SELECT revision, protected FROM {_STORE_TABLE} WHERE id = ?",
                 (QUEUE_SINGLETON_ID,),
             ).fetchone()
             current_revision = int(row["revision"]) if row is not None else 0
             if current_revision != expected_revision:
                 connection.rollback()
                 return False
+            if expected_snapshot is not None:
+                try:
+                    current_protected = (
+                        json.loads(row["protected"])
+                        if row is not None
+                        else None
+                    )
+                    current = SingletonSnapshot(current_revision, current_protected)
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    connection.rollback()
+                    return False
+                if current != expected_snapshot:
+                    connection.rollback()
+                    return False
             if replacement.protected is None:
                 connection.execute(
                     f"DELETE FROM {_STORE_TABLE} WHERE id = ?",

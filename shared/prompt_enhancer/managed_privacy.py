@@ -8,6 +8,8 @@ from collections.abc import Callable, Mapping
 
 from helto_privacy import (
     AdapterSlot,
+    ExternalJsonValueTransitionAdapter,
+    ExternalTransitionPolicy,
     FieldLocation,
     FieldLocationKind,
     LegacyKeyFormat,
@@ -20,10 +22,12 @@ from helto_privacy import (
     ProfileResource,
     ProtectedField,
     ProtectedOperation,
+    ProtectedStateAuthority,
     ResourceKind,
     SemanticExecutionProjection,
     SingletonDeclaration,
     SingletonPayloadKind,
+    SubjectModeBinding,
     UTILS_KEY_BIN_IMPORT_ID,
     UTILS_PRIVACY_KEY_BIN_IMPORT_ID,
     UTILS_PROVIDER_SETTINGS_PLAINTEXT_READER_ID,
@@ -57,6 +61,7 @@ PROMPT_PROVIDER_OPERATION_ADAPTER_ID = "prompt-provider-operations"
 PROMPT_ENHANCER_SCRIPT_FIELD_ID = "prompt-enhancer-script"
 PROMPT_ENHANCER_VARIABLES_FIELD_ID = "prompt-enhancer-variables"
 PROMPT_ENHANCER_EXECUTION_PROJECTION_ID = "prompt-enhancer-generate"
+PROMPT_ENHANCER_SUBJECT_MODE_BINDING_ID = "prompt-enhancer-subject-mode"
 PROMPT_PROVIDER_SETTINGS_SINGLETON_ID = "prompt-provider-settings"
 PROMPT_PROVIDER_OPERATION_IDS = (
     "prompt-provider.settings-load",
@@ -73,6 +78,10 @@ _FIELD_LOCATIONS = {
     PROMPT_ENHANCER_SCRIPT_FIELD_ID: "script",
     PROMPT_ENHANCER_VARIABLES_FIELD_ID: "variables",
 }
+_WORKFLOW_TRANSITION_POLICY = ExternalTransitionPolicy(
+    max_original_bytes_per_owner=16 * 1024 * 1024,
+    max_target_bytes_per_owner=16 * 1024 * 1024,
+)
 
 
 def prompt_enhancer_workflow_binding_id(field_id: str, generation: str) -> str:
@@ -94,6 +103,8 @@ def build_prompt_enhancer_privacy_profile() -> PrivacyProfile:
             FieldLocation(FieldLocationKind.WIDGET, location),
             PROMPT_ENHANCER_SCHEMA,
             field_id,
+            ProtectedStateAuthority.EXTERNAL_BROWSER_WORKFLOW,
+            _WORKFLOW_TRANSITION_POLICY,
             legacy_reader_ids=workflow_reader_ids,
             execution=True,
         )
@@ -218,6 +229,14 @@ def build_prompt_enhancer_privacy_profile() -> PrivacyProfile:
             ),
         ),
         protected_fields=fields,
+        subject_mode_bindings=(
+            SubjectModeBinding(
+                PROMPT_ENHANCER_SUBJECT_MODE_BINDING_ID,
+                PROMPT_ENHANCER_SCOPE_ID,
+                "privacy_mode_reference",
+                (PROMPT_ENHANCER_NODE_TYPE,),
+            ),
+        ),
         singletons=(
             SingletonDeclaration(
                 PROMPT_PROVIDER_SETTINGS_SINGLETON_ID,
@@ -240,6 +259,7 @@ def build_prompt_enhancer_privacy_profile() -> PrivacyProfile:
                 PROMPT_ENHANCER_WORKFLOW_RESOURCE_ID,
                 PROMPT_ENHANCER_PROJECTION_ADAPTER_ID,
                 PROMPT_ENHANCER_DISPATCH_ADAPTER_ID,
+                PROMPT_ENHANCER_SUBJECT_MODE_BINDING_ID,
             ),
         ),
         protected_operations=(
@@ -297,8 +317,11 @@ def build_prompt_enhancer_privacy_profile() -> PrivacyProfile:
 PromptEnhancerModeAdapter = PrivateByDefaultModeAdapter
 
 
-class PromptEnhancerWorkflowStateAdapter:
+class PromptEnhancerWorkflowStateAdapter(ExternalJsonValueTransitionAdapter):
     """Consumer-owned widget locations and canonical product normalization."""
+
+    def __init__(self) -> None:
+        super().__init__(PROMPT_ENHANCER_SCHEMA)
 
     def capture(self, source: object, declaration: object) -> object:
         location = _FIELD_LOCATIONS[_declaration_id(declaration)]
@@ -325,16 +348,6 @@ class PromptEnhancerWorkflowStateAdapter:
             target[location] = copy.deepcopy(default)
         else:
             setattr(target, location, copy.deepcopy(default))
-
-    def prepare_mode_transition(self, *_args) -> None:
-        return None
-
-    def commit_mode_transition(self, *_args) -> None:
-        return None
-
-    def rollback_mode_transition(self, *_args) -> None:
-        return None
-
 
 class PromptEnhancerExecutionProjectionAdapter:
     def project(self, fields: Mapping[str, object], _declaration: object) -> dict[str, object]:

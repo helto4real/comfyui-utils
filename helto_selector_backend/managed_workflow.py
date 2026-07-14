@@ -11,6 +11,8 @@ from dataclasses import dataclass
 
 from helto_privacy import (
     AdapterSlot,
+    ExternalJsonValueTransitionAdapter,
+    ExternalTransitionPolicy,
     FieldLocation,
     FieldLocationKind,
     LegacyKeyFormat,
@@ -23,9 +25,11 @@ from helto_privacy import (
     ProfileResource,
     ProtectedField,
     ProtectedOperation,
+    ProtectedStateAuthority,
     ResourceKind,
     RootBoundSourceLeasePublisher,
     SemanticExecutionProjection,
+    SubjectModeBinding,
     UTILS_KEY_BIN_IMPORT_ID,
     UTILS_PRIV1_READER_ID,
     UTILS_PRIV2_READER_ID,
@@ -65,6 +69,7 @@ SELECTOR_SELECTED_FIELD_ID = "selector-selected-images"
 SELECTOR_MASKS_FIELD_ID = "selector-edited-masks"
 SELECTOR_BBOXES_FIELD_ID = "selector-edited-bboxes"
 SELECTOR_EXECUTION_PROJECTION_ID = "selector-select-images"
+SELECTOR_SUBJECT_MODE_BINDING_ID = "selector-subject-mode"
 
 _FIELD_LOCATIONS = {
     SELECTOR_SELECTED_FIELD_ID: "selected_images",
@@ -81,6 +86,10 @@ _FIELD_DEFAULTS = {
     SELECTOR_MASKS_FIELD_ID: {},
     SELECTOR_BBOXES_FIELD_ID: {},
 }
+_WORKFLOW_TRANSITION_POLICY = ExternalTransitionPolicy(
+    max_original_bytes_per_owner=16 * 1024 * 1024,
+    max_target_bytes_per_owner=16 * 1024 * 1024,
+)
 
 _OPERATION_ROUTES = {
     "selector.input-dir": ("/helto_selector/input_dir", "GET"),
@@ -115,6 +124,8 @@ def build_selector_privacy_profile() -> PrivacyProfile:
             FieldLocation(FieldLocationKind.WIDGET, location),
             SELECTOR_SCHEMA,
             field_id,
+            ProtectedStateAuthority.EXTERNAL_BROWSER_WORKFLOW,
+            _WORKFLOW_TRANSITION_POLICY,
             legacy_reader_ids=workflow_reader_ids,
             execution=True,
         )
@@ -222,6 +233,14 @@ def build_selector_privacy_profile() -> PrivacyProfile:
             ),
         ),
         protected_fields=fields,
+        subject_mode_bindings=(
+            SubjectModeBinding(
+                SELECTOR_SUBJECT_MODE_BINDING_ID,
+                SELECTOR_SCOPE_ID,
+                "privacy_mode_reference",
+                (SELECTOR_NODE_TYPE,),
+            ),
+        ),
         artifacts=SELECTOR_ARTIFACT_DECLARATIONS,
         protected_operations=tuple(
             ProtectedOperation(
@@ -240,6 +259,7 @@ def build_selector_privacy_profile() -> PrivacyProfile:
                 SELECTOR_WORKFLOW_RESOURCE_ID,
                 SELECTOR_PROJECTION_ADAPTER_ID,
                 SELECTOR_DISPATCH_ADAPTER_ID,
+                SELECTOR_SUBJECT_MODE_BINDING_ID,
             ),
         ),
         legacy_bindings=tuple(legacy_bindings),
@@ -267,8 +287,11 @@ def build_selector_privacy_profile() -> PrivacyProfile:
 SelectorModeAdapter = PrivateByDefaultModeAdapter
 
 
-class SelectorWorkflowStateAdapter:
+class SelectorWorkflowStateAdapter(ExternalJsonValueTransitionAdapter):
     """Consumer-owned selector node location and canonical normalization."""
+
+    def __init__(self) -> None:
+        super().__init__(SELECTOR_SCHEMA)
 
     def capture(self, source: object, declaration: object) -> object:
         field_id = _declaration_id(declaration)
@@ -291,16 +314,6 @@ class SelectorWorkflowStateAdapter:
     def clear_plaintext(self, target: object, declaration: object) -> None:
         field_id = _declaration_id(declaration)
         setattr(target, _RUNTIME_FIELDS[field_id], copy.deepcopy(_FIELD_DEFAULTS[field_id]))
-
-    def prepare_mode_transition(self, *_args) -> None:
-        return None
-
-    def commit_mode_transition(self, *_args) -> None:
-        return None
-
-    def rollback_mode_transition(self, *_args) -> None:
-        return None
-
 
 class SelectorExecutionProjectionAdapter:
     def project(self, fields: Mapping[str, object], _declaration: object) -> dict[str, object]:

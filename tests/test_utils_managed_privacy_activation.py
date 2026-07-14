@@ -16,6 +16,7 @@ import helto_privacy.keystore as keystore
 import helto_privacy.runtime as runtime
 from helto_privacy import (
     AdapterBindingError,
+    ProtectedStateAuthority,
     install,
     register_legacy_reader_units,
     utils_legacy_reader_units,
@@ -102,7 +103,7 @@ def test_complete_utils_profile_fingerprint_is_registration_order_independent():
 
     assert first.fingerprint == second.fingerprint
     assert first.fingerprint == (
-        "834a150df10bf4972982bd34fa08e6e0af616e99e20bf506caaa0f893cbd2e69"
+        "517c7d90d335ac12fd30e7fb0eafba9976b8fb8c1be9cdfa55aa508463760cbe"
     )
 
 
@@ -124,6 +125,15 @@ def test_complete_adapter_set_installs_one_fingerprint(monkeypatch, tmp_path):
     monkeypatch.setattr(runtime, "_INSTALLATIONS", {})
     monkeypatch.setattr(runtime, "register_helto_privacy_ui", lambda **_kwargs: True)
     monkeypatch.setenv("HELTO_PRIVACY_ARTIFACT_ROOT", str(tmp_path / "artifacts"))
+    monkeypatch.setenv("HELTO_PRIVACY_MODE_STATE", str(tmp_path / "mode-state.json"))
+    monkeypatch.setenv(
+        "HELTO_PRIVACY_EXTERNAL_OPERATION_STATE",
+        str(tmp_path / "external-operations.json"),
+    )
+    monkeypatch.setenv(
+        "HELTO_PRIVACY_RECORD_RELOCATION_STATE",
+        str(tmp_path / "record-relocation.json"),
+    )
     migration.reset_migration_runtime_for_tests()
     register_legacy_reader_units(utils_legacy_reader_units())
     profile = build_utils_privacy_profile()
@@ -146,6 +156,24 @@ def test_production_adapter_builder_binds_every_slot_exactly_once(tmp_path):
     )
 
     assert set(adapters) == {slot.id for slot in profile.server_adapters}
+    for adapter_id, methods in profile.server_adapter_contracts.items():
+        assert all(callable(getattr(adapters[adapter_id], method, None)) for method in methods)
+    browser_owned = {
+        "privacy-show-any-text",
+        "prompt-enhancer-script",
+        "prompt-enhancer-variables",
+        "selector-selected-images",
+        "selector-edited-masks",
+        "selector-edited-bboxes",
+    }
+    fields = {field.id: field for field in profile.protected_fields}
+    assert browser_owned <= set(fields)
+    assert all(
+        fields[field_id].state_authority
+        is ProtectedStateAuthority.EXTERNAL_BROWSER_WORKFLOW
+        and fields[field_id].external_transition_policy is not None
+        for field_id in browser_owned
+    )
     assert adapters[managed_privacy.PROMPT_PROVIDER_SETTINGS_STORE_ADAPTER_ID].path == (
         tmp_path / "config" / "prompt enhancer" / "provider_settings.json"
     )
@@ -263,7 +291,7 @@ def test_local_privacy_core_and_legacy_route_surfaces_are_absent():
 
 def test_candidate_metadata_pins_one_immutable_shared_runtime():
     root = Path(__file__).resolve().parents[1]
-    revision = "4753baa7e2e3e842d315777b13c03f09cda150d3"
+    revision = "294b43b12280bfb60d6112eb8ba6579a406bb83b"
     shared_dependency = (
         "helto-privacy @ "
         "git+https://github.com/helto4real/helto-privacy.git@"
@@ -282,6 +310,9 @@ def test_candidate_metadata_pins_one_immutable_shared_runtime():
     if tomllib is not None:
         metadata = tomllib.loads(project_text)
         assert metadata["project"]["dependencies"] == requirements
+        assert metadata["project"]["urls"]["Repository"] == (
+            "https://github.com/helto4real/comfyui-utils"
+        )
         assert metadata["tool"]["comfy"] == {
             "PublisherId": "helto",
             "DisplayName": "Helto ComfyUI Utils",

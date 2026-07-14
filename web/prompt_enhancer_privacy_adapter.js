@@ -1,11 +1,20 @@
 // Browser adapters for the shared Prompt Enhancer privacy profile.
 
+import {
+    createUtilsExternalWorkflowTransition,
+    isUtilsCurrentModeEnvelope,
+    managedNodeType,
+    parseUtilsModeTransitionStorage,
+    serializedWidgetIndex,
+} from "./managed_mode_transition.js";
+
 export const PROMPT_ENHANCER_SCRIPT_FIELD_ID = "prompt-enhancer-script";
 export const PROMPT_ENHANCER_VARIABLES_FIELD_ID = "prompt-enhancer-variables";
 
 const NODE_TYPE = "HeltoPromptEnhancer";
 const EDITOR_STATE = "__heltoPromptEnhancerPromptEditor";
 const VARIABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const CURRENT_SCHEMA = "helto.comfyui-utils";
 const FIELD_FACTS = Object.freeze({
     [PROMPT_ENHANCER_SCRIPT_FIELD_ID]: Object.freeze({ widget: "script" }),
     [PROMPT_ENHANCER_VARIABLES_FIELD_ID]: Object.freeze({ widget: "variables" }),
@@ -16,10 +25,11 @@ function failure() {
 }
 
 function facts(declaration) {
-    const fieldId = declaration?.fieldId ?? declaration?.id;
+    const source = declaration?.field ?? declaration;
+    const fieldId = source?.fieldId ?? source?.id;
     const value = FIELD_FACTS[fieldId];
     if (!value) failure();
-    if (declaration?.location?.name !== undefined && declaration.location.name !== value.widget) failure();
+    if (source?.location?.name !== undefined && source.location.name !== value.widget) failure();
     return value;
 }
 
@@ -116,8 +126,73 @@ export function createPromptEnhancerModeBrowserAdapter() {
     };
 }
 
-export function createPromptEnhancerWorkflowBrowserAdapter() {
+export function createPromptEnhancerWorkflowBrowserAdapter({ app = null } = {}) {
     let sessionLocked = false;
+    const owners = new Set();
+
+    function applyValue(node, value, context) {
+        const normalized = normalizeValue(value, context).value;
+        const state = editor(node);
+        if ((context?.field?.id ?? context?.fieldId ?? context?.id) === PROMPT_ENHANCER_SCRIPT_FIELD_ID) {
+            state.promptText = normalized;
+            if (state.textarea) state.textarea.value = normalized;
+        } else {
+            state.variables = structuredClone(normalized);
+        }
+    }
+
+    function clearValue(node, context) {
+        const state = editor(node);
+        facts(context);
+        if ((context?.field?.id ?? context?.fieldId ?? context?.id) === PROMPT_ENHANCER_SCRIPT_FIELD_ID) {
+            state.promptText = "";
+            if (state.textarea) state.textarea.value = "";
+        } else {
+            state.variables = [];
+        }
+    }
+
+    function reconcileOwner(node) {
+        if (managedNodeType(node) !== NODE_TYPE) failure();
+        owners.add(node);
+        transition.synchronizeOwner(node);
+        if (sessionLocked) clearEditor(node);
+    }
+
+    function detachedWidgetValue(node, serializedNode, context) {
+        if (!Array.isArray(serializedNode?.widgets_values)) failure();
+        const target = widget(node, context);
+        const index = serializedWidgetIndex(node, target);
+        if (!Number.isInteger(index) || index < 0 || index >= serializedNode.widgets_values.length) {
+            failure();
+        }
+        const value = serializedNode.widgets_values[index];
+        if (typeof value !== "string") failure();
+        return value;
+    }
+
+    const transition = createUtilsExternalWorkflowTransition({
+        app,
+        owners,
+        registerNode: reconcileOwner,
+        readStorage(node, context) {
+            return String(widget(node, context).value || "");
+        },
+        writeStorage(node, value, context) {
+            widget(node, context).value = value;
+        },
+        readDetachedStorage: detachedWidgetValue,
+        reloadRuntime(node, value, context) {
+            const payload = parseUtilsModeTransitionStorage(value, failure);
+            if (isUtilsCurrentModeEnvelope(payload, CURRENT_SCHEMA)) clearValue(node, context);
+            else applyValue(node, payload, context);
+        },
+        reconcileRuntime(node) {
+            if (sessionLocked) clearEditor(node);
+        },
+        fail: failure,
+    });
+
     return {
         normalize(node, context) {
             const field = facts(context);
@@ -130,34 +205,36 @@ export function createPromptEnhancerWorkflowBrowserAdapter() {
         },
         writeProtected(node, protectedValue, context) {
             if (typeof protectedValue !== "string") failure();
-            widget(node, context).value = protectedValue;
+            transition.withInternalMutation(() => {
+                widget(node, context).value = protectedValue;
+            });
+        },
+        writeWorkflowProjection(node, serializedNode, protectedValue, context) {
+            if (typeof protectedValue !== "string" || !Array.isArray(serializedNode?.widgets_values)) {
+                failure();
+            }
+            const target = widget(node, context);
+            const index = serializedWidgetIndex(node, target);
+            if (!Number.isInteger(index) || index < 0 || index >= serializedNode.widgets_values.length) {
+                failure();
+            }
+            serializedNode.widgets_values[index] = protectedValue;
         },
         apply(node, value, context) {
-            const normalized = normalizeValue(value, context).value;
-            const state = editor(node);
-            if ((context?.fieldId ?? context?.id) === PROMPT_ENHANCER_SCRIPT_FIELD_ID) {
-                state.promptText = normalized;
-                if (state.textarea) state.textarea.value = normalized;
-            } else {
-                state.variables = structuredClone(normalized);
-            }
+            transition.requireMutable();
+            applyValue(node, value, context);
         },
         clear(node, context) {
-            const state = editor(node);
-            facts(context);
-            if ((context?.fieldId ?? context?.id) === PROMPT_ENHANCER_SCRIPT_FIELD_ID) {
-                state.promptText = "";
-                if (state.textarea) state.textarea.value = "";
-            } else {
-                state.variables = [];
-            }
+            transition.requireMutable();
+            clearValue(node, context);
         },
         reconcileNode(node) {
-            if (sessionLocked) clearEditor(node);
+            reconcileOwner(node);
         },
         reconcileNodeDefinition() {},
         onPrivacySessionChange(snapshot) {
             sessionLocked = snapshot?.state !== "ready" && snapshot?.state !== "unlocked";
         },
+        ...transition,
     };
 }

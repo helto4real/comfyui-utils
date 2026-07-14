@@ -304,6 +304,7 @@ class SelectorManagedArtifacts:
         source_key = thumbnail_cache_key(authorized_path)
         async with self._thumbnail_lock:
             current = self._thumbnails.get(source_key)
+            prior_owner_id = current.owner_id if current is not None else None
             if current is not None and (
                 not regenerate or current.source_revision == source_revision
             ):
@@ -313,8 +314,8 @@ class SelectorManagedArtifacts:
                         current.reference,
                     )
                 except ArtifactError:
-                    if not regenerate:
-                        raise
+                    self._thumbnails.pop(source_key, None)
+                    current = None
                 else:
                     if not isinstance(value, bytes):
                         raise SelectorManagedArtifactError()
@@ -329,7 +330,7 @@ class SelectorManagedArtifacts:
             owner_id = (
                 current.owner_id
                 if current is not None
-                else generate_artifact_owner_id()
+                else prior_owner_id or generate_artifact_owner_id()
             )
             reference = await self.handle.write(
                 SELECTOR_THUMBNAIL_ARTIFACT_KIND,

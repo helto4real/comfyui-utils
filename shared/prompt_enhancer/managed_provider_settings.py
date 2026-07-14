@@ -62,6 +62,26 @@ class PromptProviderSettingsStore:
         _require_singleton(singleton_id)
         return _StoreTransaction(self, expected_revision, replacement)
 
+    def rollback_singleton_replace(
+        self,
+        singleton_id: str,
+        expected: SingletonSnapshot,
+        replacement: SingletonSnapshot,
+    ) -> bool:
+        """Replace one exact committed snapshot with a newer rollback snapshot."""
+
+        _require_singleton(singleton_id)
+        if (
+            not isinstance(expected, SingletonSnapshot)
+            or not isinstance(replacement, SingletonSnapshot)
+            or replacement.revision != expected.revision + 1
+        ):
+            raise ValueError("Provider settings persistence is invalid.")
+        if self.read_singleton(singleton_id) != expected:
+            return False
+        self._write(replacement)
+        return self.read_singleton(singleton_id) == replacement
+
     def prepare_mode_transition(self, *_args) -> None:
         return None
 
