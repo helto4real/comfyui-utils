@@ -291,7 +291,7 @@ def test_local_privacy_core_and_legacy_route_surfaces_are_absent():
 
 def test_candidate_metadata_pins_one_immutable_shared_runtime():
     root = Path(__file__).resolve().parents[1]
-    revision = "294b43b12280bfb60d6112eb8ba6579a406bb83b"
+    revision = "4015b8307df29a6b6d69ab3c60c4347ef190b719"
     shared_dependency = (
         "helto-privacy @ "
         "git+https://github.com/helto4real/helto-privacy.git@"

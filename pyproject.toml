@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = [
-    "helto-privacy @ git+https://github.com/helto4real/helto-privacy.git@294b43b12280bfb60d6112eb8ba6579a406bb83b",
+    "helto-privacy @ git+https://github.com/helto4real/helto-privacy.git@4015b8307df29a6b6d69ab3c60c4347ef190b719",
     "cryptography>=42.0",
 ]
 
