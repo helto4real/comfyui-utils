@@ -328,6 +328,14 @@ def test_candidate_metadata_pins_one_immutable_shared_runtime():
     assert "file:" not in "\n".join(requirements)
     assert "../" not in "\n".join(requirements)
 
+    managed_privacy = (root / "web/managed_privacy.js").read_text(encoding="utf-8")
+    progress_bar = (root / "web/progress_bar.js").read_text(encoding="utf-8")
+    for source in (managed_privacy, progress_bar):
+        assert 'from "/helto_privacy/ui/privacy_snapshot.js";' in source
+        assert "installPrivacyConnectionSerializationGate(app).coalesce();" in source
+    assert managed_privacy.index("installPrivacyConnectionSerializationGate(app).coalesce();") < managed_privacy.index("async function connect()")
+    assert progress_bar.index("installPrivacyConnectionSerializationGate(app).coalesce();") < progress_bar.index("class HeltoProgressBar")
+
 
 def test_missing_shared_package_blocks_pack_import(monkeypatch):
     root = Path(__file__).resolve().parents[1]

@@ -1,5 +1,8 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import {
+    installPrivacyConnectionSerializationGate,
+} from "/helto_privacy/ui/privacy_snapshot.js";
 
 import {
     applyProgressEvent,
@@ -13,6 +16,8 @@ const STYLE_LINK_ID = "helto-utils-styles";
 const PROGRESS_STYLE_ID = "helto-progress-bar-styles";
 const ROOT_ID = "helto-progress-bar";
 const CAPTURE_KEY = "__heltoProgressQueueCapture";
+
+installPrivacyConnectionSerializationGate(app).coalesce();
 
 function ensureSharedStylesheet() {
     if (document.getElementById(STYLE_LINK_ID)) return;

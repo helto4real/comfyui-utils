@@ -1,4 +1,7 @@
 import { app } from "../../scripts/app.js";
+import {
+    installPrivacyConnectionSerializationGate,
+} from "/helto_privacy/ui/privacy_snapshot.js";
 
 import {
     createPrivacyShowAnyModeBrowserAdapter,
@@ -21,6 +24,8 @@ import {
 
 
 export { UTILS_PRIVACY_PROFILE_FINGERPRINT, UTILS_PRIVACY_PROFILE_ID };
+
+installPrivacyConnectionSerializationGate(app).coalesce();
 
 const browserAdapters = Object.freeze({
     "privacy-show-any-mode-browser": createPrivacyShowAnyModeBrowserAdapter(),
