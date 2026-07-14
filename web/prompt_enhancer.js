@@ -19,6 +19,7 @@ import {
     isPromptEnhancerNode,
     keepFixedPromptSeed,
     isPointInPromptWidget,
+    livePromptSeedControlMode,
     moveAutocompleteSelection,
     promptAutocompleteShortcutAction,
     promptAutocompleteShortcutGuardAction,
@@ -26,15 +27,15 @@ import {
     PROMPT_EDITOR_HEIGHT,
     PROMPT_EDITOR_WIDGET_NAME,
     promptEditorLayout,
+    promptSeedControlWidget,
+    randomFixedPromptSeed,
     readPromptEnhancerModelConfig,
     readPromptEnhancerSettings,
     readPromptEnhancerVisionModelConfig,
     readPromptText,
     readPromptVariables,
-    randomizePromptEnhancerSeedsBeforeQueue,
     rememberPromptEnhancerProviderModel,
     removePromptVariable,
-    restoreQueuedPromptEnhancerSeeds,
     resetDefaultSystemPrompt,
     saveDefaultSystemPrompt,
     saveSystemPromptPreset,
@@ -51,6 +52,7 @@ import {
     writePromptEnhancerModelConfig,
     writePromptEnhancerVisionModelConfig,
     writePromptEnhancerSettings,
+    writePromptSeedValue,
     writePromptText,
     writePromptVariables,
 } from "./prompt_enhancer_helpers.js";
@@ -79,9 +81,9 @@ const PROMPT_EDITOR_STATE = "__heltoPromptEnhancerPromptEditor";
 const PROMPT_PRIVACY_SERIALIZATION = "__heltoPromptEnhancerPromptPrivacySerialization";
 const PROMPT_AUTOCOMPLETE_VISIBLE = "__heltoPromptEnhancerAutocompleteVisible";
 const PROMPT_AUTOCOMPLETE_SHORTCUT_CLEANUP = "__heltoPromptEnhancerAutocompleteShortcutCleanup";
-const SEED_QUEUE_WRAPPER_KEY = "__heltoPromptEnhancerSeedQueueWrapped";
-const SEED_QUEUE_INSTALL_KEY = "__heltoPromptEnhancerSeedQueueInstall";
-const SEED_QUEUE_INSTALL_ATTEMPT_LIMIT = 20;
+const SEED_QUEUE_LIFECYCLE_KEY = "__heltoPromptEnhancerSeedQueueLifecycle";
+const SEED_QUEUE_ACTIVE_KEY = "__heltoPromptEnhancerActiveQueuedSeed";
+const SEED_QUEUE_MAX_AGE_MS = 10000;
 const SYSTEM_PROMPT_PRESET_ACTIONS = [
     { action: "new", label: "New preset", icon: "plus" },
     { action: "duplicate", label: "Duplicate preset", icon: "copy" },
@@ -96,51 +98,40 @@ function setCanvasDirty(node) {
     app.canvas?.setDirty?.(true, true);
 }
 
-function defaultGraph() {
-    return app.rootGraph || app.graph;
-}
+function installPromptEnhancerSeedQueueLifecycle(node) {
+    if (!isPromptEnhancerNode(node)) return false;
+    const seedWidget = getWidget(node, "seed");
+    const controlWidget = promptSeedControlWidget(node, seedWidget);
+    const target = controlWidget;
+    if (!seedWidget || !target || target[SEED_QUEUE_LIFECYCLE_KEY]) return Boolean(target);
 
-function installPromptEnhancerSeedQueuePatch(source = "install") {
-    if (typeof app.queuePrompt !== "function") {
-        return false;
-    }
-    if (app.queuePrompt[SEED_QUEUE_WRAPPER_KEY]) {
-        return true;
-    }
-
-    const originalQueuePrompt = app.queuePrompt;
-    const wrappedQueuePrompt = async function (...args) {
-        const queuedSeeds = randomizePromptEnhancerSeedsBeforeQueue(defaultGraph());
-        try {
-            return await originalQueuePrompt.apply(this, args);
-        } finally {
-            restoreQueuedPromptEnhancerSeeds(queuedSeeds);
+    const originalBeforeQueued = target.beforeQueued;
+    const originalAfterQueued = target.afterQueued;
+    target.beforeQueued = function (...args) {
+        if (livePromptSeedControlMode(node) !== "randomize") {
+            delete node[SEED_QUEUE_ACTIVE_KEY];
+            return originalBeforeQueued?.apply(this, args);
         }
+        const seed = randomFixedPromptSeed();
+        if (!writePromptSeedValue(node, seed)) {
+            return originalBeforeQueued?.apply(this, args);
+        }
+        node[SEED_QUEUE_ACTIVE_KEY] = { seed, at: Date.now() };
+        return undefined;
     };
-    Object.defineProperty(wrappedQueuePrompt, SEED_QUEUE_WRAPPER_KEY, {
-        value: true,
-        configurable: true,
-    });
-    app.queuePrompt = wrappedQueuePrompt;
-    return true;
-}
-
-function schedulePromptEnhancerSeedQueuePatch(source = "top-level") {
-    if (globalThis[SEED_QUEUE_INSTALL_KEY]) {
-        installPromptEnhancerSeedQueuePatch(`${source}:resync`);
-        return;
-    }
-    globalThis[SEED_QUEUE_INSTALL_KEY] = true;
-
-    let attempts = 0;
-    function attempt() {
-        attempts += 1;
-        installPromptEnhancerSeedQueuePatch(`${source}:${attempts}`);
-        if (attempts < SEED_QUEUE_INSTALL_ATTEMPT_LIMIT) {
-            setTimeout(attempt, 250);
+    target.afterQueued = function (...args) {
+        const queued = node[SEED_QUEUE_ACTIVE_KEY];
+        delete node[SEED_QUEUE_ACTIVE_KEY];
+        if (!queued || Date.now() - queued.at > SEED_QUEUE_MAX_AGE_MS) {
+            return originalAfterQueued?.apply(this, args);
         }
-    }
-    attempt();
+        if (Number(seedWidget?.value) !== Number(queued.seed)) {
+            writePromptSeedValue(node, queued.seed);
+        }
+        return undefined;
+    };
+    Object.defineProperty(target, SEED_QUEUE_LIFECYCLE_KEY, { value: true });
+    return true;
 }
 
 function updatePromptHover(node, nextValue) {
@@ -1632,7 +1623,7 @@ function ensurePromptEnhancerUi(node) {
     if (!isPromptEnhancerNode(node)) {
         return;
     }
-    installPromptEnhancerSeedQueuePatch("ensure-ui");
+    installPromptEnhancerSeedQueueLifecycle(node);
     hideSerializedSettingsWidgets(node, collapseHiddenWidgetLayout);
     installPromptPrivacySerialization(node);
     ensurePromptEditor(node);
@@ -1688,13 +1679,8 @@ function ensurePromptEnhancerUi(node) {
     refreshModels(node);
 }
 
-schedulePromptEnhancerSeedQueuePatch();
-
 app.registerExtension({
     name: "Helto.PromptEnhancer",
-    setup() {
-        schedulePromptEnhancerSeedQueuePatch("setup");
-    },
     async beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData.name !== PROMPT_ENHANCER_NODE_CLASS) {
             return;

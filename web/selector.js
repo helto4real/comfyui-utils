@@ -50,67 +50,11 @@ if (!document.getElementById("helto-utils-styles")) {
 }
 
 const HELTO_SELECTOR_NODE_CLASS = "HeltoImageSelector";
-const GRAPH_TO_PROMPT_PATCHED = "__heltoImageSelectorGraphToPromptPatched";
-const SELECTOR_SELECTED_IMAGES_FIELD = "selected_images";
-const SELECTOR_EDITED_MASKS_FIELD = "edited_masks";
-const SELECTOR_EDITED_BBOXES_FIELD = "edited_bboxes";
-
-function getSelectorNodes(graph) {
-    const nodes = graph?.computeExecutionOrder?.(false) || graph?._nodes || [];
-    return nodes.filter((node) => node?.comfyClass === HELTO_SELECTOR_NODE_CLASS);
-}
-
-async function serializeSelectedImagesForPrompt(node) {
-    const selectedPaths = Array.isArray(node.selectedPaths) ? node.selectedPaths : [];
-    return node.properties?.privacyMode === false ? JSON.stringify(selectedPaths) : "[]";
-}
-
-async function serializeEditedMasksForPrompt(node) {
-    const editedMasks = node.editedMasks && typeof node.editedMasks === "object" ? node.editedMasks : {};
-    return node.properties?.privacyMode === false ? JSON.stringify(editedMasks) : "{}";
-}
-
-async function serializeEditedBboxesForPrompt(node) {
-    const editedBboxes = node.editedBboxes && typeof node.editedBboxes === "object" ? node.editedBboxes : {};
-    return node.properties?.privacyMode === false ? JSON.stringify(editedBboxes) : "{}";
-}
-
-function installGraphToPromptPatch() {
-    if (app[GRAPH_TO_PROMPT_PATCHED] || typeof app.graphToPrompt !== "function") {
-        return;
-    }
-
-    const originalGraphToPrompt = app.graphToPrompt;
-    app.graphToPrompt = async function(...args) {
-        const result = await originalGraphToPrompt.apply(this, args);
-        const graph = args[0] || app.graph;
-
-        for (const node of getSelectorNodes(graph)) {
-            const outputNode = result?.output?.[String(node.id)];
-            if (!outputNode) continue;
-
-            outputNode.inputs ??= {};
-            outputNode.inputs.selected_images = await serializeSelectedImagesForPrompt(node);
-            outputNode.inputs.resize_mode = node.properties?.resizeMode || "zoom to fit";
-            outputNode.inputs.edited_masks = await serializeEditedMasksForPrompt(node);
-            outputNode.inputs.edited_bboxes = await serializeEditedBboxesForPrompt(node);
-            outputNode.inputs.batching_mode = !!node.properties?.batchingMode;
-            outputNode.inputs.privacy_mode = node.properties?.privacyMode !== false;
-        }
-
-        return result;
-    };
-
-    app[GRAPH_TO_PROMPT_PATCHED] = true;
-}
-
-installGraphToPromptPatch();
 
 app.registerExtension({
     name: "HeltoImageSelectorExtension",
     
     async nodeCreated(node) {
-        installGraphToPromptPatch();
         if (node.comfyClass !== HELTO_SELECTOR_NODE_CLASS) return;
         
         // --- 1. State Initialization ---
@@ -1761,7 +1705,6 @@ app.registerExtension({
     },
     
     loadedGraphNode(node) {
-        installGraphToPromptPatch();
         if (node.comfyClass === HELTO_SELECTOR_NODE_CLASS) {
             if (node.normalizeHeltoSelectorSize) node.normalizeHeltoSelectorSize();
             if (node.syncUIWithProperties) node.syncUIWithProperties();

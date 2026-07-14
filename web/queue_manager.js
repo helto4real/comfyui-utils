@@ -47,7 +47,6 @@ import {
     workflowWithFixedSeedControls,
 } from "./queue_manager_helpers.js";
 
-const PATCHED_KEY = "__heltoQueueManagerPatched";
 const STYLE_ID = "helto-queue-manager-styles";
 const FALLBACK_PANEL_ID = "helto-queue-manager-fallback";
 const STALE_PROMPT_MISS_LIMIT = 2;
@@ -81,14 +80,6 @@ async function jsonFetch(route, options = {}) {
 async function queueOperation(operationId, payload = undefined) {
     const privacy = await requireUtilsPrivacy();
     return privacy.workflow("queue-manager-operations").invoke(operationId, payload);
-}
-
-function messageFromPromptError(payload) {
-    const error = payload?.error;
-    if (typeof error === "string") return error;
-    if (error?.message) return error.message;
-    if (error?.details) return error.details;
-    return "ComfyUI rejected the queued workflow.";
 }
 
 function promptDataFromQueueArgs(args) {
@@ -668,7 +659,7 @@ class HeltoQueueManager {
         this.stateRevision = 0;
         this.storeRevision = 0;
         this.submitting = false;
-        this.bypass = false;
+        this.queueController = null;
         this.promptResults = new Map();
         this.stalePromptMisses = new Map();
         this.historyPoll = null;
@@ -680,7 +671,7 @@ class HeltoQueueManager {
 
     async init() {
         await this.loadState();
-        this.installQueuePatch();
+        await this.installQueueInterceptor();
         this.installEventHandlers();
         this.startHistoryPoll();
         if (!this.state.paused && !activeQueueRun(this.state)) {
@@ -779,30 +770,17 @@ class HeltoQueueManager {
         setTimeout(() => this.updateSidebarBadge(), 250);
     }
 
-    installQueuePatch() {
-        if (app[PATCHED_KEY]) return;
-
+    async installQueueInterceptor() {
+        if (this.queueController) return this.queueController;
+        const privacy = await requireUtilsPrivacy();
         const manager = this;
-        const originalAppQueuePrompt = app.queuePrompt;
-        if (typeof originalAppQueuePrompt === "function") {
-            app.queuePrompt = async function (...args) {
-                if (manager.bypass) {
-                    return originalAppQueuePrompt.apply(this, args);
-                }
+        this.queueController = privacy.workflow("queue-manager-operations").installQueueInterceptor({
+            appQueuePrompt(args) {
                 return manager.captureAppQueuePrompt(args);
-            };
-        }
-
-        const originalApiQueuePrompt = api.queuePrompt;
-        if (typeof originalApiQueuePrompt === "function") {
-            api.queuePrompt = async function (...args) {
-                if (manager.bypass) {
-                    return originalApiQueuePrompt.apply(this, args);
-                }
+            },
+            apiQueuePrompt(args) {
                 const promptData = promptDataFromQueueArgs(args);
-                if (!promptData) {
-                    return originalApiQueuePrompt.apply(this, args);
-                }
+                if (!promptData) throw new Error("PRIVACY_QUEUE_MANAGER_SNAPSHOT_INVALID");
                 const queueOptions = args[2] && typeof args[2] === "object" ? args[2] : {};
                 return manager.enqueuePromptData(promptData, {
                     number: args[0],
@@ -810,10 +788,9 @@ class HeltoQueueManager {
                     partialExecutionTargets: queueOptions.partialExecutionTargets,
                     previewMethod: queueOptions.previewMethod,
                 });
-            };
-        }
-
-        app[PATCHED_KEY] = true;
+            },
+        });
+        return this.queueController;
     }
 
     installEventHandlers() {
@@ -932,41 +909,23 @@ class HeltoQueueManager {
 
     async postPrompt(run) {
         const promptData = run.prompt || {};
-        const extraData = cloneJson(promptData.extra_data || {});
-        extraData.extra_pnginfo = {
-            ...(extraData.extra_pnginfo || {}),
+        const controller = await this.installQueueInterceptor();
+        await queueOperation("queue-manager.submit");
+        const number = run.front
+            ? -1
+            : (Number.isFinite(Number(run.number)) ? Number(run.number) : 0);
+        const options = {
+            ...(Array.isArray(run.partial_execution_targets) && run.partial_execution_targets.length > 0
+                ? { partialExecutionTargets: cloneJson(run.partial_execution_targets) }
+                : {}),
+            ...(run.preview_method && run.preview_method !== "default"
+                ? { previewMethod: run.preview_method }
+                : {}),
+        };
+        return controller.submitPrompt(number, {
+            output: cloneJson(promptData.output || promptData.prompt || {}),
             workflow: cloneJson(promptData.workflow || {}),
-        };
-        if (run.preview_method && run.preview_method !== "default") {
-            extraData.preview_method = run.preview_method;
-        }
-
-        const body = {
-            client_id: api.clientId,
-            prompt: cloneJson(promptData.output || promptData.prompt || {}),
-            extra_data: extraData,
-            prompt_id: run.prompt_id,
-        };
-        if (Array.isArray(run.partial_execution_targets) && run.partial_execution_targets.length > 0) {
-            body.partial_execution_targets = cloneJson(run.partial_execution_targets);
-        }
-        if (Number.isFinite(Number(run.number))) {
-            body.number = Number(run.number);
-        }
-        if (run.front) {
-            body.front = true;
-        }
-
-        const response = await fetch(routeUrl("/prompt"), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-        });
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok || payload?.error) {
-            throw new Error(messageFromPromptError(payload));
-        }
-        return payload;
+        }, options);
     }
 
     async cancelComfyPrompt(promptIdValue) {

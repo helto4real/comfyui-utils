@@ -291,7 +291,7 @@ def test_local_privacy_core_and_legacy_route_surfaces_are_absent():
 
 def test_candidate_metadata_pins_one_immutable_shared_runtime():
     root = Path(__file__).resolve().parents[1]
-    revision = "4015b8307df29a6b6d69ab3c60c4347ef190b719"
+    revision = "b48a67b86fecaa1728fee282b371758756e732ed"
     shared_dependency = (
         "helto-privacy @ "
         "git+https://github.com/helto4real/helto-privacy.git@"
@@ -357,6 +357,24 @@ def test_missing_shared_package_blocks_pack_import(monkeypatch):
                 "__package__": "synthetic_utils_package",
             },
         )
+
+
+def test_frontend_queue_customization_stays_behind_shared_gate():
+    root = Path(__file__).resolve().parents[1]
+    queue_manager = (root / "web/queue_manager.js").read_text(encoding="utf-8")
+    prompt_enhancer = (root / "web/prompt_enhancer.js").read_text(encoding="utf-8")
+    progress_bar = (root / "web/progress_bar.js").read_text(encoding="utf-8")
+    selector = (root / "web/selector.js").read_text(encoding="utf-8")
+
+    assert '.installQueueInterceptor({' in queue_manager
+    assert "controller.submitPrompt(number" in queue_manager
+    assert 'fetch(routeUrl("/prompt")' not in queue_manager
+    assert "target.beforeQueued = function" in prompt_enhancer
+    assert "target.afterQueued = function" in prompt_enhancer
+    for source in (queue_manager, prompt_enhancer, progress_bar):
+        assert "app.queuePrompt =" not in source
+        assert "api.queuePrompt =" not in source
+    assert "app.graphToPrompt =" not in selector
 
 
 def test_provider_route_lazily_migrates_legacy_store(monkeypatch):
