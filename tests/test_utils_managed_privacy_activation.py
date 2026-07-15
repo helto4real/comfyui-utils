@@ -291,12 +291,7 @@ def test_local_privacy_core_and_legacy_route_surfaces_are_absent():
 
 def test_candidate_metadata_pins_one_immutable_shared_runtime():
     root = Path(__file__).resolve().parents[1]
-    revision = "2e85c71f9aa22bd47ee6f13f2add83d111ab4591"
-    shared_dependency = (
-        "helto-privacy @ "
-        "git+https://github.com/helto4real/helto-privacy.git@"
-        + revision
-    )
+    shared_dependency = "helto-privacy==0.4.0"
 
     requirements = (root / "requirements.txt").read_text(encoding="utf-8").splitlines()
     project_text = (root / "pyproject.toml").read_text(encoding="utf-8")
@@ -327,6 +322,7 @@ def test_candidate_metadata_pins_one_immutable_shared_runtime():
     assert browser["type"] == "module"
     assert "file:" not in "\n".join(requirements)
     assert "../" not in "\n".join(requirements)
+    assert "git+" not in "\n".join(requirements)
 
     managed_privacy = (root / "web/managed_privacy.js").read_text(encoding="utf-8")
     progress_bar = (root / "web/progress_bar.js").read_text(encoding="utf-8")

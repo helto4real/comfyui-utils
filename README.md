@@ -15,8 +15,8 @@ git clone git@github.com:helto4real/comfyui-utils.git
 
 ComfyUI Manager installs the dependencies declared by the pack. For a manual
 clone, install `requirements.txt` with the Python interpreter used by ComfyUI.
-Both `requirements.txt` and `pyproject.toml` pin the same immutable
-`helto-privacy` revision; the pack has no local-path dependency or fallback.
+Both `requirements.txt` and `pyproject.toml` pin the same exact
+`helto-privacy` release; the pack has no local-path dependency or fallback.
 
 The pack registers through ComfyUI's V3 `comfy_entrypoint()` extension API and exposes its frontend assets from `./web`. If ComfyUI is already running, restart it after installing or updating the node pack so the Python nodes and JavaScript widgets are reloaded.
 
