@@ -60,6 +60,7 @@ export const utilsPrivacy = connect();
 
 export async function requireUtilsPrivacy() {
     const pack = await utilsPrivacy;
+    await pack.readiness.waitUntilReady();
     pack.authorization.requireReady();
     return pack;
 }

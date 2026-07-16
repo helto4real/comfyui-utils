@@ -1,2 +1,2 @@
-helto-privacy==0.4.3
+helto-privacy==0.4.4
 cryptography>=42.0
