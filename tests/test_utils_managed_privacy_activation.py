@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import builtins
 import json
 from pathlib import Path
@@ -16,6 +17,7 @@ import helto_privacy.keystore as keystore
 import helto_privacy.runtime as runtime
 from helto_privacy import (
     AdapterBindingError,
+    PrivacyAuthorizationError,
     ProtectedStateAuthority,
     install,
     register_legacy_reader_units,
@@ -56,6 +58,27 @@ def _queue_operations():
     return {
         operation_id: (lambda _payload, _context: None)
         for operation_id in managed_privacy.QUEUE_OPERATION_ADAPTER_IDS
+    }
+
+
+def test_managed_route_preserves_typed_privacy_authorization_error(monkeypatch):
+    async def denied(_operation_id, _request, _payload):
+        raise PrivacyAuthorizationError("PRIVACY_TOKEN_REQUIRED", 401)
+
+    class Request:
+        method = "GET"
+        query = {}
+
+    monkeypatch.setattr(managed_routes, "_dispatch", denied)
+
+    response = asyncio.run(
+        managed_routes._handler_for("queue-manager.load")(Request())
+    )
+
+    assert response.status == 401
+    assert json.loads(response.text) == {
+        "ok": False,
+        "error": "PRIVACY_TOKEN_REQUIRED",
     }
 
 
@@ -291,7 +314,7 @@ def test_local_privacy_core_and_legacy_route_surfaces_are_absent():
 
 def test_candidate_metadata_pins_one_immutable_shared_runtime():
     root = Path(__file__).resolve().parents[1]
-    shared_dependency = "helto-privacy==0.4.4"
+    shared_dependency = "helto-privacy==0.4.5"
 
     requirements = (root / "requirements.txt").read_text(encoding="utf-8").splitlines()
     project_text = (root / "pyproject.toml").read_text(encoding="utf-8")
@@ -317,7 +340,7 @@ def test_candidate_metadata_pins_one_immutable_shared_runtime():
         assert metadata["project"]["name"] == browser["name"]
         assert metadata["project"]["version"] == browser["version"]
     assert browser["name"] == "comfyui-utils"
-    assert browser["version"] == "0.1.4"
+    assert browser["version"] == "0.1.5"
     assert browser["private"] is True
     assert browser["type"] == "module"
     assert "file:" not in "\n".join(requirements)

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Mapping
 
 from aiohttp import web
-from helto_privacy import PrivacyRouteDispatchError
+from helto_privacy import PrivacyRouteError
 
 from .managed_privacy import (
     utils_privacy_adapter,
@@ -335,7 +335,7 @@ def _handler_for(operation_id: str):
             payload = await _request_payload(request)
             result = await _dispatch(operation_id, request, payload)
             return _response(operation_id, result)
-        except PrivacyRouteDispatchError as exc:
+        except PrivacyRouteError as exc:
             return web.json_response({"ok": False, "error": exc.code}, status=exc.http_status)
         except (TypeError, ValueError):
             return web.json_response(
