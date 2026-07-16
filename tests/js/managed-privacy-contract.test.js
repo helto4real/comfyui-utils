@@ -4,7 +4,7 @@ import test from "node:test";
 import {
     UTILS_PRIVACY_PROFILE_FINGERPRINT,
     UTILS_PRIVACY_PROFILE_ID,
-    requireActiveUtilsSuite,
+    requireConfiguredUtilsSuite,
     requireUtilsProfileFingerprint,
 } from "../../web/managed_privacy_contract.js";
 
@@ -23,12 +23,19 @@ test("Utils browser contract locks one profile identity and fingerprint", () => 
 test("Utils browser contract rejects missing and inactive suites", () => {
     const digest = "a".repeat(64);
     assert.equal(
-        requireActiveUtilsSuite({ suiteStatus: "active", suiteManifestDigest: digest }),
+        requireConfiguredUtilsSuite({ suiteStatus: "active", suiteManifestDigest: digest }),
         digest,
     );
-    assert.throws(() => requireActiveUtilsSuite(null), /PRIVACY_SUITE_BLOCKED/);
-    assert.throws(
-        () => requireActiveUtilsSuite({ suiteStatus: "ready", suiteManifestDigest: digest }),
-        /PRIVACY_SUITE_BLOCKED/,
+    assert.throws(() => requireConfiguredUtilsSuite(null), /PRIVACY_SUITE_BLOCKED/);
+    assert.equal(
+        requireConfiguredUtilsSuite({ suiteStatus: "ready", suiteManifestDigest: digest }),
+        digest,
+    );
+    assert.equal(
+        requireConfiguredUtilsSuite({
+            suiteStatus: "activation-required",
+            suiteManifestDigest: digest,
+        }),
+        digest,
     );
 });

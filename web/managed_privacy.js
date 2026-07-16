@@ -19,7 +19,7 @@ import { createPrivateMediaLeaseAdapter } from "./private_media_managed_adapter.
 import {
     UTILS_PRIVACY_PROFILE_FINGERPRINT,
     UTILS_PRIVACY_PROFILE_ID,
-    requireActiveUtilsSuite,
+    requireConfiguredUtilsSuite,
 } from "./managed_privacy_contract.js";
 
 
@@ -43,7 +43,7 @@ async function connect() {
     });
     if (!response.ok) throw new Error("PRIVACY_SUITE_BLOCKED");
     const status = await response.json();
-    const suiteManifestDigest = requireActiveUtilsSuite(status);
+    const suiteManifestDigest = requireConfiguredUtilsSuite(status);
     const runtime = await import(
         `/helto_privacy/ui/privacy_profile/${suiteManifestDigest}.js`
     );

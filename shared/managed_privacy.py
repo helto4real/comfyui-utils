@@ -10,8 +10,10 @@ from typing import Callable
 
 from helto_privacy import (
     BoundPrivacyPack,
+    ConsumerSuiteDeclaration,
     PrivacyProfile,
     install,
+    register_consumer_suite_declaration,
     register_legacy_reader_units,
     utils_legacy_reader_units,
 )
@@ -105,6 +107,7 @@ from .queue_manager_managed import (
 
 UTILS_PROFILE_ID = "helto.comfyui-utils"
 UTILS_DISTRIBUTION = "comfyui-utils"
+UTILS_SUITE_ID = "helto-suite-2026-07-16.2"
 UTILS_PROFILE_FINGERPRINT = (
     "517c7d90d335ac12fd30e7fb0eafba9976b8fb8c1be9cdfa55aa508463760cbe"
 )
@@ -285,6 +288,9 @@ def install_utils_privacy(
         if set(adapters) != {slot.id for slot in profile.server_adapters}:
             raise RuntimeError("Utils privacy adapter binding is incomplete.")
         _PACK = install(profile, adapters)
+        register_consumer_suite_declaration(
+            ConsumerSuiteDeclaration(UTILS_DISTRIBUTION, UTILS_SUITE_ID)
+        )
         _ADAPTERS = adapters
         try:
             from ..helto_selector_backend.services import effective_authorized_roots

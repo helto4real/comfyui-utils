@@ -1,12 +1,12 @@
 [project]
 name = "comfyui-utils"
-version = "0.1.0"
+version = "0.1.1"
 description = "Helto ComfyUI workflow utilities and managed privacy features."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = [
-    "helto-privacy==0.4.0",
+    "helto-privacy==0.4.1",
     "cryptography>=42.0",
 ]
 
