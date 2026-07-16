@@ -291,7 +291,7 @@ def test_local_privacy_core_and_legacy_route_surfaces_are_absent():
 
 def test_candidate_metadata_pins_one_immutable_shared_runtime():
     root = Path(__file__).resolve().parents[1]
-    shared_dependency = "helto-privacy==0.4.1"
+    shared_dependency = "helto-privacy==0.4.2"
 
     requirements = (root / "requirements.txt").read_text(encoding="utf-8").splitlines()
     project_text = (root / "pyproject.toml").read_text(encoding="utf-8")
@@ -317,7 +317,7 @@ def test_candidate_metadata_pins_one_immutable_shared_runtime():
         assert metadata["project"]["name"] == browser["name"]
         assert metadata["project"]["version"] == browser["version"]
     assert browser["name"] == "comfyui-utils"
-    assert browser["version"] == "0.1.1"
+    assert browser["version"] == "0.1.2"
     assert browser["private"] is True
     assert browser["type"] == "module"
     assert "file:" not in "\n".join(requirements)
