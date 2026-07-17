@@ -343,18 +343,19 @@ def test_candidate_metadata_pins_one_immutable_shared_runtime():
     assert browser["version"] == "0.1.5"
     assert browser["private"] is True
     assert browser["type"] == "module"
+    assert managed_privacy.UTILS_SUITE_ID == "helto-suite-2026-07-17.2"
     assert "file:" not in "\n".join(requirements)
     assert "../" not in "\n".join(requirements)
     assert "git+" not in "\n".join(requirements)
 
-    managed_privacy = (root / "web/managed_privacy.js").read_text(encoding="utf-8")
+    managed_privacy_source = (root / "web/managed_privacy.js").read_text(encoding="utf-8")
     progress_bar = (root / "web/progress_bar.js").read_text(encoding="utf-8")
-    for source in (managed_privacy, progress_bar):
+    for source in (managed_privacy_source, progress_bar):
         assert 'from "/helto_privacy/ui/privacy_snapshot.js";' in source
         assert "installPrivacyConnectionSerializationGate(app).coalesce();" in source
-    assert managed_privacy.index("installPrivacyConnectionSerializationGate(app).coalesce();") < managed_privacy.index("async function connect()")
-    assert "await pack.readiness.waitUntilReady();" in managed_privacy
-    assert managed_privacy.index("await pack.readiness.waitUntilReady();") < managed_privacy.index("pack.authorization.requireReady();")
+    assert managed_privacy_source.index("installPrivacyConnectionSerializationGate(app).coalesce();") < managed_privacy_source.index("async function connect()")
+    assert "await pack.readiness.waitUntilReady();" in managed_privacy_source
+    assert managed_privacy_source.index("await pack.readiness.waitUntilReady();") < managed_privacy_source.index("pack.authorization.requireReady();")
     assert progress_bar.index("installPrivacyConnectionSerializationGate(app).coalesce();") < progress_bar.index("class HeltoProgressBar")
 
 
