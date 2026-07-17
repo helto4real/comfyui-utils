@@ -340,10 +340,10 @@ def test_candidate_metadata_pins_one_immutable_shared_runtime():
         assert metadata["project"]["name"] == browser["name"]
         assert metadata["project"]["version"] == browser["version"]
     assert browser["name"] == "comfyui-utils"
-    assert browser["version"] == "0.1.5"
+    assert browser["version"] == "0.1.6"
     assert browser["private"] is True
     assert browser["type"] == "module"
-    assert managed_privacy.UTILS_SUITE_ID == "helto-suite-2026-07-17.2"
+    assert managed_privacy.UTILS_SUITE_ID == "helto-suite-2026-07-17.3"
     assert "file:" not in "\n".join(requirements)
     assert "../" not in "\n".join(requirements)
     assert "git+" not in "\n".join(requirements)
