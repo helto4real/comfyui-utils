@@ -40,6 +40,11 @@ import {
     rememberPrivacyEnvelope,
 } from "./privacy_envelope.js";
 import {
+    confirmUnreadablePrivacyReset,
+    isPrivacyKeyUnavailableError,
+    isUnreadablePrivacyValueError,
+} from "./privacy_common.js";
+import {
     ensurePrivacyRecoveryRegistered,
     showAutoPrivacyRecoveryIfIssues,
 } from "./privacy_recovery.js";
@@ -582,6 +587,16 @@ app.registerExtension({
                     rememberPrivacyEnvelope(node, fieldName, parsed, serialized);
                     return parsed;
                 } catch (e) {
+                    if (await isUnreadablePrivacyValueError(e)) {
+                        if (await confirmUnreadablePrivacyReset()) {
+                            const widget = node.widgets?.find?.((item) => item?.name === fieldName);
+                            if (widget) widget.value = JSON.stringify(fallback);
+                            forgetPrivacyEnvelope(node, fieldName);
+                            if (await isPrivacyKeyUnavailableError(e)) node.properties.privacyMode = false;
+                            node.setDirtyCanvas?.(true, true);
+                            node.graph?.setDirtyCanvas?.(true, true);
+                        }
+                    }
                     console.error("Decryption API failed:", e);
                     return fallback;
                 }

@@ -6,6 +6,11 @@ import {
     isLegacyPrivacyEnvelope,
     rememberPrivacyEnvelope,
 } from "./privacy_envelope.js";
+import {
+    confirmUnreadablePrivacyReset,
+    isPrivacyKeyUnavailableError,
+    isUnreadablePrivacyValueError,
+} from "./privacy_common.js";
 
 export const PROMPT_ENHANCER_NODE_CLASS = "HeltoPromptEnhancer";
 export const SCRIPT_WIDGET_NAME = "script";
@@ -339,7 +344,20 @@ export async function decryptPromptText(value, selectorApi) {
 
 export async function readPromptText(node, selectorApi) {
     const serialized = serializedPromptValue(node);
-    const plaintext = await decryptPromptText(serialized, selectorApi);
+    let plaintext = "";
+    try {
+        plaintext = await decryptPromptText(serialized, selectorApi);
+    } catch (error) {
+        if (!await isUnreadablePrivacyValueError(error)) throw error;
+        if (await confirmUnreadablePrivacyReset()) {
+            forgetPrivacyEnvelope(node, SCRIPT_WIDGET_NAME);
+            writePromptValue(node, "");
+            if (await isPrivacyKeyUnavailableError(error)) {
+                setWidgetValue(getWidget(node, "privacy_mode"), false);
+            }
+        }
+        return "";
+    }
     if (isEncryptedText(serialized)) {
         rememberPrivacyEnvelope(node, SCRIPT_WIDGET_NAME, plaintext, serialized);
     }
@@ -869,6 +887,15 @@ export async function readPromptVariables(node, selectorApi) {
         rememberPrivacyEnvelope(node, "variables", variables, value);
         return variables;
     } catch (err) {
+        if (await isUnreadablePrivacyValueError(err)) {
+            if (await confirmUnreadablePrivacyReset()) {
+                forgetPrivacyEnvelope(node, "variables");
+                setWidgetValue(getWidget(node, "variables"), "[]");
+                if (await isPrivacyKeyUnavailableError(err)) {
+                    setWidgetValue(getWidget(node, "privacy_mode"), false);
+                }
+            }
+        }
         console.warn("Prompt enhancer variable decrypt failed:", err);
         return [];
     }

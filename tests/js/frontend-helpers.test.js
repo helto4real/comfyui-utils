@@ -164,6 +164,9 @@ import {
     setEncryptedPrivacyShowAnyState,
 } from "../../web/privacy_show_any_helpers.js";
 import {
+    __setPrivacyModuleForTests,
+} from "../../web/privacy_common.js";
+import {
     canonicalPrivacyValue,
     encryptedOrReusePrivacyValue,
     isPrivacyEnvelope,
@@ -2493,6 +2496,70 @@ test("prompt enhancer prompt config encrypts only when privacy mode is enabled",
     assert.equal(typeof resolveEncryption, "function");
     resolveEncryption();
     assert.equal(isEncryptedText(await pending), true);
+});
+
+test("prompt enhancer preserves unreadable encrypted fields when reset is declined", async () => {
+    const missingKey = new Error("PRIVACY_KEY_MISSING: old key is unavailable");
+    const scriptEnvelope = privacyEnvelopeText("old-script");
+    const variablesEnvelope = privacyEnvelopeText("old-variables");
+    const node = {
+        widgets: [
+            { name: "script", value: scriptEnvelope },
+            { name: "variables", value: variablesEnvelope },
+            { name: "privacy_mode", value: true },
+        ],
+    };
+    __setPrivacyModuleForTests({
+        isUnreadablePrivacyValueError: () => true,
+        isPrivacyKeyUnavailableError: () => true,
+        confirmUnreadablePrivacyReset: async () => false,
+    });
+    const failingApi = { decrypt: async () => { throw missingKey; } };
+    try {
+        assert.equal(await readPromptText(node, failingApi), "");
+        assert.deepEqual(await readPromptVariables(node, failingApi), []);
+        assert.equal(node.widgets.find((widget) => widget.name === "script").value, scriptEnvelope);
+        assert.equal(node.widgets.find((widget) => widget.name === "variables").value, variablesEnvelope);
+        assert.equal(node.widgets.find((widget) => widget.name === "privacy_mode").value, true);
+    } finally {
+        __setPrivacyModuleForTests(null);
+    }
+});
+
+test("prompt enhancer resets unreadable encrypted fields only when confirmed", async () => {
+    const missingKey = new Error("PRIVACY_KEY_MISSING: old key is unavailable");
+    const node = {
+        widgets: [
+            { name: "script", value: privacyEnvelopeText("old-script") },
+            { name: "variables", value: privacyEnvelopeText("old-variables") },
+            { name: "privacy_mode", value: true },
+        ],
+    };
+    __setPrivacyModuleForTests({
+        isUnreadablePrivacyValueError: () => true,
+        isPrivacyKeyUnavailableError: () => true,
+        confirmUnreadablePrivacyReset: async () => true,
+    });
+    const failingApi = { decrypt: async () => { throw missingKey; } };
+    try {
+        assert.equal(await readPromptText(node, failingApi), "");
+        assert.deepEqual(await readPromptVariables(node, failingApi), []);
+        assert.equal(node.widgets.find((widget) => widget.name === "script").value, "");
+        assert.equal(node.widgets.find((widget) => widget.name === "variables").value, "[]");
+        assert.equal(node.widgets.find((widget) => widget.name === "privacy_mode").value, false);
+    } finally {
+        __setPrivacyModuleForTests(null);
+    }
+});
+
+test("selector and privacy show any require confirmation before clearing unreadable envelopes", () => {
+    const selectorSource = readFileSync(new URL("../../web/selector.js", import.meta.url), "utf8");
+    const showAnySource = readFileSync(new URL("../../web/privacy_show_any.js", import.meta.url), "utf8");
+
+    assert.match(selectorSource, /if \(await confirmUnreadablePrivacyReset\(\)\) \{[\s\S]*widget\.value = JSON\.stringify\(fallback\)/);
+    assert.match(showAnySource, /if \(await confirmUnreadablePrivacyReset\(\)\) \{[\s\S]*setEncryptedPrivacyShowAnyState\(node, stateWidget, ""\)/);
+    assert.match(showAnySource, /const preservedEncrypted = setEncryptedPrivacyShowAnyState\(this, stateWidget, encrypted\)/);
+    assert.match(showAnySource, /return preservedEncrypted;/);
 });
 
 test("prompt enhancer prompt config reuses restored envelopes until text changes", async () => {

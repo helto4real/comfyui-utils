@@ -22,6 +22,10 @@ import {
     serializedEncryptedWidgetValue,
 } from "./privacy_show_any_helpers.js";
 import {
+    confirmUnreadablePrivacyReset,
+    isUnreadablePrivacyValueError,
+} from "./privacy_common.js";
+import {
     ensurePrivacyRecoveryRegistered,
     showAutoPrivacyRecoveryIfIssues,
 } from "./privacy_recovery.js";
@@ -188,6 +192,12 @@ async function restoreEncryptedState(node) {
         const text = await decryptTextStateForOwner(node, encrypted, selectorApi);
         setDisplayText(node, text, false);
     } catch (err) {
+        if (await isUnreadablePrivacyValueError(err)) {
+            if (await confirmUnreadablePrivacyReset()) {
+                setEncryptedPrivacyShowAnyState(node, stateWidget, "");
+                captureWorkflowState(node);
+            }
+        }
         console.error("Privacy Show Any decryption failed:", err);
         setDisplayText(node, "", false);
     }
@@ -461,19 +471,23 @@ app.registerExtension({
                 return result;
             }
             const stateWidget = getStateWidget(this);
+            const preservedEncrypted = setEncryptedPrivacyShowAnyState(this, stateWidget, encrypted);
+            captureWorkflowState(this);
             this[ENCRYPT_PROMISE_KEY] = decryptTextStateForOwner(this, encrypted, selectorApi)
                 .then((text) => {
-                    setEncryptedPrivacyShowAnyState(this, stateWidget, encrypted);
                     setDisplayText(this, text, false);
-                    captureWorkflowState(this);
-                    return encrypted;
+                    return preservedEncrypted;
                 })
-                .catch((err) => {
+                .catch(async (err) => {
                     console.error("Privacy Show Any output decryption failed:", err);
-                    setEncryptedPrivacyShowAnyState(this, stateWidget, "");
+                    if (await isUnreadablePrivacyValueError(err) && await confirmUnreadablePrivacyReset()) {
+                        setEncryptedPrivacyShowAnyState(this, stateWidget, "");
+                        captureWorkflowState(this);
+                        setDisplayText(this, "", false);
+                        return "";
+                    }
                     setDisplayText(this, "", false);
-                    captureWorkflowState(this);
-                    return "";
+                    return preservedEncrypted;
                 });
             return result;
         };

@@ -32,6 +32,58 @@ export function isPrivacyTriggerError(error) {
     return PRIVACY_ERROR_CODES.some((code) => message.includes(code));
 }
 
+export async function isPrivacyLockedError(error) {
+    const privacy = await loadHeltoPrivacyModule();
+    if (typeof privacy?.isPrivacyLockedError === "function") {
+        return privacy.isPrivacyLockedError(error);
+    }
+    const message = String(error?.message ?? error ?? "");
+    return ["PRIVACY_LOCKED", "PRIVACY_TOKEN_REQUIRED"].some((code) => message.includes(code));
+}
+
+export async function isUnreadablePrivacyValueError(error) {
+    const privacy = await loadHeltoPrivacyModule();
+    if (typeof privacy?.isUnreadablePrivacyValueError === "function") {
+        return privacy.isUnreadablePrivacyValueError(error);
+    }
+    if (await isPrivacyLockedError(error)) return false;
+    const message = String(error?.message ?? error ?? "").toLowerCase();
+    return [
+        "PRIVACY_KEYSTORE_UNINITIALIZED",
+        "PRIVACY_KEYSTORE_INVALID",
+        "PRIVACY_KEY_MISSING",
+        "PRIVACY_KEY_INVALID",
+        "PRIVACY_KEY_MISMATCH",
+        "PRIVACY_DECRYPT_FAILED",
+        "PRIVACY_PAYLOAD_INVALID",
+    ].some((code) => message.includes(code.toLowerCase()))
+        || message.includes("different local privacy key")
+        || message.includes("privacy key file is missing")
+        || message.includes("could not decrypt state payload");
+}
+
+export async function isPrivacyKeyUnavailableError(error) {
+    const privacy = await loadHeltoPrivacyModule();
+    if (typeof privacy?.isPrivacyKeyUnavailableError === "function") {
+        return privacy.isPrivacyKeyUnavailableError(error);
+    }
+    const message = String(error?.message ?? error ?? "").toLowerCase();
+    return [
+        "PRIVACY_KEYSTORE_UNINITIALIZED",
+        "PRIVACY_KEYSTORE_INVALID",
+        "PRIVACY_KEY_MISSING",
+        "PRIVACY_KEY_INVALID",
+    ].some((code) => message.includes(code.toLowerCase()))
+        || message.includes("privacy key file is missing")
+        || (message.includes("privacy key file") && message.includes("malformed"));
+}
+
+export async function confirmUnreadablePrivacyReset(options = {}) {
+    const privacy = await loadHeltoPrivacyModule();
+    if (typeof privacy?.confirmUnreadablePrivacyReset !== "function") return false;
+    return Boolean(await privacy.confirmUnreadablePrivacyReset(options));
+}
+
 export async function isPrivacyUnlockRequiredError(error) {
     const privacy = await loadHeltoPrivacyModule();
     if (typeof privacy?.isPrivacyUnlockRequiredError === "function") {
@@ -68,7 +120,7 @@ async function responseError(response) {
     return new Error(data?.error || text || response.statusText || `HTTP ${response.status}`);
 }
 
-export async function withPrivacyUnlock(operation) {
+export async function withPrivacyUnlock(operation, options = {}) {
     try {
         return await operation();
     } catch (error) {
@@ -76,7 +128,9 @@ export async function withPrivacyUnlock(operation) {
         const locked = typeof privacy?.isPrivacyUnlockRequiredError === "function"
             ? privacy.isPrivacyUnlockRequiredError(error)
             : privacy?.isPrivacyLockedError?.(error) || isPrivacyTriggerError(error);
-        if (!locked) {
+        const setupRequired = privacy?.isPrivacySetupRequiredError?.(error)
+            || String(error?.message ?? error ?? "").includes("PRIVACY_KEYSTORE_UNINITIALIZED");
+        if (!locked || (options.allowSetup === false && setupRequired)) {
             throw error;
         }
         const unlocked = await privacy?.showPrivacyKeystoreDialog?.("auto");
@@ -89,7 +143,7 @@ export async function withPrivacyUnlock(operation) {
 }
 
 export async function privacyFetch(input, options = {}) {
-    const { fetcher = fetch, ...fetchOptions } = options;
+    const { fetcher = fetch, allowSetup = !String(input).endsWith("/decrypt"), ...fetchOptions } = options;
     return withPrivacyUnlock(async () => {
         const headers = await privacyHeaders(fetchOptions.headers);
         const response = await fetcher(input, { ...fetchOptions, headers });
@@ -97,7 +151,7 @@ export async function privacyFetch(input, options = {}) {
             return response;
         }
         throw await responseError(response);
-    });
+    }, { allowSetup });
 }
 
 export async function privacyFetchJson(input, options = {}) {
