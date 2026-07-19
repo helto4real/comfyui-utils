@@ -175,6 +175,10 @@ def normalize_ollama_url(url: str | None) -> str:
     # server-side requests at file://, gopher://, etc. (SSRF) via the url field.
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         raise RuntimeError("Ollama URL must be an http(s) address.")
+    if parsed.username is not None or parsed.password is not None:
+        raise RuntimeError("Ollama URL must not contain embedded credentials.")
+    if parsed.query or parsed.fragment:
+        raise RuntimeError("Ollama URL must not contain a query string or fragment.")
     return normalized
 
 

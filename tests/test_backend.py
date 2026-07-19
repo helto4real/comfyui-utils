@@ -2514,17 +2514,18 @@ Second beat moves toward the doorway. @image1:end
         self.assertEqual(result[7], "two reference portraits with warm studio lighting")
 
     def test_privacy_show_any_summarizes_unhelpful_object_values(self):
-        extension_module = self._import_extension_with_fake_comfy_runtime()
-        text_node = next(
-            node_cls
-            for node_cls in asyncio.run(extension_module.HeltoUtilsExtension().get_node_list())
-            if node_cls.define_schema().node_id == "HeltoPrivacyShowAny"
-        )
+        with isolated_privacy_keystore():
+            extension_module = self._import_extension_with_fake_comfy_runtime()
+            text_node = next(
+                node_cls
+                for node_cls in asyncio.run(extension_module.HeltoUtilsExtension().get_node_list())
+                if node_cls.define_schema().node_id == "HeltoPrivacyShowAny"
+            )
 
-        class ModelLike:
-            pass
+            class ModelLike:
+                pass
 
-        result = text_node.execute(ModelLike())
+            result = text_node.execute(ModelLike())
 
         self.assertIn("cannot be converted to meaningful text", result[0])
 

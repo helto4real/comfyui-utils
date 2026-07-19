@@ -5,6 +5,7 @@ import gc
 import importlib.util
 import io
 import os
+import re
 import threading
 import traceback
 from collections.abc import Callable
@@ -48,15 +49,17 @@ LLAMA_CPP_DEPS = ("llama_cpp", "huggingface_hub")
 GEMMA_SAFETENSORS_DEPS = ("transformers", "huggingface_hub", "accelerate")
 
 GEMMA4_E4B_FP8_URL = (
-    "https://huggingface.co/Comfy-Org/gemma-4/blob/main/"
+    "https://huggingface.co/Comfy-Org/gemma-4/blob/c8b198a1279c02c9cf8aaa08171db4e2b0d15af9/"
     "text_encoders/gemma4_e4b_it_fp8_scaled.safetensors"
 )
 GEMMA4_E4B_UNCENSORED_Q8_GGUF_URL = (
-    "https://huggingface.co/HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive/blob/main/"
+    "https://huggingface.co/HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive/blob/"
+    "45b6a334b4bcd1d7f37179df58b3b1d66a184e5d/"
     "Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-Q8_K_P.gguf"
 )
 GEMMA4_E4B_UNCENSORED_MMPROJ_URL = (
-    "https://huggingface.co/HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive/blob/main/"
+    "https://huggingface.co/HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive/blob/"
+    "45b6a334b4bcd1d7f37179df58b3b1d66a184e5d/"
     "mmproj-Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-f16.gguf"
 )
 
@@ -76,7 +79,7 @@ class LocalModelSpec:
     generator_supported: bool = True
     # Hugging Face revision to fetch. Prefer pinning to an immutable commit SHA
     # so a repo cannot swap in new code/weights under you between downloads.
-    revision: str = "main"
+    revision: str = ""
 
 
 @dataclass(frozen=True)
@@ -100,6 +103,7 @@ MODEL_REGISTRY: dict[str, LocalModelSpec] = {
         "VLM",
         QWEN_DEPS,
         supports_images=True,
+        revision="0c351dd01ed87e9c1b53cbc748cba10e6187ff3b",
     ),
     "qwen3_vl_4b_fast": LocalModelSpec(
         "qwen3_vl_4b_fast",
@@ -109,6 +113,7 @@ MODEL_REGISTRY: dict[str, LocalModelSpec] = {
         "VLM",
         QWEN_DEPS,
         supports_images=True,
+        revision="ebb281ec70b05090aa6165b016eac8ec08e71b17",
     ),
     "qwen3_vl_4b_unredacted": LocalModelSpec(
         "qwen3_vl_4b_unredacted",
@@ -118,6 +123,7 @@ MODEL_REGISTRY: dict[str, LocalModelSpec] = {
         "VLM",
         QWEN_DEPS,
         supports_images=True,
+        revision="d2685a843353fcb74062a6ce8839db08ba60a4e7",
     ),
     "qwen3_vl_8b_nsfw_caption": LocalModelSpec(
         "qwen3_vl_8b_nsfw_caption",
@@ -127,6 +133,7 @@ MODEL_REGISTRY: dict[str, LocalModelSpec] = {
         "VLM",
         QWEN_DEPS,
         supports_images=True,
+        revision="62cf836d2370e7f884e570fb4fd45d47bb594ea6",
     ),
     "florence2_fast_caption": LocalModelSpec(
         "florence2_fast_caption",
@@ -136,6 +143,7 @@ MODEL_REGISTRY: dict[str, LocalModelSpec] = {
         "LLM",
         FLORENCE_DEPS,
         supports_images=True,
+        revision="59b6e4bf75d0f3e8a6b1a14211f6a50fcdd48d63",
     ),
     "gemma4_e4b_uncensored_gguf_q8": LocalModelSpec(
         "gemma4_e4b_uncensored_gguf_q8",
@@ -341,6 +349,10 @@ def ensure_model_downloaded(spec: LocalModelSpec, progress: PromptEnhancerProgre
         files = list(zip(model_files_for(spec), model_file_paths_for(spec), strict=True))
         for position, (model_file, target_path) in enumerate(files, start=1):
             _check_interrupted(progress)
+            if not re.fullmatch(r"[0-9a-f]{40}", model_file.revision):
+                raise LocalProviderError(
+                    f"Model file '{model_file.filename}' has no immutable Hugging Face revision configured."
+                )
             if target_path.exists():
                 if progress is not None:
                     progress.phase_fraction("download", position / len(files))
@@ -362,6 +374,11 @@ def ensure_model_downloaded(spec: LocalModelSpec, progress: PromptEnhancerProgre
                 progress.phase_fraction("download", position / len(files))
             _check_interrupted(progress)
         return path
+
+    if not re.fullmatch(r"[0-9a-f]{40}", spec.revision):
+        raise LocalProviderError(
+            f"Model '{spec.alias}' has no immutable Hugging Face revision configured."
+        )
 
     path.parent.mkdir(parents=True, exist_ok=True)
     if progress is not None:
@@ -689,7 +706,7 @@ def _load_qwen_model(spec: LocalModelSpec, path: Path) -> dict[str, Any]:
         ).eval()
         # Qwen3-VL is natively supported by transformers, so we do not need to
         # execute arbitrary repo code to load its processor.
-        processor = AutoProcessor.from_pretrained(str(path))
+        processor = AutoProcessor.from_pretrained(str(path), local_files_only=True)
         return {"model": model, "processor": processor, "torch": torch}
 
     return _load_cached_model(spec, load)
@@ -745,10 +762,19 @@ def _load_florence_model(spec: LocalModelSpec, path: Path) -> dict[str, Any]:
 
         # Florence-2 ships custom modeling code, so trust_remote_code is required
         # here; the repo is pinned via LocalModelSpec.revision to bound that trust.
-        model = AutoModelForCausalLM.from_pretrained(str(path), trust_remote_code=True, torch_dtype="auto").eval()
+        model = AutoModelForCausalLM.from_pretrained(
+            str(path),
+            trust_remote_code=True,
+            local_files_only=True,
+            torch_dtype="auto",
+        ).eval()
         if torch.cuda.is_available():
             model = model.to("cuda")
-        processor = AutoProcessor.from_pretrained(str(path), trust_remote_code=True)
+        processor = AutoProcessor.from_pretrained(
+            str(path),
+            trust_remote_code=True,
+            local_files_only=True,
+        )
         return {"model": model, "processor": processor, "torch": torch}
 
     return _load_cached_model(spec, load)

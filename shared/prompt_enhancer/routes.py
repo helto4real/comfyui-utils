@@ -31,7 +31,7 @@ ROUTE_PREFIX = "/helto_prompt_enhancer"
 
 def _parse_timeout(value) -> int:
     try:
-        return max(1, int(value))
+        return min(3600, max(1, int(value)))
     except (TypeError, ValueError):
         return DEFAULT_OLLAMA_TIMEOUT
 
@@ -156,6 +156,9 @@ async def _delete_system_prompt_preset(data: dict) -> web.Response:
 
 @server.PromptServer.instance.routes.get(f"{ROUTE_PREFIX}/models")
 async def get_models(request):
+    denied = aiohttp_check_privacy_token(request)
+    if denied is not None:
+        return denied
     return await _request_models(
         {
             "url": request.query.get("url", DEFAULT_OLLAMA_URL),
@@ -166,6 +169,9 @@ async def get_models(request):
 
 @server.PromptServer.instance.routes.post(f"{ROUTE_PREFIX}/models")
 async def post_models(request):
+    denied = aiohttp_check_privacy_token(request)
+    if denied is not None:
+        return denied
     try:
         data = await request.json()
     except Exception:
@@ -175,6 +181,9 @@ async def post_models(request):
 
 @server.PromptServer.instance.routes.get(f"{ROUTE_PREFIX}/providers/models")
 async def get_provider_models(request):
+    denied = aiohttp_check_privacy_token(request)
+    if denied is not None:
+        return denied
     return await _request_provider_models(
         {
             "url": request.query.get("url", DEFAULT_OLLAMA_URL),
@@ -185,6 +194,9 @@ async def get_provider_models(request):
 
 @server.PromptServer.instance.routes.post(f"{ROUTE_PREFIX}/providers/models")
 async def post_provider_models(request):
+    denied = aiohttp_check_privacy_token(request)
+    if denied is not None:
+        return denied
     try:
         data = await request.json()
     except Exception:

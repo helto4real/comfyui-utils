@@ -28,6 +28,7 @@ from shared.prompt_enhancer.provider import (
     PromptProviderRegistry,
     build_system_prompt,
     encode_images_for_ollama,
+    normalize_ollama_url,
     ollama_keep_alive,
     resolve_seed,
 )
@@ -64,6 +65,22 @@ def isolated_privacy_keystore():
 
 
 class PromptEnhancerProviderTests(unittest.TestCase):
+    def test_remote_model_sources_use_immutable_revisions(self):
+        for spec in local_provider.MODEL_REGISTRY.values():
+            if spec.backend in {"qwen", "florence"}:
+                self.assertRegex(spec.revision, r"^[0-9a-f]{40}$")
+            for model_file in local_provider.model_files_for(spec):
+                self.assertRegex(model_file.revision, r"^[0-9a-f]{40}$")
+
+    def test_ollama_url_rejects_credentials_query_and_fragment(self):
+        for url in (
+            "http://user:password@127.0.0.1:11434",
+            "http://127.0.0.1:11434?target=other",
+            "http://127.0.0.1:11434#fragment",
+        ):
+            with self.subTest(url=url), self.assertRaises(RuntimeError):
+                normalize_ollama_url(url)
+
     def test_progress_helper_updates_standard_bar_ranges_monotonically(self):
         updates = []
 
@@ -1279,6 +1296,10 @@ class PromptEnhancerRouteTests(unittest.TestCase):
 
         request = Request()
         with patch.object(routes, "aiohttp_check_privacy_token", return_value=denied):
+            self.assertIs(asyncio.run(routes.get_models(request)), denied)
+            self.assertIs(asyncio.run(routes.post_models(request)), denied)
+            self.assertIs(asyncio.run(routes.get_provider_models(request)), denied)
+            self.assertIs(asyncio.run(routes.post_provider_models(request)), denied)
             self.assertIs(asyncio.run(routes.post_provider_download(request)), denied)
             self.assertIs(asyncio.run(routes.post_provider_unload(request)), denied)
             self.assertIs(asyncio.run(routes.get_provider_settings(request)), denied)
