@@ -19,8 +19,10 @@ except ImportError:
 
 try:
     from .video_config import VIDEO_EXTENSIONS, thumbnail_cache_dir
+    from ...shared.privacy import LOAD_VIDEO_CACHE_PURPOSE, decrypt_bytes, encrypt_bytes, private_media_record, remove_plain_file_silent
 except ImportError:
     from video_config import VIDEO_EXTENSIONS, thumbnail_cache_dir
+    from shared.privacy import LOAD_VIDEO_CACHE_PURPOSE, decrypt_bytes, encrypt_bytes, private_media_record, remove_plain_file_silent
 
 
 def _fraction_to_float(value: Any) -> float:
@@ -62,17 +64,10 @@ def video_metadata(path: Path) -> dict[str, Any]:
 
 
 def thumbnail_path(video_path: Path, max_size: int = 360) -> Path:
-    return thumbnail_cache_dir() / f"{thumbnail_cache_key(video_path, max_size)}.webp"
-
-
-def thumbnail_cache_key(video_path: Path, max_size: int = 360) -> str:
     video_path = Path(video_path)
     stat = video_path.stat()
-    return hashlib.sha256(
-        f"{video_path.resolve()}:{stat.st_mtime_ns}:{stat.st_size}:{max_size}".encode(
-            "utf-8"
-        )
-    ).hexdigest()
+    key = hashlib.sha256(f"{video_path.resolve()}:{stat.st_mtime_ns}:{stat.st_size}:{max_size}".encode("utf-8")).hexdigest()
+    return thumbnail_cache_dir() / f"{key}.webp"
 
 
 def encrypted_thumbnail_path(video_path: Path, max_size: int = 360) -> Path:
@@ -101,29 +96,6 @@ def generate_thumbnail_bytes(video_path: Path, max_size: int = 360) -> bytes:
     raise ValueError(f"No decodable video frame found in {video_path}")
 
 
-async def managed_thumbnail(
-    video_path: Path,
-    managed_artifacts,
-    *,
-    max_size: int = 360,
-    privacy_mode: object = True,
-    mode_facts: object = None,
-    execution: object = None,
-):
-    """Bind the existing cache key/revision and encoder to managed storage."""
-
-    source = Path(video_path)
-    stat = source.stat()
-    return await managed_artifacts.load_video_thumbnail(
-        thumbnail_cache_key(source, max_size),
-        (stat.st_mtime_ns, stat.st_size, max_size),
-        lambda: generate_thumbnail_bytes(source, max_size=max_size),
-        privacy_mode=privacy_mode,
-        mode_facts=mode_facts,
-        execution=execution,
-    )
-
-
 def make_thumbnail(video_path: Path, max_size: int = 360) -> Path:
     video_path = Path(video_path)
     thumbnail_cache_dir().mkdir(parents=True, exist_ok=True)
@@ -143,14 +115,24 @@ def thumbnail_bytes(video_path: Path, privacy_mode: bool, max_size: int = 360) -
     encrypted_path = encrypted_thumbnail_path(video_path, max_size=max_size)
 
     if privacy_mode:
-        raise RuntimeError("Private thumbnails require managed artifacts.")
+        if encrypted_path.exists():
+            return decrypt_bytes(encrypted_path.read_bytes(), purpose=LOAD_VIDEO_CACHE_PURPOSE)
+        if plain_path.exists():
+            data = plain_path.read_bytes()
+        else:
+            data = generate_thumbnail_bytes(video_path, max_size=max_size)
+        encrypted_path.write_bytes(encrypt_bytes(data, purpose=LOAD_VIDEO_CACHE_PURPOSE))
+        remove_plain_file_silent(plain_path)
+        return data
 
     if plain_path.exists():
         return plain_path.read_bytes()
-    data = generate_thumbnail_bytes(video_path, max_size=max_size)
-    plain_path.write_bytes(data)
     if encrypted_path.exists():
-        encrypted_path.unlink()
+        data = decrypt_bytes(encrypted_path.read_bytes(), purpose=LOAD_VIDEO_CACHE_PURPOSE)
+    else:
+        data = generate_thumbnail_bytes(video_path, max_size=max_size)
+    plain_path.write_bytes(data)
+    remove_plain_file_silent(encrypted_path)
     return data
 
 
@@ -160,7 +142,7 @@ def preview_result(video_path: Path, subfolder: str = "helto_load_video", privac
 
     video_path = Path(video_path).resolve()
     if privacy_mode:
-        raise RuntimeError("Private source previews require shared source leases.")
+        return private_media_record(video_path, content_type="video/mp4", encrypted=False, filename=video_path.name)
 
     for folder_type, base_dir in (
         (io.FolderType.output, folder_paths.get_output_directory()),

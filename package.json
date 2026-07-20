@@ -1,8 +1,4 @@
 {
-  "name": "comfyui-utils",
-  "version": "0.1.6",
-  "private": true,
-  "description": "Helto ComfyUI workflow utilities and managed privacy features.",
   "type": "module",
   "scripts": {
     "test:js": "node --test tests/js/*.test.js"

@@ -6,7 +6,7 @@ import torch
 
 from comfy_api.latest import io, ui
 
-from ...shared.managed_privacy import utils_media_artifacts
+from ...shared.privacy import private_media_record, write_encrypted_temp_bytes
 
 
 def _has_tensor(value) -> bool:
@@ -80,38 +80,23 @@ def _preview_images_for_slot(images=None, mask=None) -> torch.Tensor | None:
     return None
 
 
-def _encode_preview_bytes(images, cls: type[io.ComfyNode]) -> list[bytes]:
-    encoded = []
+def _private_image_records(images, filename_prefix: str, cls: type[io.ComfyNode]) -> list[dict]:
+    records = []
     metadata = ui.ImageSaveHelper._create_png_metadata(cls)
-    for image in images:
+    for index, image in enumerate(images):
         pil_image = ui.ImageSaveHelper._convert_tensor_to_pil(image)
         buffer = BytesIO()
         pil_image.save(buffer, format="PNG", pnginfo=metadata, compress_level=1)
-        encoded.append(buffer.getvalue())
-    return encoded
-
-
-async def _managed_preview_records(
-    images,
-    cls: type[io.ComfyNode],
-    managed_artifacts,
-    *,
-    owner_key: str,
-    privacy_mode: object = True,
-    mode_facts: object = None,
-    execution: object = None,
-) -> list[dict]:
-    if not _has_tensor(images):
-        return []
-    records = await managed_artifacts.publish_encoded_previews(
-        "HeltoImageComparer",
-        lambda: _encode_preview_bytes(images, cls),
-        owner_key=owner_key,
-        privacy_mode=privacy_mode,
-        mode_facts=mode_facts,
-        execution=execution,
-    )
-    return [record.to_record() for record in records]
+        path = write_encrypted_temp_bytes(buffer.getvalue(), ".png", "image_comparer")
+        records.append(
+            private_media_record(
+                path,
+                content_type="image/png",
+                encrypted=True,
+                filename=f"{filename_prefix}_{index + 1:05}.png",
+            )
+        )
+    return records
 
 
 def _preview_records(images, filename_prefix: str, cls: type[io.ComfyNode], privacy_mode: bool) -> list[dict]:
@@ -119,7 +104,7 @@ def _preview_records(images, filename_prefix: str, cls: type[io.ComfyNode], priv
         return []
 
     if privacy_mode:
-        raise RuntimeError("Private previews require managed artifacts.")
+        return _private_image_records(images, filename_prefix, cls)
 
     return ui.ImageSaveHelper.save_images(
         images,
@@ -153,14 +138,13 @@ class ImageComparer(io.ComfyNode):
         )
 
     @classmethod
-    async def execute(
+    def execute(
         cls,
         original=None,
         new=None,
         original_mask=None,
         new_mask=None,
         privacy_mode: bool = True,
-        unique_id: str | None = None,
     ) -> io.NodeOutput:
         if isinstance(original_mask, bool) and new_mask is None and privacy_mode is True:
             privacy_mode = original_mask
@@ -169,27 +153,9 @@ class ImageComparer(io.ComfyNode):
         original_preview = _preview_images_for_slot(original, original_mask)
         new_preview = _preview_images_for_slot(new, new_mask)
 
-        if privacy_mode:
-            managed = utils_media_artifacts()
-            owner = str(unique_id or "helto-image-comparer")
-            result = {
-                "a_images": await _managed_preview_records(
-                    original_preview,
-                    cls,
-                    managed,
-                    owner_key=f"{owner}:original",
-                ),
-                "b_images": await _managed_preview_records(
-                    new_preview,
-                    cls,
-                    managed,
-                    owner_key=f"{owner}:new",
-                ),
-            }
-        else:
-            result = {
-                "a_images": _preview_records(original_preview, "helto.compare.original", cls, False),
-                "b_images": _preview_records(new_preview, "helto.compare.new", cls, False),
-            }
+        result = {
+            "a_images": _preview_records(original_preview, "helto.compare.original", cls, privacy_mode),
+            "b_images": _preview_records(new_preview, "helto.compare.new", cls, privacy_mode),
+        }
 
         return io.NodeOutput(ui=result)

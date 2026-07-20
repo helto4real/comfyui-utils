@@ -13,6 +13,7 @@ import folder_paths
 from PIL import Image, ImageOps
 
 from .constants import CONFIG_DIR, SUPPORTED_EXTENSIONS
+from .crypto import decrypt_selection, encrypt_selection
 from .mask_storage import delete_mask, load_mask_bytes, migrate_mask_privacy, save_mask_data_url
 from .scanning import delete_image_files, discover_image_folders, scan_image_folders
 from .thumbnail_cache import clear_thumbnail_cache, delete_thumbnail_cache_for_paths, get_thumbnail_bytes
@@ -523,6 +524,14 @@ def paste_image_payload(
         "duplicate": duplicate,
         "image": _image_metadata(root_folder, normalized_path),
     }
+
+
+def encrypt_payload(data: Mapping[str, Any]) -> dict[str, str]:
+    return {"encrypted": encrypt_selection(data.get("data", ""))}
+
+
+def decrypt_payload(data: Mapping[str, Any]) -> dict[str, str]:
+    return {"data": decrypt_selection(data.get("encrypted", ""))}
 
 
 def save_mask_payload(

@@ -1,9 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import {
-    requireUtilsPrivacy,
-    resolveUtilsPrivateMediaRecord,
-} from "./managed_privacy.js";
+import { privacyFetchJson } from "./privacy_common.js";
 import {
     attachHeltoMediaPreviewHover,
     hideHeltoMediaPreviewThumbnail,
@@ -47,6 +44,8 @@ import {
     workflowWithFixedSeedControls,
 } from "./queue_manager_helpers.js";
 
+const STATE_ROUTE = "/helto_queue_manager/state";
+const PATCHED_KEY = "__heltoQueueManagerPatched";
 const STYLE_ID = "helto-queue-manager-styles";
 const FALLBACK_PANEL_ID = "helto-queue-manager-fallback";
 const STALE_PROMPT_MISS_LIMIT = 2;
@@ -69,6 +68,9 @@ function routeUrl(route) {
 }
 
 async function jsonFetch(route, options = {}) {
+    if (String(route || "").startsWith("/helto_queue_manager/")) {
+        return privacyFetchJson(routeUrl(route), options);
+    }
     const response = await fetch(routeUrl(route), options);
     const payload = await response.json().catch(() => ({}));
     if (!response.ok || payload?.ok === false) {
@@ -77,9 +79,12 @@ async function jsonFetch(route, options = {}) {
     return payload;
 }
 
-async function queueOperation(operationId, payload = undefined) {
-    const privacy = await requireUtilsPrivacy();
-    return privacy.workflow("queue-manager-operations").invoke(operationId, payload);
+function messageFromPromptError(payload) {
+    const error = payload?.error;
+    if (typeof error === "string") return error;
+    if (error?.message) return error.message;
+    if (error?.details) return error.details;
+    return "ComfyUI rejected the queued workflow.";
 }
 
 function promptDataFromQueueArgs(args) {
@@ -130,14 +135,6 @@ function previewUrl(preview) {
         getPreviewFormatParam: app?.getPreviewFormatParam?.bind(app),
         getRandParam: app?.getRandParam?.bind(app),
     });
-}
-
-async function resolvedPreviewUrl(preview) {
-    const record = preview?.record || preview;
-    if (record?.private) {
-        return resolveUtilsPrivateMediaRecord(record, routeUrl);
-    }
-    return previewUrl(preview);
 }
 
 function isActiveRunStatus(status) {
@@ -657,9 +654,8 @@ class HeltoQueueManager {
         this.saving = false;
         this.saveTimer = null;
         this.stateRevision = 0;
-        this.storeRevision = 0;
         this.submitting = false;
-        this.queueController = null;
+        this.bypass = false;
         this.promptResults = new Map();
         this.stalePromptMisses = new Map();
         this.historyPoll = null;
@@ -671,7 +667,7 @@ class HeltoQueueManager {
 
     async init() {
         await this.loadState();
-        await this.installQueueInterceptor();
+        this.installQueuePatch();
         this.installEventHandlers();
         this.startHistoryPoll();
         if (!this.state.paused && !activeQueueRun(this.state)) {
@@ -681,8 +677,7 @@ class HeltoQueueManager {
 
     async loadState() {
         try {
-            const payload = await queueOperation("queue-manager.load");
-            this.storeRevision = payload.revision;
+            const payload = await jsonFetch(STATE_ROUTE);
             const sessionChanged = !!payload.stored_server_session_id
                 && !!payload.server_session_id
                 && payload.stored_server_session_id !== payload.server_session_id;
@@ -728,11 +723,14 @@ class HeltoQueueManager {
         let needsFollowUpSave = false;
         this.saving = true;
         try {
-            const payload = await queueOperation("queue-manager.save", {
-                state: stateSnapshot,
-                expectedRevision: this.storeRevision,
+            const payload = await jsonFetch(STATE_ROUTE, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    state: stateSnapshot,
+                    privacy_enabled: !!stateSnapshot.privacy_enabled,
+                }),
             });
-            this.storeRevision = payload.revision;
             const saved = applyQueueStateSaveResponse(
                 this.state,
                 payload.state,
@@ -770,17 +768,30 @@ class HeltoQueueManager {
         setTimeout(() => this.updateSidebarBadge(), 250);
     }
 
-    async installQueueInterceptor() {
-        if (this.queueController) return this.queueController;
-        const privacy = await requireUtilsPrivacy();
+    installQueuePatch() {
+        if (app[PATCHED_KEY]) return;
+
         const manager = this;
-        this.queueController = privacy.workflow("queue-manager-operations").installQueueInterceptor({
-            appQueuePrompt(args) {
+        const originalAppQueuePrompt = app.queuePrompt;
+        if (typeof originalAppQueuePrompt === "function") {
+            app.queuePrompt = async function (...args) {
+                if (manager.bypass) {
+                    return originalAppQueuePrompt.apply(this, args);
+                }
                 return manager.captureAppQueuePrompt(args);
-            },
-            apiQueuePrompt(args) {
+            };
+        }
+
+        const originalApiQueuePrompt = api.queuePrompt;
+        if (typeof originalApiQueuePrompt === "function") {
+            api.queuePrompt = async function (...args) {
+                if (manager.bypass) {
+                    return originalApiQueuePrompt.apply(this, args);
+                }
                 const promptData = promptDataFromQueueArgs(args);
-                if (!promptData) throw new Error("PRIVACY_QUEUE_MANAGER_SNAPSHOT_INVALID");
+                if (!promptData) {
+                    return originalApiQueuePrompt.apply(this, args);
+                }
                 const queueOptions = args[2] && typeof args[2] === "object" ? args[2] : {};
                 return manager.enqueuePromptData(promptData, {
                     number: args[0],
@@ -788,9 +799,10 @@ class HeltoQueueManager {
                     partialExecutionTargets: queueOptions.partialExecutionTargets,
                     previewMethod: queueOptions.previewMethod,
                 });
-            },
-        });
-        return this.queueController;
+            };
+        }
+
+        app[PATCHED_KEY] = true;
     }
 
     installEventHandlers() {
@@ -909,23 +921,41 @@ class HeltoQueueManager {
 
     async postPrompt(run) {
         const promptData = run.prompt || {};
-        const controller = await this.installQueueInterceptor();
-        await queueOperation("queue-manager.submit");
-        const number = run.front
-            ? -1
-            : (Number.isFinite(Number(run.number)) ? Number(run.number) : 0);
-        const options = {
-            ...(Array.isArray(run.partial_execution_targets) && run.partial_execution_targets.length > 0
-                ? { partialExecutionTargets: cloneJson(run.partial_execution_targets) }
-                : {}),
-            ...(run.preview_method && run.preview_method !== "default"
-                ? { previewMethod: run.preview_method }
-                : {}),
-        };
-        return controller.submitPrompt(number, {
-            output: cloneJson(promptData.output || promptData.prompt || {}),
+        const extraData = cloneJson(promptData.extra_data || {});
+        extraData.extra_pnginfo = {
+            ...(extraData.extra_pnginfo || {}),
             workflow: cloneJson(promptData.workflow || {}),
-        }, options);
+        };
+        if (run.preview_method && run.preview_method !== "default") {
+            extraData.preview_method = run.preview_method;
+        }
+
+        const body = {
+            client_id: api.clientId,
+            prompt: cloneJson(promptData.output || promptData.prompt || {}),
+            extra_data: extraData,
+            prompt_id: run.prompt_id,
+        };
+        if (Array.isArray(run.partial_execution_targets) && run.partial_execution_targets.length > 0) {
+            body.partial_execution_targets = cloneJson(run.partial_execution_targets);
+        }
+        if (Number.isFinite(Number(run.number))) {
+            body.number = Number(run.number);
+        }
+        if (run.front) {
+            body.front = true;
+        }
+
+        const response = await fetch(routeUrl("/prompt"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || payload?.error) {
+            throw new Error(messageFromPromptError(payload));
+        }
+        return payload;
     }
 
     async cancelComfyPrompt(promptIdValue) {
@@ -1095,14 +1125,9 @@ class HeltoQueueManager {
         const run = this.findRun(runId, "history");
         if (!runCanBeRerun(run)) return;
         this.activeTab = "running";
-        await app.loadGraphData(workflowWithFixedSeedControls(cloneJson(run.prompt.workflow)));
-        const privacy = await requireUtilsPrivacy();
-        const rebuilt = await privacy.workflow("queue-manager-operations").runWithSnapshot(
-            "replay",
-            ({ graphToPrompt }) => graphToPrompt(app.rootGraph ?? app.graph),
-        );
-        await queueOperation("queue-manager.rerun");
-        await this.enqueuePromptData(rebuilt, { title: run.title });
+        await this.enqueuePromptData(cloneJson(run.prompt), {
+            title: run.title,
+        });
     }
 
     deletePendingRun(runId) {
@@ -1118,6 +1143,14 @@ class HeltoQueueManager {
     clearHistory() {
         if (!this.state.history.length) return;
         this.setState(clearQueueHistory(this.state));
+    }
+
+    setPrivacy(enabled) {
+        this.setState({
+            ...this.state,
+            privacy_enabled: !!enabled,
+        }, { save: false });
+        this.saveNow();
     }
 
     setActiveTab(tab) {
@@ -1144,10 +1177,10 @@ class HeltoQueueManager {
         return (source === "history" ? this.state.history : this.state.queue).find((item) => item.id === runId);
     }
 
-    async previewRun(runId, source) {
+    previewRun(runId, source) {
         const run = this.findRun(runId, source);
         const preview = latestMediaPreviewFromHistory(run?.comfy_history);
-        const url = await resolvedPreviewUrl(preview);
+        const url = previewUrl(preview);
         if (!run || !preview || !url) return;
         hideHeltoMediaPreviewThumbnail();
         openHeltoMediaPreview({
@@ -1169,9 +1202,9 @@ class HeltoQueueManager {
         const previewHref = previewUrl(preview);
         const title = escapeHtml(run.title);
         const error = run.error ? escapeHtml(run.error) : "";
-        const canPreview = !!preview;
+        const canPreview = !!preview && !!previewHref;
         const previewTitle = canPreview ? `Preview latest ${preview.kind}` : "No image or video output available";
-        const previewAttrs = canPreview && previewHref
+        const previewAttrs = canPreview
             ? `data-preview-url="${escapeHtml(previewHref)}" data-preview-kind="${escapeHtml(preview.kind)}" data-preview-title="${title}" data-preview-label="${escapeHtml(preview.label || preview.kind)}"`
             : "";
         const previewButton = `<button class="helto-qm-icon-btn" data-action="preview-${source}" data-run-id="${escapeHtml(run.id)}" ${previewAttrs} title="${escapeHtml(previewTitle)}" aria-label="${escapeHtml(previewTitle)}" ${canPreview ? "" : "disabled"}>${QUEUE_ICONS.preview}</button>`;
@@ -1262,6 +1295,7 @@ class HeltoQueueManager {
         if (!this.root) return;
         this.root.querySelector("[data-action='resume']")?.addEventListener("click", () => this.resumeQueue());
         this.root.querySelector("[data-action='pause']")?.addEventListener("click", () => this.pauseQueue());
+        this.root.querySelector("[data-action='privacy']")?.addEventListener("click", () => this.setPrivacy(!this.state.privacy_enabled));
         this.root.querySelector("[data-action='clear-history']")?.addEventListener("click", () => this.clearHistory());
         this.root.querySelectorAll("[data-tab]").forEach((button) => {
             button.addEventListener("click", () => this.setActiveTab(button.dataset.tab));
@@ -1284,11 +1318,11 @@ class HeltoQueueManager {
             button.addEventListener("click", () => this.loadWorkflow(button.dataset.runId, "history"));
         });
         root.querySelectorAll("[data-action='preview-queue']").forEach((button) => {
-            button.addEventListener("click", () => this.previewRun(button.dataset.runId, "queue").catch(console.warn));
+            button.addEventListener("click", () => this.previewRun(button.dataset.runId, "queue"));
             this.attachPreviewHover(button);
         });
         root.querySelectorAll("[data-action='preview-history']").forEach((button) => {
-            button.addEventListener("click", () => this.previewRun(button.dataset.runId, "history").catch(console.warn));
+            button.addEventListener("click", () => this.previewRun(button.dataset.runId, "history"));
             this.attachPreviewHover(button);
         });
         root.querySelectorAll("[data-action='rerun-history']").forEach((button) => {
@@ -1314,25 +1348,7 @@ class HeltoQueueManager {
     }
 
     attachPreviewHover(button) {
-        if (button.disabled) return;
-        if (!button.dataset.previewUrl) {
-            button.addEventListener("mouseenter", async () => {
-                const source = button.dataset.action === "preview-history" ? "history" : "queue";
-                const run = this.findRun(button.dataset.runId, source);
-                const preview = latestMediaPreviewFromHistory(run?.comfy_history);
-                try {
-                    button.dataset.previewUrl = await resolvedPreviewUrl(preview);
-                    button.dataset.previewKind = preview?.kind || "image";
-                    button.dataset.previewTitle = run?.title || "Preview";
-                    button.dataset.previewLabel = preview?.label || preview?.kind || "preview";
-                    this.attachPreviewHover(button);
-                    button.dispatchEvent(new MouseEvent("mouseenter", { bubbles: false }));
-                } catch (err) {
-                    console.warn("Failed to resolve protected queue preview:", err);
-                }
-            }, { once: true });
-            return;
-        }
+        if (button.disabled || !button.dataset.previewUrl) return;
         attachHeltoMediaPreviewHover(button, () => ({
             url: button.dataset.previewUrl,
             kind: button.dataset.previewKind,
@@ -1363,6 +1379,7 @@ class HeltoQueueManager {
                     <button class="helto-qm-icon-btn is-primary" data-action="resume" title="Resume queue" aria-label="Resume queue" ${resumeDisabled ? "disabled" : ""}>${QUEUE_ICONS.play}</button>
                     <button class="helto-qm-icon-btn" data-action="pause" title="Pause queue" aria-label="Pause queue" ${pauseDisabled ? "disabled" : ""}>${QUEUE_ICONS.pause}</button>
                     <span class="helto-qm-toolbar-spacer"></span>
+                    <button class="helto-qm-icon-btn ${this.state.privacy_enabled ? "is-active" : ""}" data-action="privacy" title="${this.state.privacy_enabled ? "Disable encrypted persistence" : "Enable encrypted persistence"}" aria-label="${this.state.privacy_enabled ? "Disable encrypted persistence" : "Enable encrypted persistence"}" aria-pressed="${this.state.privacy_enabled ? "true" : "false"}">${this.state.privacy_enabled ? QUEUE_ICONS.lock : QUEUE_ICONS.unlock}</button>
                 </div>
                 ${this.state.resume_required ? `<div class="helto-qm-banner">Queue paused after restart.</div>` : ""}
                 <div class="helto-qm-status">

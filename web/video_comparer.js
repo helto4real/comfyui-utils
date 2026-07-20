@@ -1,6 +1,6 @@
 import { app } from "/scripts/app.js";
 import { api } from "/scripts/api.js";
-import { resolveUtilsPrivateMediaRecord } from "./managed_privacy.js";
+import { ensurePrivacyTokenCookieSoon } from "./privacy_common.js";
 
 const NODE_CLASS = "HeltoVideoComparer";
 const DISPLAY_NAME = "Video Comparer";
@@ -228,10 +228,13 @@ function isHideModeEnabled(node) {
     return Boolean(node.properties?.[HIDE_PROPERTY]);
 }
 
-async function recordToUrl(record) {
-    if (record?.private) {
-        return resolveUtilsPrivateMediaRecord(record, (path) => api.apiURL(path));
+function recordToUrl(record) {
+    if (record?.private && record?.token) {
+        ensurePrivacyTokenCookieSoon();
+        const params = new URLSearchParams({ token: record.token });
+        return api.apiURL(`/helto_utils/private_media?${params.toString()}${app.getRandParam?.() ?? ""}`);
     }
+
     if (!record?.filename || !record?.type) {
         return null;
     }
@@ -393,8 +396,8 @@ class VideoComparerPreviewWidget {
         return [this.video1, this.video2];
     }
 
-    async setVideos(records, frameRate) {
-        const urls = await Promise.all((records ?? []).map(recordToUrl));
+    setVideos(records, frameRate) {
+        const urls = (records ?? []).map(recordToUrl);
         this.hasSources = urls.every(Boolean);
         this.frameRate = frameRate;
         this.setVisible(this.hasSources);
@@ -794,9 +797,7 @@ function setupVideoComparer(node) {
             ? output.video_comparison[0]
             : output?.video_comparison;
         if (comparison) {
-            this[PREVIEW_WIDGET]?.setVideos(comparison.videos, comparison.frame_rate)?.catch((err) => {
-                console.warn("Failed to update protected video comparison:", err);
-            });
+            this[PREVIEW_WIDGET]?.setVideos(comparison.videos, comparison.frame_rate);
         }
         return result;
     };

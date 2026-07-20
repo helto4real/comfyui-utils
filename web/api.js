@@ -1,8 +1,4 @@
-async function selectorOperation(operationId, payload = undefined) {
-    const { requireUtilsPrivacy } = await import("./managed_privacy.js");
-    const privacy = await requireUtilsPrivacy();
-    return privacy.workflow("selector-workflow").invoke(operationId, payload);
-}
+import { ensurePrivacyTokenCookieSoon, privacyFetch, privacyFetchJson } from "./privacy_common.js";
 
 export function selectorImageVersionToken(image) {
     const modified = Number(image?.date_modified);
@@ -13,43 +9,87 @@ export function selectorImageVersionToken(image) {
     return parts.join("-");
 }
 
+function selectorImageUrl(path, extraParams = {}) {
+    const params = new URLSearchParams({ path: String(path ?? "") });
+    for (const [key, value] of Object.entries(extraParams)) {
+        if (value !== undefined && value !== null && value !== "") {
+            params.set(key, String(value));
+        }
+    }
+    return `?${params.toString()}`;
+}
+
+function selectorPrivacyQueryValue(privacyMode) {
+    return privacyMode === true || String(privacyMode).toLowerCase() === "true" ? "true" : "false";
+}
+
 export const selectorApi = {
     async getInputDir() {
-        return selectorOperation("selector.input-dir");
+        return privacyFetchJson("/helto_selector/input_dir");
     },
 
     async scanFolders(folders, recursive, previousPaths = []) {
-        return selectorOperation("selector.scan", {
-            folders, recursive, previous_paths: previousPaths,
+        return privacyFetchJson("/helto_selector/scan_folders", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ folders, recursive, previous_paths: previousPaths })
         });
     },
 
     async registerFolders(folders) {
-        return selectorOperation("selector.roots-register", {
-            folders: Array.isArray(folders) ? folders : [],
+        return privacyFetchJson("/helto_selector/register_roots", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ folders: Array.isArray(folders) ? folders : [] }),
         });
     },
 
     async getRegisteredFolders() {
-        return selectorOperation("selector.roots-list");
+        return privacyFetchJson("/helto_selector/registered_roots");
     },
 
     async revokeFolder(folder) {
-        return selectorOperation("selector.roots-register", { action: "revoke", folder });
+        return privacyFetchJson("/helto_selector/register_roots", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "revoke", folder }),
+        });
+    },
+
+    async encrypt(data) {
+        return privacyFetchJson("/helto_selector/encrypt", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ data })
+        });
+    },
+
+    async decrypt(encrypted) {
+        return privacyFetchJson("/helto_selector/decrypt", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ encrypted })
+        });
     },
 
     async deleteSelectedImages(paths, folders, recursive) {
-        return selectorOperation("selector.image-delete", { paths, folders, recursive });
+        return privacyFetchJson("/helto_selector/delete_images", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ paths, folders, recursive })
+        });
     },
 
     async pasteImage(file, filename, destination, folders) {
-        return selectorOperation("selector.image-paste", {
-            content: [...new Uint8Array(await file.arrayBuffer())],
-            content_type: file.type,
-            filename,
-            destination,
-            folders: Array.isArray(folders) ? folders : [],
+        const form = new FormData();
+        form.append("image", file, filename);
+        form.append("destination", destination);
+        form.append("folders", JSON.stringify(Array.isArray(folders) ? folders : []));
+        const response = await privacyFetch("/helto_selector/paste_image", {
+            method: "POST",
+            body: form,
         });
+        return response.json();
     },
 
     async uploadComfyInputImage(file, filename) {
@@ -73,40 +113,53 @@ export const selectorApi = {
         return response.json();
     },
 
-    async thumbnailUrl(path, _privacyMode, _image = null) {
-        const record = await selectorOperation("selector.thumbnail", { path });
-        const { resolveUtilsPrivateMediaRecord } = await import("./managed_privacy.js");
-        return resolveUtilsPrivateMediaRecord(record);
+    thumbnailUrl(path, privacyMode, image = null) {
+        ensurePrivacyTokenCookieSoon();
+        const version = selectorImageVersionToken(image);
+        return `/helto_selector/thumbnail${selectorImageUrl(path, {
+            privacy: selectorPrivacyQueryValue(privacyMode),
+            v: version,
+        })}`;
     },
 
-    async viewImageUrl(path, _image = null) {
-        const record = await selectorOperation("selector.source-view", { path });
-        const { resolveUtilsPrivateMediaRecord } = await import("./managed_privacy.js");
-        return resolveUtilsPrivateMediaRecord(record);
+    viewImageUrl(path, image = null) {
+        ensurePrivacyTokenCookieSoon();
+        const version = selectorImageVersionToken(image);
+        return `/helto_selector/view_image${selectorImageUrl(path, {
+            v: version,
+        })}`;
     },
 
-    async maskUrl(path, reference = null) {
-        const record = await selectorOperation("selector.mask-read", { path, reference });
-        if (typeof record?.publicDataUrl === "string") return record.publicDataUrl;
-        const { resolveUtilsPrivateMediaRecord } = await import("./managed_privacy.js");
-        return resolveUtilsPrivateMediaRecord(record);
+    maskUrl(path) {
+        ensurePrivacyTokenCookieSoon();
+        return `/helto_selector/mask${selectorImageUrl(path)}`;
     },
 
     async saveMask(path, maskData, privacyMode) {
-        return selectorOperation("selector.mask-write", {
-            path, mask_data: maskData, privacy: privacyMode,
+        return privacyFetchJson("/helto_selector/save_mask", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path, mask_data: maskData, privacy: privacyMode })
         });
     },
 
-    async deleteMask(path, reference) {
-        return selectorOperation("selector.mask-delete", { path, reference });
+    async deleteMask(path) {
+        return privacyFetchJson("/helto_selector/delete_mask", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path })
+        });
     },
 
-    async migrateMasks(masks) {
-        return selectorOperation("selector.mask-migrate", { masks });
+    async migrateMasks(paths, privacyMode) {
+        return privacyFetchJson("/helto_selector/migrate_masks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ paths, privacy: privacyMode })
+        });
     },
 
     async clearCache() {
-        return selectorOperation("selector.cache-clear");
+        return privacyFetchJson("/helto_selector/clear_cache", { method: "POST" });
     }
 };

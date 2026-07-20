@@ -14,13 +14,13 @@ from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 from PIL import Image
 import torch
-from helto_privacy import PrivacyEnvelopeCodec
 
 import helto_selector_backend.image_processing as selector_image_processing
 import helto_selector_backend.services as selector_services
+from helto_selector_backend import crypto as selector_crypto
+from helto_selector_backend.crypto import decrypt_selection, encrypt_selection
 from helto_selector_backend.image_processing import (
     parse_selected_paths,
     parse_edited_bboxes,
@@ -45,9 +45,11 @@ from helto_selector_backend.services import (
     authorize_selector_folders,
     authorize_selector_image_path,
     clear_cache_payload,
+    decrypt_payload,
     delete_images_payload,
     delete_mask_payload,
     effective_authorized_roots,
+    encrypt_payload,
     get_input_dir_payload,
     load_registered_selector_roots,
     paste_image_payload,
@@ -65,9 +67,6 @@ from helto_selector_backend.thumbnail_cache import (
     thumbnail_cache_paths,
 )
 import shared.temp_cache as temp_cache
-
-
-pytestmark = pytest.mark.usefixtures("coordinated_suite_test_boundary")
 
 
 def write_image(path: str, size: tuple[int, int], color: tuple[int, int, int]) -> None:
@@ -234,6 +233,39 @@ class ImageProcessingTests(unittest.TestCase):
                 [{"x": 3, "y": 3, "width": 3, "height": 2}],
             ])
 
+    def test_edited_bbox_state_parses_encrypted_map(self):
+        plain = json.dumps({"/tmp/a.png": [{"x": 1, "y": 2, "width": 3, "height": 4}]})
+        with isolated_privacy_keystore():
+            encrypted = encrypt_selection(plain)
+            parsed = parse_edited_bboxes(encrypted, decrypt_func=decrypt_selection)
+
+        self.assertEqual(parsed, {"/tmp/a.png": [{"x": 1.0, "y": 2.0, "width": 3.0, "height": 4.0}]})
+
+    def test_edited_mask_state_parses_encrypted_map(self):
+        plain = json.dumps({"/tmp/a.png": {"key": "abc"}})
+        with isolated_privacy_keystore():
+            encrypted = encrypt_selection(plain)
+            parsed = parse_edited_masks(encrypted, decrypt_func=decrypt_selection)
+
+        self.assertEqual(parsed, {"/tmp/a.png": {"key": "abc"}})
+
+    def test_encrypted_mask_file_roundtrips(self):
+        with isolated_privacy_keystore(), tempfile.TemporaryDirectory() as tmpdir:
+            image_path = os.path.join(tmpdir, "image.png")
+            cache_dir = os.path.join(tmpdir, "masks")
+            write_image(image_path, (4, 4), (255, 0, 0))
+            mask = Image.new("L", (4, 4), 128)
+            buffer = BytesIO()
+            mask.save(buffer, format="PNG")
+
+            save_mask_bytes(image_path, buffer.getvalue(), True, mask_cache_dir=cache_dir)
+            plain_path, encrypted_path = mask_cache_paths(image_path, cache_dir)
+
+            self.assertFalse(os.path.exists(plain_path))
+            self.assertTrue(os.path.exists(encrypted_path))
+            self.assertNotIn(b"PNG", Path(encrypted_path).read_bytes()[:16])
+            self.assertTrue(load_mask_bytes(image_path, cache_dir).startswith(b"\x89PNG"))
+
     def test_delete_mask_removes_plain_and_encrypted_cache_files(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             image_path = os.path.join(tmpdir, "image.png")
@@ -261,6 +293,55 @@ class ImageProcessingTests(unittest.TestCase):
             self.assertEqual(result["path"], image_path)
             self.assertTrue(result["cleared"])
             self.assertEqual(result["deleted_count"], 0)
+
+    def test_encrypted_selection_parses_with_same_key(self):
+        plain = json.dumps(["/tmp/a.png"])
+        with isolated_privacy_keystore():
+            encrypted = encrypt_selection(plain)
+            parsed = parse_selected_paths(encrypted, decrypt_func=decrypt_selection)
+
+        self.assertEqual(parsed, ["/tmp/a.png"])
+
+    def test_encrypted_selection_uses_helto_privacy_envelope(self):
+        plain = json.dumps(["/tmp/a.png"])
+        with isolated_privacy_keystore():
+            encrypted = encrypt_selection(plain)
+            payload = json.loads(encrypted)
+
+            self.assertEqual(payload["schema"], "helto.comfyui-utils")
+            self.assertTrue(payload["encrypted"])
+            self.assertEqual(decrypt_selection(encrypted), plain)
+
+    def test_legacy_selector_payloads_fail_closed(self):
+        with self.assertRaisesRegex(ValueError, "Legacy Helto selector encrypted payloads"):
+            decrypt_selection("__HELTO_ENC__:legacy")
+
+    def test_selector_default_encryption_requires_shared_keystore(self):
+        old_env = {
+            "HELTO_PRIVACY_KEYSTORE": os.environ.get("HELTO_PRIVACY_KEYSTORE"),
+            "HELTO_PRIVACY_SESSION_DIR": os.environ.get("HELTO_PRIVACY_SESSION_DIR"),
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.environ["HELTO_PRIVACY_KEYSTORE"] = str(Path(tmpdir) / "missing_keystore.json")
+            os.environ["HELTO_PRIVACY_SESSION_DIR"] = str(Path(tmpdir) / "session")
+            try:
+                with self.assertRaisesRegex(Exception, "PRIVACY_KEYSTORE_UNINITIALIZED"):
+                    selector_crypto.encrypt_selection(json.dumps(["/tmp/shared-key.png"]))
+            finally:
+                for key, value in old_env.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+
+    def test_selector_byte_helpers_use_explicit_purpose(self):
+        with isolated_privacy_keystore():
+            encrypted = selector_crypto.encrypt_bytes(b"selector payload", purpose="selector-unit")
+            payload = json.loads(encrypted.decode("utf-8"))
+
+            self.assertEqual(payload["purpose"], "selector-unit")
+            self.assertEqual(selector_crypto.decrypt_bytes(encrypted, purpose="selector-unit"), b"selector payload")
+
 
 class ScanningAndThumbnailTests(unittest.TestCase):
     def test_scan_image_folders_returns_expected_metadata(self):
@@ -315,6 +396,32 @@ class ScanningAndThumbnailTests(unittest.TestCase):
             self.assertEqual(len(results), 1)
             self.assertEqual(results[0]["folder"], tmpdir)
             self.assertEqual(results[0]["image_folder"], child_dir)
+
+    def test_thumbnail_cache_migrates_between_plain_and_encrypted(self):
+        with isolated_privacy_keystore(), tempfile.TemporaryDirectory() as tmpdir:
+            image_path = os.path.join(tmpdir, "image.png")
+            cache_dir = os.path.join(tmpdir, "cache")
+            os.makedirs(cache_dir)
+            write_image(image_path, (16, 16), (123, 45, 67))
+
+            plain_bytes = get_thumbnail_bytes(image_path, False, cache_dir=cache_dir)
+            plain_cache, encrypted_cache = thumbnail_cache_paths(image_path, cache_dir)
+            self.assertTrue(os.path.exists(plain_cache))
+            self.assertFalse(os.path.exists(encrypted_cache))
+
+            encrypted_mode_bytes = get_thumbnail_bytes(image_path, True, cache_dir=cache_dir)
+            self.assertEqual(plain_bytes, encrypted_mode_bytes)
+            self.assertFalse(os.path.exists(plain_cache))
+            self.assertTrue(os.path.exists(encrypted_cache))
+            with open(encrypted_cache, "rb") as f:
+                payload = json.loads(f.read().decode("utf-8"))
+            self.assertEqual(payload["schema"], "helto.comfyui-utils.bytes")
+            self.assertEqual(payload["purpose"], "selector-thumbnail")
+
+            plain_again_bytes = get_thumbnail_bytes(image_path, False, cache_dir=cache_dir)
+            self.assertEqual(plain_bytes, plain_again_bytes)
+            self.assertTrue(os.path.exists(plain_cache))
+            self.assertFalse(os.path.exists(encrypted_cache))
 
     def test_selector_thumbnail_cache_defaults_to_comfy_temp_node_subfolder(self):
         original_folder_paths = temp_cache.folder_paths
@@ -375,6 +482,45 @@ class ScanningAndThumbnailTests(unittest.TestCase):
             self.assertLess(first_pixel[2], 80)
             self.assertLess(second_pixel[0], 80)
             self.assertGreater(second_pixel[2], 200)
+
+    def test_encrypted_thumbnail_cache_regenerates_when_source_file_changes(self):
+        with isolated_privacy_keystore(), tempfile.TemporaryDirectory() as tmpdir:
+            image_path = os.path.join(tmpdir, "image.png")
+            cache_dir = os.path.join(tmpdir, "cache")
+            os.makedirs(cache_dir)
+            write_image(image_path, (16, 16), (255, 0, 0))
+
+            first_bytes = get_thumbnail_bytes(image_path, True, cache_dir=cache_dir)
+            _, encrypted_cache = thumbnail_cache_paths(image_path, cache_dir)
+            write_image(image_path, (16, 16), (0, 0, 255))
+            newer_mtime = os.path.getmtime(encrypted_cache) + 1
+            os.utime(image_path, (newer_mtime, newer_mtime))
+
+            second_bytes = get_thumbnail_bytes(image_path, True, cache_dir=cache_dir)
+
+            self.assertNotEqual(first_bytes, second_bytes)
+            first_pixel = thumbnail_pixel(first_bytes)
+            second_pixel = thumbnail_pixel(second_bytes)
+            self.assertGreater(first_pixel[0], 200)
+            self.assertLess(first_pixel[2], 80)
+            self.assertLess(second_pixel[0], 80)
+            self.assertGreater(second_pixel[2], 200)
+
+    def test_thumbnail_cache_legacy_encrypted_payload_fails_closed(self):
+        with isolated_privacy_keystore(), tempfile.TemporaryDirectory() as tmpdir:
+            image_path = os.path.join(tmpdir, "image.png")
+            cache_dir = os.path.join(tmpdir, "cache")
+            os.makedirs(cache_dir)
+            write_image(image_path, (16, 16), (123, 45, 67))
+            plain_cache, encrypted_cache = thumbnail_cache_paths(image_path, cache_dir)
+
+            with open(encrypted_cache, "wb") as f:
+                f.write(b"legacy webp bytes")
+
+            with self.assertRaises(Exception):
+                get_thumbnail_bytes(image_path, False, cache_dir=cache_dir)
+            self.assertFalse(os.path.exists(plain_cache))
+            self.assertTrue(os.path.exists(encrypted_cache))
 
     def test_delete_thumbnail_cache_for_paths_removes_plain_and_encrypted_variants(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -593,9 +739,13 @@ class ServiceLayerTests(unittest.TestCase):
         self.assertEqual(scan_payload.folders, ["/home/thhel/comfy/input", "/home/thhel/comfy/output"])
         self.assertEqual(delete_payload.folders, ["/home/thhel/comfy/input"])
 
-    def test_clear_cache_payload_helper(self):
+    def test_encrypt_decrypt_and_clear_cache_payload_helpers(self):
+        with isolated_privacy_keystore():
+            encrypted = encrypt_payload({"data": json.dumps(["/tmp/a.png"])})["encrypted"]
+            decrypted = decrypt_payload({"encrypted": encrypted})["data"]
         cleared: list[bool] = []
 
+        self.assertEqual(json.loads(decrypted), ["/tmp/a.png"])
         self.assertEqual(clear_cache_payload(lambda: cleared.append(True)), {"status": "success"})
         self.assertEqual(cleared, [True])
 
@@ -866,16 +1016,200 @@ class ServiceLayerTests(unittest.TestCase):
             self.assertTrue(result["duplicate"])
 
 
+class SelectorRouteTests(unittest.TestCase):
+    def setUp(self):
+        self._server_module = sys.modules.get("server")
+        self._aiohttp_module = sys.modules.get("aiohttp")
+        self._aiohttp_web_module = sys.modules.get("aiohttp.web")
+        self._old_privacy_env = {
+            "HELTO_PRIVACY_KEYSTORE": os.environ.get("HELTO_PRIVACY_KEYSTORE"),
+            "HELTO_PRIVACY_SESSION_DIR": os.environ.get("HELTO_PRIVACY_SESSION_DIR"),
+        }
+        self._privacy_tmp = tempfile.TemporaryDirectory()
+        privacy_root = Path(self._privacy_tmp.name)
+        os.environ["HELTO_PRIVACY_KEYSTORE"] = str(privacy_root / "missing_keystore.json")
+        os.environ["HELTO_PRIVACY_SESSION_DIR"] = str(privacy_root / "session")
+        fake_routes = types.SimpleNamespace(
+            get=lambda _path: (lambda fn: fn),
+            post=lambda _path: (lambda fn: fn),
+        )
+        fake_web = types.SimpleNamespace(
+            Response=self._response,
+            FileResponse=self._file_response,
+            json_response=self._json_response,
+        )
+        sys.modules["server"] = types.SimpleNamespace(PromptServer=types.SimpleNamespace(instance=types.SimpleNamespace(routes=fake_routes)))
+        sys.modules["aiohttp"] = types.SimpleNamespace(web=fake_web)
+        sys.modules["aiohttp.web"] = fake_web
+        sys.modules.pop("helto_selector_backend.routes", None)
+        self.routes = importlib.import_module("helto_selector_backend.routes")
+
+    def tearDown(self):
+        sys.modules.pop("helto_selector_backend.routes", None)
+        if self._server_module is None:
+            sys.modules.pop("server", None)
+        else:
+            sys.modules["server"] = self._server_module
+        if self._aiohttp_module is None:
+            sys.modules.pop("aiohttp", None)
+        else:
+            sys.modules["aiohttp"] = self._aiohttp_module
+        if self._aiohttp_web_module is None:
+            sys.modules.pop("aiohttp.web", None)
+        else:
+            sys.modules["aiohttp.web"] = self._aiohttp_web_module
+        for key, value in self._old_privacy_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        self._privacy_tmp.cleanup()
+
+    @staticmethod
+    def _response(text=None, status=200, body=None, content_type=None, headers=None):
+        return types.SimpleNamespace(text=text, status=status, body=body, content_type=content_type, headers=headers or {})
+
+    @staticmethod
+    def _file_response(path, headers=None):
+        return types.SimpleNamespace(status=200, path=path, headers=headers or {})
+
+    @staticmethod
+    def _json_response(payload, status=200):
+        return types.SimpleNamespace(status=status, payload=payload, text=json.dumps(payload))
+
+    @staticmethod
+    def _request(
+        path: str,
+        privacy: str = "false",
+        folders: list[str] | None = None,
+        headers: dict[str, str] | None = None,
+        cookies: dict[str, str] | None = None,
+    ):
+        query = {"path": path, "privacy": privacy}
+        if folders is not None:
+            query["folders"] = json.dumps(folders)
+        return types.SimpleNamespace(query=query, headers=headers or {}, cookies=cookies or {})
+
+    def _patch_authorized_roots(self, roots):
+        original = self.routes.authorize_selector_image_path
+
+        def authorize_with_test_roots(path, **kwargs):
+            kwargs.pop("authorized_roots", None)
+            return original(path, authorized_roots=roots, **kwargs)
+
+        self.routes.authorize_selector_image_path = authorize_with_test_roots
+        return original
+
+    def test_selector_file_routes_enforce_authorized_image_paths(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root_dir = os.path.join(tmpdir, "root")
+            outside_dir = os.path.join(tmpdir, "outside")
+            os.makedirs(root_dir)
+            os.makedirs(outside_dir)
+            image_path = os.path.join(root_dir, "image.png")
+            missing_path = os.path.join(root_dir, "missing.png")
+            notes_path = os.path.join(root_dir, "notes.txt")
+            outside_path = os.path.join(outside_dir, "secret.png")
+            write_image(image_path, (8, 8), (0, 0, 255))
+            write_image(outside_path, (8, 8), (255, 0, 0))
+            Path(notes_path).write_text("not an image", encoding="utf-8")
+
+            original_authorize = self._patch_authorized_roots([root_dir])
+            original_thumbnail_payload = self.routes.thumbnail_payload
+            original_mask_image_payload = self.routes.mask_image_payload
+            original_to_thread = self.routes.asyncio.to_thread
+            thumbnail_cache_dir = os.path.join(tmpdir, "thumbs")
+            self.routes.thumbnail_payload = lambda path, privacy: get_thumbnail_bytes(path, privacy, cache_dir=thumbnail_cache_dir)
+            self.routes.mask_image_payload = lambda _path: b"mask"
+
+            async def immediate_to_thread(func, *args, **kwargs):
+                return func(*args, **kwargs)
+
+            self.routes.asyncio.to_thread = immediate_to_thread
+            try:
+                for handler_name in ("view_image", "get_thumbnail", "get_mask"):
+                    response = asyncio.run(getattr(self.routes, handler_name)(self._request(outside_path)))
+                    self.assertEqual(response.status, 403)
+
+                self.assertEqual(asyncio.run(self.routes.view_image(self._request(notes_path))).status, 400)
+                self.assertEqual(asyncio.run(self.routes.view_image(self._request(missing_path))).status, 404)
+
+                view_response = asyncio.run(self.routes.view_image(self._request(image_path)))
+                thumbnail_response = asyncio.run(self.routes.get_thumbnail(self._request(image_path)))
+                mask_response = asyncio.run(self.routes.get_mask(self._request(image_path)))
+
+                self.assertEqual(view_response.status, 200)
+                self.assertEqual(view_response.path, image_path)
+                self.assertEqual(thumbnail_response.status, 200)
+                self.assertEqual(thumbnail_response.content_type, "image/webp")
+                self.assertEqual(mask_response.status, 200)
+                self.assertEqual(mask_response.content_type, "image/png")
+
+                configured_view = asyncio.run(self.routes.view_image(self._request(outside_path, folders=[outside_dir])))
+                configured_thumbnail = asyncio.run(self.routes.get_thumbnail(self._request(outside_path, folders=[outside_dir])))
+                configured_mask = asyncio.run(self.routes.get_mask(self._request(outside_path, folders=[outside_dir])))
+
+                self.assertEqual(configured_view.status, 403)
+                self.assertEqual(configured_thumbnail.status, 403)
+                self.assertEqual(configured_mask.status, 403)
+            finally:
+                self.routes.authorize_selector_image_path = original_authorize
+                self.routes.thumbnail_payload = original_thumbnail_payload
+                self.routes.mask_image_payload = original_mask_image_payload
+                self.routes.asyncio.to_thread = original_to_thread
+
+    def test_selector_private_routes_require_shared_privacy_token(self):
+        from helto_privacy import PRIVACY_TOKEN_HEADER, initialize_keystore
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_env = {
+                "HELTO_PRIVACY_KEYSTORE": os.environ.get("HELTO_PRIVACY_KEYSTORE"),
+                "HELTO_PRIVACY_SESSION_DIR": os.environ.get("HELTO_PRIVACY_SESSION_DIR"),
+            }
+            os.environ["HELTO_PRIVACY_KEYSTORE"] = str(Path(tmpdir) / "privacy_keystore.json")
+            os.environ["HELTO_PRIVACY_SESSION_DIR"] = str(Path(tmpdir) / "privacy_session")
+            root_dir = os.path.join(tmpdir, "root")
+            os.makedirs(root_dir)
+            image_path = os.path.join(root_dir, "image.png")
+            write_image(image_path, (8, 8), (0, 0, 255))
+            token = initialize_keystore("correct horse battery staple")["token"]
+
+            original_authorize = self._patch_authorized_roots([root_dir])
+            original_thumbnail_payload = self.routes.thumbnail_payload
+            original_to_thread = self.routes.asyncio.to_thread
+            self.routes.thumbnail_payload = lambda _path, _privacy: b"thumb"
+
+            async def immediate_to_thread(func, *args, **kwargs):
+                return func(*args, **kwargs)
+
+            self.routes.asyncio.to_thread = immediate_to_thread
+            try:
+                locked = asyncio.run(self.routes.get_thumbnail(self._request(image_path, privacy="true")))
+                unlocked = asyncio.run(self.routes.get_thumbnail(
+                    self._request(image_path, privacy="true", headers={PRIVACY_TOKEN_HEADER: token})
+                ))
+
+                self.assertEqual(locked.status, 401)
+                self.assertIn("PRIVACY_TOKEN_REQUIRED", locked.payload["error"])
+                self.assertEqual(unlocked.status, 200)
+                self.assertEqual(unlocked.content_type, "image/webp")
+            finally:
+                self.routes.authorize_selector_image_path = original_authorize
+                self.routes.thumbnail_payload = original_thumbnail_payload
+                self.routes.asyncio.to_thread = original_to_thread
+                for key, value in old_env.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+
+
 class NodeSchemaContractTests(unittest.TestCase):
     def test_node_schema_and_execute_contract_are_stable(self):
         node_module = self._import_node_with_fake_comfy_api()
 
         schema = node_module.HeltoImageSelector.define_schema()
-        result = asyncio.run(node_module.HeltoImageSelector.execute(
-            "[]",
-            "zoom to fit",
-            privacy_mode=False,
-        ))
+        result = node_module.HeltoImageSelector.execute("[]", "zoom to fit")
 
         self.assertEqual(schema.node_id, "HeltoImageSelector")
         self.assertEqual(schema.display_name, "Helto Multi-Image Selector")
@@ -885,9 +1219,6 @@ class NodeSchemaContractTests(unittest.TestCase):
             "edited_masks",
             "edited_bboxes",
             "batching_mode",
-            "privacy_mode",
-            "privacy_mode_reference",
-            "private_execution",
         ])
         self.assertEqual([output_def.id for output_def in schema.outputs], ["images", "image_batch", "masks", "mask_batch", "bboxes"])
         self.assertTrue(schema.outputs[0].is_output_list)
@@ -918,14 +1249,7 @@ class NodeSchemaContractTests(unittest.TestCase):
                 second: [{"x": 1, "y": 2, "width": 2, "height": 2}],
             })
 
-            aggregate = asyncio.run(node_module.HeltoImageSelector.execute(
-                selected,
-                "zoom to fit",
-                "{}",
-                edited_bboxes,
-                False,
-                privacy_mode=False,
-            ))
+            aggregate = node_module.HeltoImageSelector.execute(selected, "zoom to fit", "{}", edited_bboxes, False)
             self.assertEqual(len(aggregate[0]), 1)
             self.assertEqual(tuple(aggregate[0][0].shape), (2, 8, 10, 3))
             self.assertEqual(tuple(aggregate[1].shape), (2, 8, 10, 3))
@@ -937,14 +1261,7 @@ class NodeSchemaContractTests(unittest.TestCase):
                 [{"x": 2, "y": 3, "width": 6, "height": 2}],
             ]])
 
-            per_image = asyncio.run(node_module.HeltoImageSelector.execute(
-                selected,
-                "zoom to fit",
-                "{}",
-                edited_bboxes,
-                "true",
-                privacy_mode=False,
-            ))
+            per_image = node_module.HeltoImageSelector.execute(selected, "zoom to fit", "{}", edited_bboxes, "true")
             self.assertEqual(len(per_image[0]), 2)
             self.assertEqual([tuple(tensor.shape) for tensor in per_image[0]], [(1, 8, 10, 3), (1, 8, 10, 3)])
             self.assertEqual(tuple(per_image[1].shape), (2, 8, 10, 3))
@@ -976,16 +1293,10 @@ class NodeSchemaContractTests(unittest.TestCase):
             write_image(image_path, (4, 4), (255, 0, 0))
             selected = json.dumps([image_path])
 
-            first = node_module.HeltoImageSelector.fingerprint_inputs(
-                selected_images=selected,
-                privacy_mode=False,
-            )
+            first = node_module.HeltoImageSelector.fingerprint_inputs(selected_images=selected)
             stat = os.stat(image_path)
             os.utime(image_path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
-            second = node_module.HeltoImageSelector.fingerprint_inputs(
-                selected_images=selected,
-                privacy_mode=False,
-            )
+            second = node_module.HeltoImageSelector.fingerprint_inputs(selected_images=selected)
 
             self.assertNotEqual(first, second)
 
@@ -1007,13 +1318,11 @@ class NodeSchemaContractTests(unittest.TestCase):
                 first = node_module.HeltoImageSelector.fingerprint_inputs(
                     selected_images=selected,
                     edited_masks=edited_masks,
-                    privacy_mode=False,
                 )
                 Path(plain_mask).write_bytes(b"mask")
                 second = node_module.HeltoImageSelector.fingerprint_inputs(
                     selected_images=selected,
                     edited_masks=edited_masks,
-                    privacy_mode=False,
                 )
 
             self.assertNotEqual(first, second)
@@ -1140,6 +1449,55 @@ class NodeSchemaContractTests(unittest.TestCase):
             ],
         )
 
+    def test_load_video_private_listing_and_raw_media_require_token(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        routes = extension_module.HeltoLoadVideo.execute.__func__.__globals__["video_routes"]
+        denied = object()
+        private_request = types.SimpleNamespace(
+            query={"alias": "input", "recursive": "1", "privacy": "1"},
+            headers={},
+            cookies={},
+        )
+        downgrade_request = types.SimpleNamespace(
+            query={"alias": "input", "recursive": "1", "privacy": "0"},
+            headers={},
+            cookies={},
+        )
+
+        with patch.object(routes, "_require_privacy_token", return_value=denied):
+            self.assertIs(asyncio.run(routes.get_videos(private_request)), denied)
+            self.assertIs(asyncio.run(routes.get_video(private_request)), denied)
+            self.assertIs(asyncio.run(routes.get_videos(downgrade_request)), denied)
+            self.assertIs(asyncio.run(routes.get_video(downgrade_request)), denied)
+            self.assertIs(asyncio.run(routes.get_preview(downgrade_request)), denied)
+            self.assertIs(asyncio.run(routes.get_thumb(downgrade_request)), denied)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            video_path = Path(tmpdir) / "clip.mp4"
+            video_path.write_bytes(b"video")
+            with patch.object(routes, "_require_privacy_token", return_value=None), \
+                    patch.object(routes, "folder_by_alias", return_value=types.SimpleNamespace(path=tmpdir)), \
+                    patch.object(routes, "list_videos", return_value=[{
+                        "filename": "clip.mp4",
+                        "mtime": 1,
+                        "width": 1,
+                        "height": 1,
+                        "duration": 1,
+                        "fps": 1,
+                        "size": 5,
+                    }]), \
+                    patch.object(routes, "resolve_video_path", return_value=video_path), \
+                    patch.object(routes.web, "FileResponse", side_effect=lambda path, headers=None: {
+                        "path": path,
+                        "headers": headers or {},
+                    }):
+                listing_response = asyncio.run(routes.get_videos(private_request))
+                video_response = asyncio.run(routes.get_video(private_request))
+
+            listing = listing_response["args"][0]["videos"][0]
+            self.assertIn("privacy=1", listing["video_url"])
+            self.assertEqual(video_response["headers"]["Cache-Control"], "private, no-store")
+
     def test_prompt_enhancer_fingerprint_disables_cache_for_negative_seed_and_tracks_presets(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()
         prompt_node = next(
@@ -1230,11 +1588,11 @@ class NodeSchemaContractTests(unittest.TestCase):
         image = torch.ones((1, 2, 2, 3), dtype=torch.float32)
         mask = torch.tensor([[[0.0, 1.0], [0.0, 0.0]]], dtype=torch.float32)
 
-        result = asyncio.run(extension_module.ImageComparer.execute(
+        result = extension_module.ImageComparer.execute(
             original=image,
             original_mask=mask,
             privacy_mode=False,
-        ))
+        )
 
         self.assertEqual(result.kwargs["ui"]["b_images"], [])
         self.assertEqual(saved[0][0], "helto.compare.original")
@@ -1255,10 +1613,10 @@ class NodeSchemaContractTests(unittest.TestCase):
         module_globals["ui"].ImageSaveHelper.save_images = fake_save_images
         mask = torch.tensor([[0.0, 1.0], [0.25, 0.5]], dtype=torch.float32)
 
-        result = asyncio.run(extension_module.ImageComparer.execute(
+        result = extension_module.ImageComparer.execute(
             new_mask=mask,
             privacy_mode=False,
-        ))
+        )
 
         self.assertEqual(result.kwargs["ui"]["a_images"], [])
         self.assertEqual(saved[0][0], "helto.compare.new")
@@ -1289,9 +1647,9 @@ class NodeSchemaContractTests(unittest.TestCase):
         schema = text_node.define_schema()
         with isolated_privacy_keystore():
             result = text_node.execute({"prompt": "hello", "steps": 4, "flags": [True, None]})
-            decrypted_ui_text = PrivacyEnvelopeCodec("helto.comfyui-utils").decrypt_state(
-                result.kwargs["ui"]["helto_privacy_show_any"][0]["protected"]
-            )["value"]
+            decrypted_ui_text = decrypt_selection(
+                result.kwargs["ui"]["helto_privacy_show_any"][0]["encrypted"]
+            )
 
         self.assertEqual(schema.display_name, "Helto Privacy Show Any")
         self.assertEqual([input_def.id for input_def in schema.inputs], ["input", "encrypted_text_state"])
@@ -1300,7 +1658,7 @@ class NodeSchemaContractTests(unittest.TestCase):
         self.assertIn('"prompt": "hello"', result[0])
         ui_record = result.kwargs["ui"]["helto_privacy_show_any"][0]
         self.assertNotIn("text", ui_record)
-        self.assertNotIn("hello", ui_record["protected"])
+        self.assertNotIn("hello", ui_record["encrypted"])
         self.assertEqual(decrypted_ui_text, result[0])
 
     def test_prompt_enhancer_sends_substituted_prompt_to_provider(self):
@@ -1322,19 +1680,20 @@ class NodeSchemaContractTests(unittest.TestCase):
 
         globals_["PromptProviderRegistry"] = FakeRegistry
         try:
-            result = prompt_node.execute(
-                    privacy_mode=False,
+            with isolated_privacy_keystore():
+                encrypted_script = encrypt_selection("A {{style}} portrait")
+                result = prompt_node.execute(
                     seed=11,
                     generation_max_tokens=77,
                     prompt_type="image",
                     active_segment_index=999,
                     segment_generation_mode="single segment",
-                    script="A {{style}} portrait",
+                    script=encrypted_script,
                     external_prompt="   ",
                     variables=json.dumps([
                         {"name": "style", "mode": "fixed", "values": ["documentary"], "fixed_index": 0}
                     ]),
-            )
+                )
         finally:
             globals_["PromptProviderRegistry"] = original_provider
 
@@ -1361,16 +1720,17 @@ class NodeSchemaContractTests(unittest.TestCase):
 
         globals_["PromptProviderRegistry"] = FakeRegistry
         try:
-            result = prompt_node.execute(
-                    privacy_mode=False,
+            with isolated_privacy_keystore():
+                encrypted_script = encrypt_selection("Internal {{style}} portrait")
+                result = prompt_node.execute(
                     seed=11,
                     prompt_type="image",
-                    script="Internal {{style}} portrait",
+                    script=encrypted_script,
                     external_prompt=" External {{style}} storyboard ",
                     variables=json.dumps([
                         {"name": "style", "mode": "fixed", "values": ["documentary"], "fixed_index": 0}
                     ]),
-            )
+                )
         finally:
             globals_["PromptProviderRegistry"] = original_provider
 
@@ -1414,7 +1774,6 @@ class NodeSchemaContractTests(unittest.TestCase):
         globals_["PromptProviderRegistry"] = FailingRegistry
         try:
             result = prompt_node.execute(
-                privacy_mode=False,
                 clip=clip,
                 seed=42,
                 generation_max_tokens=64,
@@ -1468,7 +1827,6 @@ class NodeSchemaContractTests(unittest.TestCase):
         globals_["PromptProviderRegistry"] = FailingRegistry
         try:
             result = prompt_node.execute(
-                privacy_mode=False,
                 clip=clip,
                 seed=7,
                 generation_max_tokens=0,
@@ -1527,7 +1885,6 @@ class NodeSchemaContractTests(unittest.TestCase):
         globals_["provider_model_supports_images"] = lambda provider, model_id, backend="": model_id == "qwen3_vl_4b_fast"
         try:
             result = prompt_node.execute(
-                privacy_mode=False,
                 clip=clip,
                 images=[object()],
                 prompt_type="image",
@@ -1560,12 +1917,7 @@ class NodeSchemaContractTests(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(RuntimeError, "Connected CLIP input must support ComfyUI text generation"):
-            prompt_node.execute(
-                privacy_mode=False,
-                clip=object(),
-                prompt_type="image",
-                script="A quiet forest",
-            )
+            prompt_node.execute(clip=object(), prompt_type="image", script="A quiet forest")
 
     def test_prompt_enhancer_video_script_sends_selected_segment_to_provider(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()
@@ -1596,7 +1948,6 @@ Second beat moves toward the doorway. @image1:end
         globals_["PromptProviderRegistry"] = FakeRegistry
         try:
             result = prompt_node.execute(
-                privacy_mode=False,
                 seed=7,
                 images=[object()],
                 prompt_type="multi scene video",
@@ -1648,7 +1999,6 @@ Second beat moves toward the doorway. @image1:end
         globals_["PromptProviderRegistry"] = FakeRegistry
         try:
             result = prompt_node.execute(
-                privacy_mode=False,
                 seed=7,
                 images=[object()],
                 prompt_type="video",
@@ -1728,7 +2078,6 @@ Second beat moves toward the doorway. @image1:end
         globals_["PromptEnhancerProgress"] = TrackingProgress
         try:
             prompt_node.execute(
-                privacy_mode=False,
                 seed=7,
                 prompt_type="video",
                 segment_generation_mode="all segments",
@@ -1799,7 +2148,6 @@ Second beat moves toward the doorway. @image1:end
         globals_["provider_model_supports_images"] = lambda provider, model_id, backend="": model_id == "qwen3_vl_4b_fast"
         try:
             prompt_node.execute(
-                privacy_mode=False,
                 seed=7,
                 images=[object(), object()],
                 prompt_type="video",
@@ -1875,7 +2223,6 @@ Second beat moves toward the doorway. @image1:end
         globals_["provider_model_supports_images"] = lambda provider, model_id, backend="": model_id == "qwen3_vl_4b_fast"
         try:
             prompt_node.execute(
-                privacy_mode=False,
                 images=[object(), object()],
                 prompt_type="image",
                 vision_context_mode="separate vision model",
@@ -1904,7 +2251,6 @@ Second beat moves toward the doorway. @image1:end
 
         with self.assertRaisesRegex(ValueError, "outside the available segment range"):
             prompt_node.execute(
-                privacy_mode=False,
                 prompt_type="video",
                 active_segment_index=2,
                 segment_generation_mode="single segment",
@@ -1939,7 +2285,6 @@ Second beat moves toward the doorway. @image1:end
         globals_["provider_model_supports_images"] = lambda provider, model_id, backend="": model_id == "qwen3_vl_4b_fast"
         try:
             result = prompt_node.execute(
-                privacy_mode=False,
                 seed=3,
                 images=[object(), object()],
                 prompt_type="video",
@@ -1985,7 +2330,6 @@ Second beat moves toward the doorway. @image1:end
         globals_["provider_model_supports_images"] = lambda provider, model_id, backend="": True
         try:
             result = prompt_node.execute(
-                privacy_mode=False,
                 seed=3,
                 images=[object(), object()],
                 prompt_type="video",
@@ -2038,7 +2382,6 @@ Second beat moves toward the doorway. @image1:end
         globals_["provider_model_supports_images"] = lambda provider, model_id, backend="": model_id == "qwen3_vl_4b_fast"
         try:
             result = prompt_node.execute(
-                privacy_mode=False,
                 seed=3,
                 generation_max_tokens=256,
                 images=[object(), object()],
@@ -2095,7 +2438,6 @@ Second beat moves toward the doorway. @image1:end
         globals_["provider_model_supports_images"] = lambda provider, model_id, backend="": model_id == "qwen3_vl_4b_fast"
         try:
             result = prompt_node.execute(
-                privacy_mode=False,
                 seed=3,
                 images=[object(), object()],
                 prompt_type="video",
@@ -2153,7 +2495,6 @@ Second beat moves toward the doorway. @image1:end
         globals_["provider_model_supports_images"] = lambda provider, model_id, backend="": model_id == "qwen3_vl_4b_fast"
         try:
             result = prompt_node.execute(
-                privacy_mode=False,
                 images=[object(), object()],
                 prompt_type="image",
                 vision_context_mode="separate vision model",
@@ -2173,207 +2514,66 @@ Second beat moves toward the doorway. @image1:end
         self.assertEqual(result[7], "two reference portraits with warm studio lighting")
 
     def test_privacy_show_any_summarizes_unhelpful_object_values(self):
-        extension_module = self._import_extension_with_fake_comfy_runtime()
-        text_node = next(
-            node_cls
-            for node_cls in asyncio.run(extension_module.HeltoUtilsExtension().get_node_list())
-            if node_cls.define_schema().node_id == "HeltoPrivacyShowAny"
-        )
-
-        class ModelLike:
-            pass
-
         with isolated_privacy_keystore():
+            extension_module = self._import_extension_with_fake_comfy_runtime()
+            text_node = next(
+                node_cls
+                for node_cls in asyncio.run(extension_module.HeltoUtilsExtension().get_node_list())
+                if node_cls.define_schema().node_id == "HeltoPrivacyShowAny"
+            )
+
+            class ModelLike:
+                pass
+
             result = text_node.execute(ModelLike())
 
         self.assertIn("cannot be converted to meaningful text", result[0])
 
-    def test_save_video_private_encoder_returns_animated_bytes(self):
+    def test_save_video_private_preview_only_returns_no_plain_filenames(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()
         node_cls = extension_module.SaveVideoAdvanced
-        frames = [torch.zeros((4, 6, 3)), torch.ones((4, 6, 3))]
-
-        encoded = node_cls._encode_private_preview_bytes(
-            frames=frames,
-            audio=None,
-            filename_prefix="synthetic",
-            counter=1,
-            frame_rate=2.0,
-            loop_count=0,
-            format="image/webp",
-            format_kwargs={"lossless": True},
-        )
-
-        with Image.open(BytesIO(encoded)) as preview:
-            self.assertEqual(preview.format, "WEBP")
-            self.assertEqual(preview.size, (6, 4))
-
-    def test_save_video_private_ffmpeg_encoder_uses_anonymous_output(self):
-        extension_module = self._import_extension_with_fake_comfy_runtime()
-        node_cls = extension_module.SaveVideoAdvanced
-        globals_ = node_cls._encode_private_preview_bytes.__func__.__globals__
-        if globals_["_find_ffmpeg"]() is None:
-            self.skipTest("ffmpeg is unavailable")
-
-        with patch.dict(
-            globals_,
-            {"ProgressBar": lambda _total: types.SimpleNamespace(update=lambda _value: None)},
-        ):
-            encoded = node_cls._encode_private_preview_bytes(
-                frames=[torch.zeros((8, 8, 3)), torch.ones((8, 8, 3))],
-                audio=None,
-                filename_prefix="synthetic",
-                counter=1,
-                frame_rate=2.0,
-                loop_count=0,
-                format="video/h264-mp4",
-                format_kwargs={},
-            )
-
-        self.assertIn(b"ftyp", encoded[:64])
-
-    def test_save_video_private_audio_mux_uses_anonymous_output(self):
-        extension_module = self._import_extension_with_fake_comfy_runtime()
-        node_cls = extension_module.SaveVideoAdvanced
-        globals_ = node_cls._encode_private_preview_bytes.__func__.__globals__
-        if globals_["_find_ffmpeg"]() is None:
-            self.skipTest("ffmpeg is unavailable")
-
-        with patch.dict(
-            globals_,
-            {"ProgressBar": lambda _total: types.SimpleNamespace(update=lambda _value: None)},
-        ):
-            encoded = node_cls._encode_private_preview_bytes(
-                frames=[torch.zeros((8, 8, 3)), torch.ones((8, 8, 3))],
-                audio={
-                    "waveform": torch.zeros((1, 1, 4_000)),
-                    "sample_rate": 8_000,
-                },
-                filename_prefix="synthetic",
-                counter=1,
-                frame_rate=2.0,
-                loop_count=0,
-                format="video/h264-mp4",
-                format_kwargs={},
-            )
-
-        self.assertIn(b"ftyp", encoded[:64])
-
-    def test_media_nodes_bind_existing_encoders_to_managed_facade(self):
-        extension_module = self._import_extension_with_fake_comfy_runtime()
-        calls = []
-
-        class Record:
-            def __init__(self, index):
-                self.index = index
-
-            def to_record(self):
-                return {"private": True, "artifact": self.index}
-
-        class Managed:
-            async def publish_encoded_previews(self, node_class, encode, **_kwargs):
-                values = encode()
-                calls.append((node_class, values))
-                return [Record(index) for index, _value in enumerate(values)]
-
-            async def load_video_thumbnail(self, cache_key, revision, encode, **_kwargs):
-                value = encode()
-                calls.append(("HeltoLoadVideo", cache_key, revision, value))
-                return Record(0), value
-
-        managed = Managed()
-        image_globals = extension_module.ImageComparer.execute.__func__.__globals__
-        image_helper = image_globals["ui"].ImageSaveHelper
-        original_convert = image_helper._convert_tensor_to_pil
-        image_helper._convert_tensor_to_pil = staticmethod(
-            lambda _image: Image.new("RGB", (3, 2))
-        )
-        try:
-            image_records = asyncio.run(
-                image_globals["_managed_preview_records"](
-                    torch.zeros((1, 2, 3, 3)),
-                    extension_module.ImageComparer,
-                    managed,
-                    owner_key="image/revision",
-                )
-            )
-            save_records = asyncio.run(
-                extension_module.SaveImageAdvanced._managed_private_preview_records(
-                    torch.zeros((1, 2, 3, 3)),
-                    managed,
-                    owner_key="save/revision",
-                )
-            )
-        finally:
-            image_helper._convert_tensor_to_pil = original_convert
-
-        class Video:
-            def save_to(self, target, **_kwargs):
-                target.write(b"synthetic-mp4")
-
-        video_record = asyncio.run(
-            extension_module.VideoComparer._managed_preview_record(
-                Video(),
-                "video_1",
-                24.0,
-                managed,
-                owner_key="video/revision",
-            )
-        )
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            source = Path(tmpdir) / "source.mp4"
-            source.write_bytes(b"synthetic-source")
-            load_globals = extension_module.HeltoLoadVideo.execute.__func__.__globals__[
-                "preview_result"
-            ].__globals__
-            original = load_globals["generate_thumbnail_bytes"]
-            load_globals["generate_thumbnail_bytes"] = lambda *_args, **_kwargs: b"webp"
+            privacy_globals = self._configure_private_video_test_runtime(node_cls, tmpdir)
+            original_save_video = node_cls.__dict__["_save_video"]
+
+            def fake_save_video(cls, frames, audio, save_dir, filename_prefix, counter, **_kwargs):
+                output_path = os.path.join(save_dir, f"{filename_prefix}_{counter:05}.mp4")
+                with open(output_path, "wb") as stream:
+                    stream.write(b"plain preview video")
+                return [output_path]
+
+            node_cls._save_video = classmethod(fake_save_video)
+            node_cls.state["previews"].clear()
             try:
-                thumbnail = asyncio.run(
-                    load_globals["managed_thumbnail"](source, managed)
-                )
+                result = node_cls.execute(images=["frame"], save_output=False, privacy_mode=True)
             finally:
-                load_globals["generate_thumbnail_bytes"] = original
+                node_cls._save_video = original_save_video
 
-        self.assertEqual(image_records, [{"private": True, "artifact": 0}])
-        self.assertEqual(save_records, [{"private": True, "artifact": 0}])
-        self.assertEqual(video_record, {"private": True, "artifact": 0})
-        self.assertEqual(thumbnail[1], b"webp")
-        self.assertEqual(
-            [call[0] for call in calls],
-            [
-                "HeltoImageComparer",
-                "HeltoSaveImageAdvanced",
-                "HeltoVideoComparer",
-                "HeltoLoadVideo",
-            ],
-        )
+            self.assertEqual(result[2], (False, []))
+            record = result.kwargs["ui"]["images"][0]
+            payload = privacy_globals["verify_media_token"](record["token"])
+            encrypted_path = Path(payload["path"])
 
-    def test_save_image_public_preview_uses_dedicated_temp_folder(self):
-        extension_module = self._import_extension_with_fake_comfy_runtime()
-        node_cls = extension_module.SaveImageAdvanced
-        globals_ = node_cls._managed_public_preview_records.__func__.__globals__
-        helper = globals_["ui"].ImageSaveHelper
-        original = helper.save_images
-        calls = []
-        helper.save_images = lambda images, **kwargs: calls.append((images, kwargs)) or []
-        try:
-            node_cls._managed_public_preview_records(["image"], "../private-name")
-        finally:
-            helper.save_images = original
-
-        self.assertEqual(
-            calls[0][1]["filename_prefix"],
-            "helto_save_image_advanced/private-name",
-        )
-        self.assertEqual(calls[0][1]["folder_type"], globals_["io"].FolderType.temp)
+            self.assertTrue(record["private"])
+            self.assertTrue(payload["encrypted"])
+            self.assertEqual(record["content_type"], "video/mp4")
+            self.assertTrue(encrypted_path.is_file())
+            self.assertEqual(
+                privacy_globals["decrypt_bytes"](encrypted_path.read_bytes()),
+                b"plain preview video",
+            )
+            plain_mp4s = [
+                path for path in Path(tmpdir).rglob("*.mp4")
+                if "helto_private" not in path.parts
+            ]
+            self.assertEqual(plain_mp4s, [])
 
     def test_save_image_can_preview_without_saving_output(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()
         node_cls = extension_module.SaveImageAdvanced
         original_save_images = node_cls.__dict__["_save_images"]
-        original_private_records = node_cls.__dict__["_managed_private_preview_records"]
+        original_private_records = node_cls.__dict__["_private_preview_records"]
         original_hidden = getattr(node_cls, "hidden", None)
         saved_calls = []
         preview_calls = []
@@ -2382,33 +2582,33 @@ Second beat moves toward the doorway. @image1:end
             saved_calls.append((images, save_dir, filename_prefix))
             raise AssertionError("save_image=False should not save output images")
 
-        async def fake_private_records(cls, images, _managed_artifacts, *, owner_key, **_kwargs):
-            preview_calls.append((images, owner_key))
-            return [{"private": True, "artifactKind": "save-image-preview", "artifact": {"synthetic": True}}]
+        def fake_private_records(cls, images, filename_prefix):
+            preview_calls.append((images, filename_prefix))
+            return [{"filename": f"{filename_prefix}_00001.png"}]
 
         node_cls._save_images = classmethod(fake_save_images)
-        node_cls._managed_private_preview_records = classmethod(fake_private_records)
+        node_cls._private_preview_records = classmethod(fake_private_records)
         node_cls.hidden = types.SimpleNamespace(unique_id="preview-only-image-node")
         node_cls.state["previews"].clear()
         node_cls.state["media"].clear()
         node_cls.state["releases"].clear()
         try:
             images = ["image-tensor"]
-            result = asyncio.run(node_cls.execute(
+            result = node_cls.execute(
                 images=images,
                 folder="relative-folder-is-ignored",
                 filename_prefix="preview",
                 save_image=False,
-            ))
+            )
         finally:
             node_cls._save_images = original_save_images
-            node_cls._managed_private_preview_records = original_private_records
+            node_cls._private_preview_records = original_private_records
             node_cls.hidden = original_hidden
 
         self.assertEqual(result[0], images)
         self.assertEqual(saved_calls, [])
-        self.assertEqual(preview_calls, [(images, "preview-only-image-node")])
-        self.assertEqual(result.kwargs["ui"]["helto_private_images"][0]["artifactKind"], "save-image-preview")
+        self.assertEqual(preview_calls, [(images, "preview")])
+        self.assertEqual(result.kwargs["ui"]["helto_private_images"], [{"filename": "preview_00001.png"}])
         control = result.kwargs["ui"]["helto_pause_control"][0]
         self.assertTrue(control["has_media"])
         self.assertFalse(control["paused"])
@@ -2418,24 +2618,22 @@ Second beat moves toward the doorway. @image1:end
         extension_module = self._import_extension_with_fake_comfy_runtime()
         node_cls = extension_module.SaveImageAdvanced
         original_save_images = node_cls.__dict__["_save_images"]
-        original_private_records = node_cls.__dict__["_managed_private_preview_records"]
+        original_private_records = node_cls.__dict__["_private_preview_records"]
         original_hidden = getattr(node_cls, "hidden", None)
         saved_calls = []
 
         node_cls._save_images = classmethod(lambda cls, images, save_dir, filename_prefix: saved_calls.append(images) or [])
-        async def fake_private_records(cls, images, _managed_artifacts, **_kwargs):
-            return []
-        node_cls._managed_private_preview_records = classmethod(fake_private_records)
+        node_cls._private_preview_records = classmethod(lambda cls, images, filename_prefix: [])
         node_cls.hidden = types.SimpleNamespace(unique_id="dimensions-node")
         node_cls.state["previews"].clear()
         node_cls.state["media"].clear()
         node_cls.state["releases"].clear()
         try:
             images = torch.zeros((2, 17, 23, 3), dtype=torch.float32)
-            result = asyncio.run(node_cls.execute(images=images))
+            result = node_cls.execute(images=images)
         finally:
             node_cls._save_images = original_save_images
-            node_cls._managed_private_preview_records = original_private_records
+            node_cls._private_preview_records = original_private_records
             node_cls.hidden = original_hidden
 
         self.assertIs(result[0], images)
@@ -2488,24 +2686,22 @@ Second beat moves toward the doorway. @image1:end
         module_globals = node_cls.execute.__func__.__globals__
         execution_blocker = module_globals["ExecutionBlocker"]
         original_save_images = node_cls.__dict__["_save_images"]
-        original_private_records = node_cls.__dict__["_managed_private_preview_records"]
+        original_private_records = node_cls.__dict__["_private_preview_records"]
         original_hidden = getattr(node_cls, "hidden", None)
         saved_calls = []
 
         node_cls._save_images = classmethod(lambda cls, images, save_dir, filename_prefix: saved_calls.append(images) or [])
-        async def fake_private_records(cls, images, _managed_artifacts, **_kwargs):
-            return []
-        node_cls._managed_private_preview_records = classmethod(fake_private_records)
+        node_cls._private_preview_records = classmethod(lambda cls, images, filename_prefix: [])
         node_cls.hidden = types.SimpleNamespace(unique_id="pause-node")
         node_cls.state["previews"].clear()
         node_cls.state["media"].clear()
         node_cls.state["releases"].clear()
         try:
             images = ["image-tensor"]
-            result = asyncio.run(node_cls.execute(images=images, pause_mode=True))
+            result = node_cls.execute(images=images, pause_mode=True)
         finally:
             node_cls._save_images = original_save_images
-            node_cls._managed_private_preview_records = original_private_records
+            node_cls._private_preview_records = original_private_records
             node_cls.hidden = original_hidden
 
         self.assertIsInstance(result[0], execution_blocker)
@@ -2523,27 +2719,25 @@ Second beat moves toward the doorway. @image1:end
         extension_module = self._import_extension_with_fake_comfy_runtime()
         node_cls = extension_module.SaveImageAdvanced
         original_save_images = node_cls.__dict__["_save_images"]
-        original_private_records = node_cls.__dict__["_managed_private_preview_records"]
+        original_private_records = node_cls.__dict__["_private_preview_records"]
         original_hidden = getattr(node_cls, "hidden", None)
         saved_calls = []
 
         node_cls._save_images = classmethod(lambda cls, images, save_dir, filename_prefix: saved_calls.append(images) or [])
-        async def fake_private_records(cls, images, _managed_artifacts, **_kwargs):
-            return []
-        node_cls._managed_private_preview_records = classmethod(fake_private_records)
+        node_cls._private_preview_records = classmethod(lambda cls, images, filename_prefix: [])
         node_cls.hidden = types.SimpleNamespace(unique_id="release-node")
         node_cls.state["previews"].clear()
         node_cls.state["media"].clear()
         node_cls.state["releases"].clear()
         try:
             images = torch.zeros((1, 19, 31, 3), dtype=torch.float32)
-            first = asyncio.run(node_cls.execute(images=images, pause_mode=False))
+            first = node_cls.execute(images=images, pause_mode=False)
             revision = first.kwargs["ui"]["helto_pause_control"][0]["revision"]
             release = node_cls.request_release("release-node", revision)
-            second = asyncio.run(node_cls.execute(images=None, pause_mode=True, release_token=release["release_token"]))
+            second = node_cls.execute(images=None, pause_mode=True, release_token=release["release_token"])
         finally:
             node_cls._save_images = original_save_images
-            node_cls._managed_private_preview_records = original_private_records
+            node_cls._private_preview_records = original_private_records
             node_cls.hidden = original_hidden
 
         self.assertTrue(release["ok"])
@@ -2563,27 +2757,25 @@ Second beat moves toward the doorway. @image1:end
         extension_module = self._import_extension_with_fake_comfy_runtime()
         node_cls = extension_module.SaveImageAdvanced
         original_save_images = node_cls.__dict__["_save_images"]
-        original_private_records = node_cls.__dict__["_managed_private_preview_records"]
+        original_private_records = node_cls.__dict__["_private_preview_records"]
         original_hidden = getattr(node_cls, "hidden", None)
         saved_calls = []
 
         node_cls._save_images = classmethod(lambda cls, images, save_dir, filename_prefix: saved_calls.append(images) or [])
-        async def fake_private_records(cls, images, _managed_artifacts, **_kwargs):
-            return []
-        node_cls._managed_private_preview_records = classmethod(fake_private_records)
+        node_cls._private_preview_records = classmethod(lambda cls, images, filename_prefix: [])
         node_cls.hidden = types.SimpleNamespace(unique_id="paused-release-node")
         node_cls.state["previews"].clear()
         node_cls.state["media"].clear()
         node_cls.state["releases"].clear()
         try:
             images = torch.zeros((1, 21, 33, 3), dtype=torch.float32)
-            first = asyncio.run(node_cls.execute(images=images, pause_mode=True))
+            first = node_cls.execute(images=images, pause_mode=True)
             revision = first.kwargs["ui"]["helto_pause_control"][0]["revision"]
             release = node_cls.request_release("paused-release-node", revision)
-            second = asyncio.run(node_cls.execute(images=None, pause_mode=True, release_token=release["release_token"]))
+            second = node_cls.execute(images=None, pause_mode=True, release_token=release["release_token"])
         finally:
             node_cls._save_images = original_save_images
-            node_cls._managed_private_preview_records = original_private_records
+            node_cls._private_preview_records = original_private_records
             node_cls.hidden = original_hidden
 
         self.assertTrue(release["ok"])
@@ -2636,64 +2828,398 @@ Second beat moves toward the doorway. @image1:end
                 self.assertNotIn("transaction-node", node_cls.state["releases"])
                 node_cls.state["media"].pop("transaction-node", None)
 
-    def test_save_video_managed_pause_control_releases_managed_replay(self):
+    def test_save_video_pause_mode_writes_encrypted_bundle_and_blocks_downstream_quietly(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()
         node_cls = extension_module.SaveVideoAdvanced
         module_globals = node_cls.execute.__func__.__globals__
-        original_artifacts = module_globals["utils_media_artifacts"]
+        execution_blocker = module_globals["ExecutionBlocker"]
+        original_save_video = node_cls.__dict__["_save_video"]
         original_hidden = getattr(node_cls, "hidden", None)
-        node_id = "managed-video-release-node"
-        payload = {
-            "images": ["synthetic-frames"],
-            "audio": {"synthetic": "audio"},
-            "filenames": (False, []),
-        }
 
-        class ManagedArtifacts:
-            async def consume_replay(self, supplied_node_id, revision, privacy_mode):
-                assert supplied_node_id == node_id
-                assert revision == 3
-                assert privacy_mode is True
-                return payload
+        with tempfile.TemporaryDirectory() as tmpdir:
+            privacy_globals = self._configure_private_video_test_runtime(node_cls, tmpdir)
+            saved_calls = []
 
-        node_cls.hidden = types.SimpleNamespace(unique_id=node_id)
-        node_cls.state["media"][node_id] = {
-            "managed": True,
-            "privacy_mode": True,
-            "revision": 3,
-            "paused": True,
-        }
-        node_cls.state["previews"][node_id] = {"synthetic": ["preview"]}
-        node_cls.state["releases"].pop(node_id, None)
-        module_globals["utils_media_artifacts"] = lambda: ManagedArtifacts()
-        try:
-            paused = node_cls._pause_control_payload(node_id, mode="paused")
-            release = node_cls.request_release(node_id, 3)
-            result = asyncio.run(
-                node_cls.execute(
+            def fake_save_video(cls, frames, audio, save_dir, filename_prefix, counter, **_kwargs):
+                saved_calls.append((frames, audio))
+                output_path = os.path.join(save_dir, f"{filename_prefix}_{counter:05}.mp4")
+                with open(output_path, "wb") as stream:
+                    stream.write(b"private pause preview")
+                return [output_path]
+
+            node_cls._save_video = classmethod(fake_save_video)
+            node_cls.hidden = types.SimpleNamespace(unique_id="video-pause-node")
+            node_cls.state["previews"].clear()
+            node_cls.state["media"].clear()
+            node_cls.state["releases"].clear()
+            try:
+                images = torch.arange(24, dtype=torch.float32).reshape(2, 2, 2, 3)
+                audio = {
+                    "waveform": torch.arange(8, dtype=torch.float32).reshape(1, 2, 4),
+                    "sample_rate": 44100,
+                }
+                result = node_cls.execute(
+                    images=images,
+                    audio=audio,
+                    save_output=False,
+                    pause_mode=True,
+                    privacy_mode=True,
+                )
+            finally:
+                node_cls._save_video = original_save_video
+                node_cls.hidden = original_hidden
+
+            self.assertIsInstance(result[0], execution_blocker)
+            self.assertIsInstance(result[1], execution_blocker)
+            self.assertIsInstance(result[2], execution_blocker)
+            self.assertEqual(len(saved_calls), 1)
+
+            stored = node_cls.state["media"]["video-pause-node"]
+            bundle_path = Path(stored["path"])
+            self.assertTrue(stored["encrypted"])
+            self.assertTrue(stored["paused"])
+            self.assertTrue(bundle_path.is_file())
+            self.assertEqual(bundle_path.suffix, ".enc")
+            self.assertEqual(
+                bundle_path.parent,
+                Path(tmpdir) / "helto_private" / "HeltoSaveVideoAdvanced" / "replay",
+            )
+
+            plaintext = privacy_globals["decrypt_bytes"](
+                bundle_path.read_bytes(),
+                purpose=privacy_globals["SAVE_VIDEO_REPLAY_PURPOSE"],
+            )
+            bundle = torch.load(BytesIO(plaintext), map_location="cpu")
+            self.assertTrue(torch.equal(bundle["images"], images))
+            self.assertTrue(torch.equal(bundle["audio"]["waveform"], audio["waveform"]))
+            self.assertEqual(bundle["audio"]["sample_rate"], audio["sample_rate"])
+            self.assertEqual(bundle["filenames"], (False, []))
+
+            control = result.kwargs["ui"]["helto_pause_control"][0]
+            self.assertTrue(control["has_media"])
+            self.assertTrue(control["paused"])
+            self.assertEqual(control["mode"], "paused")
+
+            plain_bundles = [
+                path for path in Path(tmpdir).rglob("*.pt")
+                if "helto_private" not in path.parts
+            ]
+            self.assertEqual(plain_bundles, [])
+
+    def test_save_video_release_reemits_plain_bundle_without_saving_again(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        node_cls = extension_module.SaveVideoAdvanced
+        original_save_video = node_cls.__dict__["_save_video"]
+        original_hidden = getattr(node_cls, "hidden", None)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._configure_private_video_test_runtime(node_cls, tmpdir)
+            saved_calls = []
+
+            def fake_save_video(cls, frames, audio, save_dir, filename_prefix, counter, **_kwargs):
+                saved_calls.append((frames, audio))
+                os.makedirs(save_dir, exist_ok=True)
+                output_path = os.path.join(save_dir, f"{filename_prefix}_{counter:05}.mp4")
+                with open(output_path, "wb") as stream:
+                    stream.write(b"saved replay video")
+                return [output_path]
+
+            node_cls._save_video = classmethod(fake_save_video)
+            node_cls.hidden = types.SimpleNamespace(unique_id="video-release-node")
+            node_cls.state["previews"].clear()
+            node_cls.state["media"].clear()
+            node_cls.state["releases"].clear()
+            try:
+                images = torch.arange(24, dtype=torch.float32).reshape(2, 2, 2, 3)
+                audio = {
+                    "waveform": torch.arange(8, dtype=torch.float32).reshape(1, 2, 4),
+                    "sample_rate": 48000,
+                }
+                first = node_cls.execute(
+                    images=images,
+                    audio=audio,
+                    folder=os.path.join(tmpdir, "output"),
+                    save_output=True,
+                    pause_mode=False,
+                    privacy_mode=False,
+                )
+                revision = first.kwargs["ui"]["helto_pause_control"][0]["revision"]
+                release = node_cls.request_release("video-release-node", revision)
+                second = node_cls.execute(
                     images=None,
+                    audio=None,
                     pause_mode=True,
                     release_token=release["release_token"],
                 )
-            )
-        finally:
-            module_globals["utils_media_artifacts"] = original_artifacts
-            node_cls.hidden = original_hidden
-            node_cls.state["media"].pop(node_id, None)
-            node_cls.state["previews"].pop(node_id, None)
-            node_cls.state["releases"].pop(node_id, None)
+            finally:
+                node_cls._save_video = original_save_video
+                node_cls.hidden = original_hidden
 
-        self.assertTrue(paused["has_media"])
-        self.assertTrue(paused["paused"])
-        self.assertTrue(release["ok"])
-        self.assertEqual(result[0], payload["images"])
-        self.assertEqual(result[1], payload["audio"])
-        self.assertEqual(result[2], payload["filenames"])
-        control = result.kwargs["ui"]["helto_pause_control"][0]
-        self.assertEqual(control["mode"], "released")
-        self.assertTrue(control["released"])
-        self.assertTrue(control["has_media"])
-        self.assertFalse(control["paused"])
+            self.assertTrue(release["ok"])
+            self.assertEqual(len(saved_calls), 1)
+            self.assertTrue(torch.equal(second[0], images))
+            self.assertTrue(torch.equal(second[1]["waveform"], audio["waveform"]))
+            self.assertEqual(second[1]["sample_rate"], audio["sample_rate"])
+            self.assertEqual(second[2], first[2])
+            self.assertTrue(second[2][0])
+            self.assertEqual(Path(second[2][1][0]).read_bytes(), b"saved replay video")
+
+            stored = node_cls.state["media"]["video-release-node"]
+            self.assertFalse(stored["encrypted"])
+            self.assertFalse(stored["paused"])
+            self.assertTrue(Path(stored["path"]).is_file())
+            self.assertEqual(
+                Path(stored["path"]).parent,
+                Path(tmpdir) / "helto_cache" / "HeltoSaveVideoAdvanced" / "replay",
+            )
+            self.assertNotIn("video-release-node", node_cls.state["releases"])
+
+            control = second.kwargs["ui"]["helto_pause_control"][0]
+            self.assertEqual(control["mode"], "released")
+            self.assertTrue(control["released"])
+            self.assertFalse(control["paused"])
+
+    def test_save_video_replay_materializes_lazy_audio_mapping_before_serializing(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        node_cls = extension_module.SaveVideoAdvanced
+        original_save_video = node_cls.__dict__["_save_video"]
+        original_hidden = getattr(node_cls, "hidden", None)
+
+        class FakeLazyAudio(Mapping):
+            def __init__(self, payload):
+                self.payload = payload
+                self.resolved = False
+
+            def __getitem__(self, key):
+                self.resolved = True
+                return self.payload[key]
+
+            def __iter__(self):
+                self.resolved = True
+                return iter(self.payload)
+
+            def __len__(self):
+                self.resolved = True
+                return len(self.payload)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._configure_private_video_test_runtime(node_cls, tmpdir)
+
+            def fake_save_video(cls, frames, audio, save_dir, filename_prefix, counter, **_kwargs):
+                _ = audio["waveform"]
+                os.makedirs(save_dir, exist_ok=True)
+                output_path = os.path.join(save_dir, f"{filename_prefix}_{counter:05}.mp4")
+                with open(output_path, "wb") as stream:
+                    stream.write(b"lazy audio video")
+                return [output_path]
+
+            node_cls._save_video = classmethod(fake_save_video)
+            node_cls.hidden = types.SimpleNamespace(unique_id="video-lazy-audio-node")
+            node_cls.state["previews"].clear()
+            node_cls.state["media"].clear()
+            node_cls.state["releases"].clear()
+            try:
+                images = torch.arange(24, dtype=torch.float32).reshape(2, 2, 2, 3)
+                audio_payload = {
+                    "waveform": torch.arange(8, dtype=torch.float32).reshape(1, 2, 4),
+                    "sample_rate": 44100,
+                }
+                audio = FakeLazyAudio(audio_payload)
+                first = node_cls.execute(
+                    images=images,
+                    audio=audio,
+                    save_output=False,
+                    pause_mode=False,
+                    privacy_mode=False,
+                )
+                revision = first.kwargs["ui"]["helto_pause_control"][0]["revision"]
+                stored = node_cls.state["media"]["video-lazy-audio-node"]
+                bundle = torch.load(stored["path"], map_location="cpu", weights_only=True)
+                release = node_cls.request_release("video-lazy-audio-node", revision)
+                second = node_cls.execute(
+                    images=None,
+                    audio=None,
+                    pause_mode=True,
+                    release_token=release["release_token"],
+                )
+            finally:
+                node_cls._save_video = original_save_video
+                node_cls.hidden = original_hidden
+
+            self.assertTrue(audio.resolved)
+            self.assertIs(type(bundle["audio"]), dict)
+            self.assertTrue(torch.equal(bundle["audio"]["waveform"], audio_payload["waveform"]))
+            self.assertEqual(bundle["audio"]["sample_rate"], audio_payload["sample_rate"])
+            self.assertTrue(release["ok"])
+            self.assertTrue(torch.equal(second[1]["waveform"], audio_payload["waveform"]))
+            self.assertEqual(second[1]["sample_rate"], audio_payload["sample_rate"])
+
+    def test_save_video_release_discards_stale_incompatible_replay_bundle(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        node_cls = extension_module.SaveVideoAdvanced
+        original_hidden = getattr(node_cls, "hidden", None)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._configure_private_video_test_runtime(node_cls, tmpdir)
+            bundle_path = Path(tmpdir) / "stale.pt"
+            bundle_path.write_bytes(b"not a torch replay bundle")
+            node_cls.hidden = types.SimpleNamespace(unique_id="video-stale-node")
+            node_cls.state["previews"].clear()
+            node_cls.state["media"].clear()
+            node_cls.state["releases"].clear()
+            node_cls.state["media"]["video-stale-node"] = {
+                "path": str(bundle_path),
+                "encrypted": False,
+                "revision": 1,
+                "paused": True,
+            }
+            try:
+                release = node_cls.request_release("video-stale-node", 1)
+                result = node_cls.execute(
+                    images=None,
+                    audio=None,
+                    pause_mode=True,
+                    release_token=release["release_token"],
+                )
+            finally:
+                node_cls.hidden = original_hidden
+
+            self.assertTrue(release["ok"])
+            self.assertEqual(result[0], None)
+            self.assertEqual(result[1], None)
+            self.assertEqual(result[2], (True, []))
+            self.assertFalse(bundle_path.exists())
+            self.assertNotIn("video-stale-node", node_cls.state["media"])
+            control = result.kwargs["ui"]["helto_pause_control"][0]
+            self.assertFalse(control["has_media"])
+            self.assertEqual(control["mode"], "empty")
+
+    def test_save_video_private_preview_names_are_unique_per_node(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        node_cls = extension_module.SaveVideoAdvanced
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            privacy_globals = self._configure_private_video_test_runtime(node_cls, tmpdir)
+            module_globals = node_cls.execute.__func__.__globals__
+            safe_node_id = module_globals["_safe_node_id"]
+            original_save_video = node_cls.__dict__["_save_video"]
+            original_hidden = getattr(node_cls, "hidden", None)
+
+            def fake_save_video(cls, frames, audio, save_dir, filename_prefix, counter, **_kwargs):
+                output_path = os.path.join(save_dir, f"{filename_prefix}_{counter:05}.mp4")
+                with open(output_path, "wb") as stream:
+                    stream.write(f"preview for {cls._node_id()}".encode("utf-8"))
+                return [output_path]
+
+            node_cls._save_video = classmethod(fake_save_video)
+            node_cls.state["previews"].clear()
+            records = []
+            node_ids = ["raw output", "upscaled/2", "interpolate:3"]
+            try:
+                for node_id in node_ids:
+                    node_cls.hidden = types.SimpleNamespace(unique_id=node_id)
+                    result = node_cls.execute(
+                        images=["frame"],
+                        filename_prefix="video",
+                        save_output=False,
+                        privacy_mode=True,
+                    )
+                    records.append(result.kwargs["ui"]["images"][0])
+            finally:
+                node_cls._save_video = original_save_video
+                node_cls.hidden = original_hidden
+
+            filenames = [record["filename"] for record in records]
+            token_paths = []
+            for node_id, record in zip(node_ids, records):
+                payload = privacy_globals["verify_media_token"](record["token"])
+                encrypted_path = Path(payload["path"])
+                token_paths.append(payload["path"])
+
+                self.assertTrue(payload["encrypted"])
+                self.assertTrue(record["filename"].startswith(f"video_{safe_node_id(node_id)}_"))
+                self.assertTrue(record["filename"].endswith(".mp4"))
+                self.assertEqual(
+                    privacy_globals["decrypt_bytes"](encrypted_path.read_bytes()),
+                    f"preview for {node_id}".encode("utf-8"),
+                )
+
+            self.assertEqual(len(set(filenames)), len(filenames))
+            self.assertEqual(len(set(token_paths)), len(token_paths))
+            plain_mp4s = [
+                path for path in Path(tmpdir).rglob("*.mp4")
+                if "helto_private" not in path.parts
+            ]
+            self.assertEqual(plain_mp4s, [])
+
+    def test_save_video_private_saved_output_keeps_filenames_but_encrypts_preview(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        node_cls = extension_module.SaveVideoAdvanced
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            privacy_globals = self._configure_private_video_test_runtime(node_cls, tmpdir)
+            output_dir = os.path.join(tmpdir, "output")
+            original_save_video = node_cls.__dict__["_save_video"]
+
+            def fake_save_video(cls, frames, audio, save_dir, filename_prefix, counter, **_kwargs):
+                os.makedirs(save_dir, exist_ok=True)
+                output_path = os.path.join(save_dir, f"{filename_prefix}_{counter:05}.mp4")
+                with open(output_path, "wb") as stream:
+                    stream.write(b"saved video")
+                return [output_path]
+
+            node_cls._save_video = classmethod(fake_save_video)
+            node_cls.state["previews"].clear()
+            try:
+                result = node_cls.execute(
+                    images=["frame"],
+                    folder=output_dir,
+                    save_output=True,
+                    privacy_mode=True,
+                )
+            finally:
+                node_cls._save_video = original_save_video
+
+            save_output, output_files = result[2]
+            self.assertTrue(save_output)
+            self.assertEqual(len(output_files), 1)
+            self.assertEqual(Path(output_files[0]).read_bytes(), b"saved video")
+
+            record = result.kwargs["ui"]["images"][0]
+            payload = privacy_globals["verify_media_token"](record["token"])
+            encrypted_path = Path(payload["path"])
+            self.assertTrue(payload["encrypted"])
+            self.assertNotEqual(encrypted_path, Path(output_files[0]))
+            self.assertEqual(
+                privacy_globals["decrypt_bytes"](encrypted_path.read_bytes()),
+                b"saved video",
+            )
+
+    def test_save_video_non_private_temp_output_keeps_plain_filename(self):
+        extension_module = self._import_extension_with_fake_comfy_runtime()
+        node_cls = extension_module.SaveVideoAdvanced
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._configure_private_video_test_runtime(node_cls, tmpdir)
+            original_save_video = node_cls.__dict__["_save_video"]
+
+            def fake_save_video(cls, frames, audio, save_dir, filename_prefix, counter, **_kwargs):
+                output_path = os.path.join(save_dir, f"{filename_prefix}_{counter:05}.mp4")
+                with open(output_path, "wb") as stream:
+                    stream.write(b"plain temp video")
+                return [output_path]
+
+            node_cls._save_video = classmethod(fake_save_video)
+            node_cls.state["previews"].clear()
+            try:
+                result = node_cls.execute(images=["frame"], save_output=False, privacy_mode=False)
+            finally:
+                node_cls._save_video = original_save_video
+
+            self.assertFalse(result[2][0])
+            self.assertEqual(len(result[2][1]), 1)
+            self.assertTrue(os.path.isfile(result[2][1][0]))
+            self.assertEqual(Path(result[2][1][0]).read_bytes(), b"plain temp video")
 
     def test_save_video_audio_mux_replaces_silent_file_without_audio_postfix(self):
         extension_module = self._import_extension_with_fake_comfy_runtime()
@@ -2924,6 +3450,23 @@ Second beat moves toward the doorway. @image1:end
             self.assertFalse(any(".audio_mux." in path.name for path in Path(tmpdir).iterdir()))
 
     @staticmethod
+    def _configure_private_video_test_runtime(node_cls, tmpdir: str) -> dict:
+        module_globals = node_cls.execute.__func__.__globals__
+        module_globals["folder_paths"].get_temp_directory = lambda: tmpdir
+        module_globals["folder_paths"].get_output_directory = lambda: os.path.join(tmpdir, "output")
+        temp_cache_globals = module_globals["private_temp_cache_dir"].__globals__
+        temp_cache_globals["folder_paths"].get_temp_directory = lambda: tmpdir
+
+        privacy_globals = module_globals["write_encrypted_temp_file"].__globals__
+        privacy_globals["folder_paths"].get_temp_directory = lambda: tmpdir
+        os.environ["HELTO_PRIVACY_KEYSTORE"] = str(Path(tmpdir) / "privacy_keystore.json")
+        os.environ["HELTO_PRIVACY_SESSION_DIR"] = str(Path(tmpdir) / "privacy_session")
+        from helto_privacy import initialize_keystore
+
+        initialize_keystore("correct horse battery staple")
+        return privacy_globals
+
+    @staticmethod
     def _configure_ffmpeg_video_test_runtime(node_cls) -> dict:
         module_globals = node_cls.execute.__func__.__globals__
         module_globals["ProgressBar"] = lambda _total: types.SimpleNamespace(update=lambda _amount: None)
@@ -2932,21 +3475,12 @@ Second beat moves toward the doorway. @image1:end
     @staticmethod
     def _import_node_with_fake_comfy_api():
         class FakeSchema:
-            def __init__(
-                self,
-                node_id,
-                display_name,
-                category,
-                inputs,
-                outputs,
-                hidden=None,
-            ):
+            def __init__(self, node_id, display_name, category, inputs, outputs):
                 self.node_id = node_id
                 self.display_name = display_name
                 self.category = category
                 self.inputs = inputs
                 self.outputs = outputs
-                self.hidden = hidden or []
 
         class FakeField:
             def __init__(self, id=None, display_name=None, is_output_list=False, **kwargs):
@@ -2974,9 +3508,6 @@ Second beat moves toward the doorway. @image1:end
         class FakeBoundingBox:
             Output = FakeField
 
-        class FakeHidden:
-            unique_id = object()
-
         class FakeIO:
             ComfyNode = object
             Schema = FakeSchema
@@ -2985,7 +3516,6 @@ Second beat moves toward the doorway. @image1:end
             Image = FakeImage
             Mask = FakeMask
             BoundingBox = FakeBoundingBox
-            Hidden = FakeHidden
             NodeOutput = FakeNodeOutput
 
         previous_comfy_api = sys.modules.get("comfy_api")
@@ -3175,11 +3705,7 @@ Second beat moves toward the doorway. @image1:end
                 return lambda handler: handler
 
         class FakePromptServer:
-            class App:
-                def __init__(self):
-                    self.middlewares = []
-
-            instance = types.SimpleNamespace(routes=FakeRoutes(), app=App())
+            instance = types.SimpleNamespace(routes=FakeRoutes())
 
         class FakeWeb:
             Response = object

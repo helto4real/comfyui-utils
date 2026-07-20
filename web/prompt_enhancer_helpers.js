@@ -1,3 +1,17 @@
+import {
+    ENCRYPTED_PREFIX,
+    encryptedOrReusePrivacyValue,
+    forgetPrivacyEnvelope,
+    isPrivacyEnvelope,
+    isLegacyPrivacyEnvelope,
+    rememberPrivacyEnvelope,
+} from "./privacy_envelope.js";
+import {
+    confirmUnreadablePrivacyReset,
+    isPrivacyKeyUnavailableError,
+    isUnreadablePrivacyValueError,
+} from "./privacy_common.js";
+
 export const PROMPT_ENHANCER_NODE_CLASS = "HeltoPromptEnhancer";
 export const SCRIPT_WIDGET_NAME = "script";
 export const PROMPT_EDITOR_WIDGET_NAME = "script editor";
@@ -7,6 +21,7 @@ export const PROMPT_EDITOR_PADDING = 6;
 export const MAX_FIXED_SEED = 2147483647;
 export const SEED_CONTROL_MODES = Object.freeze(["fixed", "increment", "decrement", "randomize"]);
 export const VARIABLE_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+export { ENCRYPTED_PREFIX };
 const QUEUED_SEED_MAX_AGE_MS = 10_000;
 const QUEUED_SEED_STATE = "__heltoPromptEnhancerQueuedSeed";
 
@@ -310,22 +325,72 @@ export function serializedPromptValue(node) {
     return String(getWidget(node, SCRIPT_WIDGET_NAME)?.value || "");
 }
 
+export function isEncryptedText(value) {
+    return isPrivacyEnvelope(value);
+}
+
+export async function decryptPromptText(value, selectorApi) {
+    const serialized = String(value || "");
+    if (isLegacyPrivacyEnvelope(serialized)) {
+        return "";
+    }
+    if (!isEncryptedText(serialized)) {
+        return serialized;
+    }
+    const response = await selectorApi.decrypt(serialized);
+    const data = typeof response?.data === "string" ? response.data : "";
+    return data === "[]" ? "" : data;
+}
+
 export async function readPromptText(node, selectorApi) {
-    const editor = node?.__heltoPromptEnhancerPromptEditor;
-    if (editor && typeof editor.promptText === "string") return editor.promptText;
-    void selectorApi;
-    const privateMode = getWidget(node, "privacy_mode")?.value !== false;
-    return privateMode ? "" : serializedPromptValue(node);
+    const serialized = serializedPromptValue(node);
+    let plaintext = "";
+    try {
+        plaintext = await decryptPromptText(serialized, selectorApi);
+    } catch (error) {
+        if (!await isUnreadablePrivacyValueError(error)) throw error;
+        if (await confirmUnreadablePrivacyReset()) {
+            forgetPrivacyEnvelope(node, SCRIPT_WIDGET_NAME);
+            writePromptValue(node, "");
+            if (await isPrivacyKeyUnavailableError(error)) {
+                setWidgetValue(getWidget(node, "privacy_mode"), false);
+            }
+        }
+        return "";
+    }
+    if (isEncryptedText(serialized)) {
+        rememberPrivacyEnvelope(node, SCRIPT_WIDGET_NAME, plaintext, serialized);
+    }
+    return plaintext;
 }
 
 export async function writePromptText(node, prompt, privacyMode, selectorApi) {
     const plain = String(prompt ?? "");
     if (!privacyMode) {
+        forgetPrivacyEnvelope(node, SCRIPT_WIDGET_NAME);
         writePromptValue(node, plain);
         return plain;
     }
-    void selectorApi;
-    return serializedPromptValue(node);
+    if (!plain) {
+        forgetPrivacyEnvelope(node, SCRIPT_WIDGET_NAME);
+        writePromptValue(node, "");
+        return "";
+    }
+    if (!isEncryptedText(serializedPromptValue(node))) {
+        writePromptValue(node, "");
+    }
+    const encrypted = await encryptedOrReusePrivacyValue(node, SCRIPT_WIDGET_NAME, plain, {
+        privacyMode: true,
+        selectorApi,
+        defaultValue: "",
+        canonicalValue: plain,
+        encryptEmpty: false,
+    });
+    if (!isEncryptedText(encrypted)) {
+        throw new Error("Failed to encrypt Prompt enhancer script.");
+    }
+    writePromptValue(node, encrypted);
+    return encrypted;
 }
 
 export function serializedPromptVariablesValue(node) {
@@ -771,6 +836,10 @@ export function shouldHidePromptWidget(node, promptHovered = false, autocomplete
     return isPromptHideModeEnabled(node) && !promptHovered && !autocompleteVisible;
 }
 
+export function isEncryptedVariables(value) {
+    return isEncryptedText(value);
+}
+
 export function normalizePromptVariables(rawVariables) {
     const variables = Array.isArray(rawVariables) ? rawVariables : [];
     const normalized = [];
@@ -808,11 +877,28 @@ export function serializePromptVariables(variables) {
 }
 
 export async function readPromptVariables(node, selectorApi) {
-    const editor = node?.__heltoPromptEnhancerPromptEditor;
-    if (Array.isArray(editor?.variables)) return normalizePromptVariables(editor.variables);
-    void selectorApi;
-    const privateMode = getWidget(node, "privacy_mode")?.value !== false;
-    return privateMode ? [] : parsePromptVariablesJson(serializedPromptVariablesValue(node));
+    const value = serializedPromptVariablesValue(node);
+    if (!isEncryptedVariables(value)) {
+        return parsePromptVariablesJson(value);
+    }
+    try {
+        const response = await selectorApi.decrypt(value);
+        const variables = parsePromptVariablesJson(response?.data || "[]");
+        rememberPrivacyEnvelope(node, "variables", variables, value);
+        return variables;
+    } catch (err) {
+        if (await isUnreadablePrivacyValueError(err)) {
+            if (await confirmUnreadablePrivacyReset()) {
+                forgetPrivacyEnvelope(node, "variables");
+                setWidgetValue(getWidget(node, "variables"), "[]");
+                if (await isPrivacyKeyUnavailableError(err)) {
+                    setWidgetValue(getWidget(node, "privacy_mode"), false);
+                }
+            }
+        }
+        console.warn("Prompt enhancer variable decrypt failed:", err);
+        return [];
+    }
 }
 
 export async function writePromptVariables(node, variables, privacyMode, selectorApi) {
@@ -820,10 +906,20 @@ export async function writePromptVariables(node, variables, privacyMode, selecto
     const normalized = normalizePromptVariables(variables);
     const plainJson = JSON.stringify(normalized);
     if (!privacyMode) {
+        forgetPrivacyEnvelope(node, "variables");
         setWidgetValue(widget, plainJson);
         return plainJson;
     }
-    void selectorApi;
+    const encrypted = await encryptedOrReusePrivacyValue(node, "variables", plainJson, {
+        privacyMode: true,
+        selectorApi,
+        defaultValue: "",
+        canonicalValue: normalized,
+    });
+    if (!isEncryptedText(encrypted)) {
+        throw new Error("Failed to encrypt Prompt enhancer variables.");
+    }
+    setWidgetValue(widget, encrypted);
     return widget?.value || "";
 }
 

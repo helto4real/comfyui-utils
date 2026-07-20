@@ -4,7 +4,6 @@ import hashlib
 import os
 import shutil
 from io import BytesIO
-from typing import BinaryIO
 
 from PIL import Image, ImageOps
 
@@ -13,6 +12,12 @@ try:
 except ImportError:
     from shared.temp_cache import public_temp_cache_dir
 
+from .crypto import decrypt_bytes, encrypt_bytes
+
+try:
+    from ..shared.privacy import SELECTOR_THUMBNAIL_PURPOSE
+except ImportError:
+    from shared.privacy import SELECTOR_THUMBNAIL_PURPOSE
 
 THUMBNAIL_MAX_SIZE = 512
 THUMBNAIL_CACHE_VERSION = "v2"
@@ -26,23 +31,17 @@ def _resolve_cache_dir(cache_dir: str | os.PathLike[str] | None) -> str:
     return os.fspath(cache_dir) if cache_dir is not None else selector_thumbnail_cache_dir()
 
 
-def thumbnail_cache_key(image_path: str) -> str:
-    cache_key = f"{THUMBNAIL_CACHE_VERSION}:{image_path}"
-    return hashlib.sha256(cache_key.encode("utf-8")).hexdigest()
-
-
 def thumbnail_cache_paths(image_path: str, cache_dir: str | os.PathLike[str] | None = None) -> tuple[str, str]:
     cache_dir = _resolve_cache_dir(cache_dir)
-    path_hash = thumbnail_cache_key(image_path)
+    cache_key = f"{THUMBNAIL_CACHE_VERSION}:{image_path}"
+    path_hash = hashlib.sha256(cache_key.encode("utf-8")).hexdigest()
     return (
         os.path.join(cache_dir, f"{path_hash}.webp"),
         os.path.join(cache_dir, f"{path_hash}.webp.enc"),
     )
 
 
-def generate_thumbnail_bytes(
-    image_path: str | os.PathLike[str] | BinaryIO,
-) -> bytes:
+def generate_thumbnail_bytes(image_path: str) -> bytes:
     with Image.open(image_path) as img:
         img = ImageOps.exif_transpose(img)
         img.thumbnail((THUMBNAIL_MAX_SIZE, THUMBNAIL_MAX_SIZE))
@@ -76,13 +75,31 @@ def get_thumbnail_bytes(
     plain_cache_path, enc_cache_path = thumbnail_cache_paths(image_path, cache_dir)
 
     if privacy_mode:
-        raise RuntimeError("Private thumbnails require managed artifacts.")
+        encrypted_bytes = _read_fresh_cache(enc_cache_path, image_path)
+        if encrypted_bytes is not None:
+            return decrypt_bytes(encrypted_bytes, purpose=SELECTOR_THUMBNAIL_PURPOSE)
+
+        webp_bytes = _read_fresh_cache(plain_cache_path, image_path)
+        if webp_bytes is None:
+            webp_bytes = generate_thumbnail_bytes(image_path)
+
+        with open(enc_cache_path, "wb") as f:
+            f.write(encrypt_bytes(webp_bytes, purpose=SELECTOR_THUMBNAIL_PURPOSE))
+        try:
+            os.remove(plain_cache_path)
+        except Exception:
+            pass
+        return webp_bytes
 
     plain_bytes = _read_fresh_cache(plain_cache_path, image_path)
     if plain_bytes is not None:
         return plain_bytes
 
-    webp_bytes = generate_thumbnail_bytes(image_path)
+    encrypted_bytes = _read_fresh_cache(enc_cache_path, image_path)
+    if encrypted_bytes is not None:
+        webp_bytes = decrypt_bytes(encrypted_bytes, purpose=SELECTOR_THUMBNAIL_PURPOSE)
+    else:
+        webp_bytes = generate_thumbnail_bytes(image_path)
 
     with open(plain_cache_path, "wb") as f:
         f.write(webp_bytes)

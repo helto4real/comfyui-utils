@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { ComfyWidgets } from "../../scripts/widgets.js";
 
-import { requireUtilsPrivacy } from "./managed_privacy.js";
+import { selectorApi } from "./api.js";
 import { ICONS } from "./constants.js";
 import { collapseHiddenWidgetLayout } from "./ui.js";
 import {
@@ -9,24 +9,38 @@ import {
     PRIVACY_SHOW_ANY_NODE_CLASS,
     PRIVACY_SHOW_ANY_STATE_PROPERTY,
     PRIVACY_SHOW_ANY_STATE_WIDGET,
+    decryptTextStateForOwner,
+    encryptTextStateForOwner,
+    extractPrivacyShowAnyEncryptedText,
+    flushPrivacyShowAnyEncryption,
     getWidget,
     hidePrivacyShowAnyStateWidget,
-    protectedPrivacyShowAnyState,
+    encryptedPrivacyShowAnyState,
     privacyShowAnyDisplayState,
-    privacyShowAnyProtectionPromise,
-    preservePrivacyShowAnySerializedProperties,
-    setProtectedPrivacyShowAnyState,
-    setPrivacyShowAnyProtectionPromise,
-    serializedProtectedWidgetValue,
+    sanitizePrivacyShowAnySerializedProperties,
+    setEncryptedPrivacyShowAnyState,
+    serializedEncryptedWidgetValue,
 } from "./privacy_show_any_helpers.js";
+import {
+    confirmUnreadablePrivacyReset,
+    isUnreadablePrivacyValueError,
+} from "./privacy_common.js";
+import {
+    ensurePrivacyRecoveryRegistered,
+    showAutoPrivacyRecoveryIfIssues,
+} from "./privacy_recovery.js";
 
 const DISPLAY_WIDGET_KEY = "__heltoPrivacyShowAnyWidget";
 const DISPLAY_TEXT_KEY = "__heltoPrivacyShowAnyText";
+const ENCRYPT_PROMISE_KEY = "__heltoPrivacyShowAnyEncryptPromise";
 const STATE_WIDGET_KEY = "__heltoPrivacyShowAnyStateWidget";
 const SERIALIZATION_PATCHED_KEY = "__heltoPrivacyShowAnySerializationPatched";
+const LIFECYCLE_FLUSH_PATCHED_KEY = "__heltoPrivacyShowAnyLifecycleFlushPatched";
 const COPY_BUTTON_GUARD_EVENTS = ["pointerdown", "pointerup", "mousedown", "mouseup", "dblclick", "contextmenu"];
 
 ensureStylesheet();
+installPrivacyShowAnyLifecycleFlush();
+ensurePrivacyRecoveryRegistered();
 
 function ensureStylesheet() {
     if (document.getElementById("helto-utils-styles")) return;
@@ -104,23 +118,89 @@ function setDisplayText(node, text, persist = true) {
         resizePrivacyShowAnyNativeWidget(node);
     }
     if (persist) {
-        setPrivacyShowAnyProtectionPromise(node, persistProtectedState(node, plain));
+        node[ENCRYPT_PROMISE_KEY] = persistEncryptedState(node, plain);
     }
     setCanvasDirty(node);
 }
 
-async function persistProtectedState(node, text) {
-    void text;
-    const privacy = await requireUtilsPrivacy();
-    const workflow = privacy.workflow("privacy-show-any-workflow");
-    workflow.markEdited(node, "privacy-show-any-text");
-    await workflow.settle("manual-save");
-    captureWorkflowState(node);
-    return serializedProtectedWidgetValue(getStateWidget(node));
+async function persistEncryptedState(node, text) {
+    const stateWidget = getStateWidget(node);
+    const plain = String(text ?? "");
+    if (!plain) {
+        setEncryptedPrivacyShowAnyState(node, stateWidget, "");
+        captureWorkflowState(node);
+        return "";
+    }
+    try {
+        const encrypted = await encryptTextStateForOwner(node, plain, selectorApi);
+        const safe = setEncryptedPrivacyShowAnyState(node, stateWidget, encrypted);
+        captureWorkflowState(node);
+        return safe;
+    } catch (err) {
+        console.error("Privacy Show Any encryption failed:", err);
+        setEncryptedPrivacyShowAnyState(node, stateWidget, "");
+        captureWorkflowState(node);
+    }
+    return "";
 }
 
-async function restoreProtectedState(node) {
-    syncDisplayTextVisibility(node[DISPLAY_WIDGET_KEY]);
+async function flushPrivacyShowAnyState(graph = app.rootGraph) {
+    await flushPrivacyShowAnyEncryption(graph, ENCRYPT_PROMISE_KEY, (node, err) => {
+        console.error("Privacy Show Any encryption flush failed:", err);
+        setEncryptedPrivacyShowAnyState(node, getStateWidget(node), "");
+        captureWorkflowState(node);
+    });
+}
+
+function installPrivacyShowAnyLifecycleFlush() {
+    if (app[LIFECYCLE_FLUSH_PATCHED_KEY]) return;
+
+    const originalLoadGraphData = app.loadGraphData;
+    if (typeof originalLoadGraphData === "function") {
+        app.loadGraphData = async function (...args) {
+            await flushPrivacyShowAnyState(this.rootGraph ?? app.rootGraph);
+            return originalLoadGraphData.apply(this, args);
+        };
+    }
+
+    const originalGraphToPrompt = app.graphToPrompt;
+    if (typeof originalGraphToPrompt === "function") {
+        app.graphToPrompt = async function (graph = this.rootGraph, ...args) {
+            await flushPrivacyShowAnyState(graph ?? this.rootGraph ?? app.rootGraph);
+            return originalGraphToPrompt.apply(this, [graph, ...args]);
+        };
+    }
+
+    app[LIFECYCLE_FLUSH_PATCHED_KEY] = true;
+}
+
+async function restoreEncryptedState(node) {
+    const stateWidget = getStateWidget(node);
+    let encrypted = encryptedPrivacyShowAnyState(node, stateWidget);
+    const rawState = String(stateWidget?.value || node?.properties?.[PRIVACY_SHOW_ANY_STATE_PROPERTY] || "");
+    if (rawState && !encrypted) {
+        const recovery = await showAutoPrivacyRecoveryIfIssues(node.graph ?? app.graph);
+        if (recovery?.result?.appliedCount > 0) {
+            encrypted = encryptedPrivacyShowAnyState(node, stateWidget);
+        }
+    }
+    if (!encrypted) {
+        setDisplayText(node, "", false);
+        return;
+    }
+    try {
+        const text = await decryptTextStateForOwner(node, encrypted, selectorApi);
+        setDisplayText(node, text, false);
+    } catch (err) {
+        if (await isUnreadablePrivacyValueError(err)) {
+            if (await confirmUnreadablePrivacyReset()) {
+                setEncryptedPrivacyShowAnyState(node, stateWidget, "");
+                captureWorkflowState(node);
+            }
+        }
+        console.error("Privacy Show Any decryption failed:", err);
+        setDisplayText(node, "", false);
+    }
 }
 
 function ensureStateSerialization(node) {
@@ -135,11 +215,10 @@ function ensureStateSerialization(node) {
     stateWidget.options.serialize = true;
     stateWidget.options.hidden = true;
     stateWidget.serializeValue = async () => {
-        const protection = privacyShowAnyProtectionPromise(node);
-        if (protection) {
-            await protection;
+        if (node[ENCRYPT_PROMISE_KEY]) {
+            await node[ENCRYPT_PROMISE_KEY];
         }
-        return serializedProtectedWidgetValue(stateWidget);
+        return serializedEncryptedWidgetValue(stateWidget);
     };
     detachStateWidgetFromInteractiveList(node, stateWidget);
 }
@@ -151,11 +230,11 @@ function installPrivacyShowAnySerialization(node) {
     node.onSerialize = function (info) {
         const result = originalOnSerialize?.apply(this, arguments);
         const stateWidget = getStateWidget(this);
-        const protectedValue = protectedPrivacyShowAnyState(this, stateWidget);
+        const encrypted = encryptedPrivacyShowAnyState(this, stateWidget);
         if (info && stateWidget) {
-            info.widgets_values = [serializedProtectedWidgetValue({ value: protectedValue })];
+            info.widgets_values = [serializedEncryptedWidgetValue({ value: encrypted })];
         }
-        preservePrivacyShowAnySerializedProperties(info, protectedValue);
+        sanitizePrivacyShowAnySerializedProperties(info, encrypted);
         return result;
     };
 
@@ -372,44 +451,44 @@ app.registerExtension({
         nodeType.prototype.onNodeCreated = function () {
             const result = onNodeCreated?.apply(this, arguments);
             ensurePrivacyShowAnyUi(this);
-            restoreProtectedState(this);
+            restoreEncryptedState(this);
             return result;
         };
 
         nodeType.prototype.onConfigure = function () {
             const result = onConfigure?.apply(this, arguments);
             ensurePrivacyShowAnyUi(this);
-            restoreProtectedState(this);
+            restoreEncryptedState(this);
             return result;
         };
 
         nodeType.prototype.onExecuted = function (output, ...args) {
             const result = onExecuted?.apply(this, [output, ...args]);
             ensurePrivacyShowAnyUi(this);
-            const protectedValue = output?.helto_privacy_show_any?.[0]?.protected;
-            if (typeof protectedValue !== "string" || !protectedValue) {
+            const encrypted = extractPrivacyShowAnyEncryptedText(output);
+            if (!encrypted) {
                 setDisplayText(this, "", false);
                 return result;
             }
             const stateWidget = getStateWidget(this);
-            setPrivacyShowAnyProtectionPromise(this, requireUtilsPrivacy()
-                .then((privacy) => privacy.workflow("privacy-show-any-workflow").invoke(
-                    "privacy-show-any.display-result",
-                    { protected: protectedValue },
-                ))
-                .then((payload) => {
-                    setProtectedPrivacyShowAnyState(this, stateWidget, protectedValue);
-                    setDisplayText(this, payload.text, false);
-                    captureWorkflowState(this);
-                    return protectedValue;
+            const preservedEncrypted = setEncryptedPrivacyShowAnyState(this, stateWidget, encrypted);
+            captureWorkflowState(this);
+            this[ENCRYPT_PROMISE_KEY] = decryptTextStateForOwner(this, encrypted, selectorApi)
+                .then((text) => {
+                    setDisplayText(this, text, false);
+                    return preservedEncrypted;
                 })
-                .catch((err) => {
+                .catch(async (err) => {
                     console.error("Privacy Show Any output decryption failed:", err);
-                    setProtectedPrivacyShowAnyState(this, stateWidget, "");
+                    if (await isUnreadablePrivacyValueError(err) && await confirmUnreadablePrivacyReset()) {
+                        setEncryptedPrivacyShowAnyState(this, stateWidget, "");
+                        captureWorkflowState(this);
+                        setDisplayText(this, "", false);
+                        return "";
+                    }
                     setDisplayText(this, "", false);
-                    captureWorkflowState(this);
-                    return "";
-                }));
+                    return preservedEncrypted;
+                });
             return result;
         };
     },

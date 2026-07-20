@@ -3,6 +3,7 @@ import { app } from "/scripts/app.js";
 import { selectorApi } from "./api.js";
 import { ICONS } from "./constants.js";
 import { collapseHiddenWidgetLayout, containPointerEvents, createModal, setWidgetHeight } from "./ui.js";
+import { privacyFetchJson } from "./privacy_common.js";
 import {
     PROMPT_ENHANCER_NODE_CLASS,
     SCRIPT_WIDGET_NAME,
@@ -16,10 +17,11 @@ import {
     deleteSystemPromptPreset,
     fetchSystemPromptPresets,
     hideSerializedSettingsWidgets,
+    isEncryptedText,
+    isEncryptedVariables,
     isPromptEnhancerNode,
     keepFixedPromptSeed,
     isPointInPromptWidget,
-    livePromptSeedControlMode,
     moveAutocompleteSelection,
     promptAutocompleteShortcutAction,
     promptAutocompleteShortcutGuardAction,
@@ -27,15 +29,15 @@ import {
     PROMPT_EDITOR_HEIGHT,
     PROMPT_EDITOR_WIDGET_NAME,
     promptEditorLayout,
-    promptSeedControlWidget,
-    randomFixedPromptSeed,
     readPromptEnhancerModelConfig,
     readPromptEnhancerSettings,
     readPromptEnhancerVisionModelConfig,
     readPromptText,
     readPromptVariables,
+    randomizePromptEnhancerSeedsBeforeQueue,
     rememberPromptEnhancerProviderModel,
     removePromptVariable,
+    restoreQueuedPromptEnhancerSeeds,
     resetDefaultSystemPrompt,
     saveDefaultSystemPrompt,
     saveSystemPromptPreset,
@@ -52,15 +54,13 @@ import {
     writePromptEnhancerModelConfig,
     writePromptEnhancerVisionModelConfig,
     writePromptEnhancerSettings,
-    writePromptSeedValue,
     writePromptText,
     writePromptVariables,
 } from "./prompt_enhancer_helpers.js";
-import { requireUtilsPrivacy } from "./managed_privacy.js";
 import {
-    PROMPT_ENHANCER_SCRIPT_FIELD_ID,
-    PROMPT_ENHANCER_VARIABLES_FIELD_ID,
-} from "./prompt_enhancer_privacy_adapter.js";
+    ensurePrivacyRecoveryRegistered,
+    showAutoPrivacyRecoveryIfIssues,
+} from "./privacy_recovery.js";
 
 const BUTTONS_ADDED = "__heltoPromptEnhancerButtonsAdded";
 const SETTINGS_BUTTON = "__heltoPromptEnhancerSettingsButton";
@@ -81,9 +81,9 @@ const PROMPT_EDITOR_STATE = "__heltoPromptEnhancerPromptEditor";
 const PROMPT_PRIVACY_SERIALIZATION = "__heltoPromptEnhancerPromptPrivacySerialization";
 const PROMPT_AUTOCOMPLETE_VISIBLE = "__heltoPromptEnhancerAutocompleteVisible";
 const PROMPT_AUTOCOMPLETE_SHORTCUT_CLEANUP = "__heltoPromptEnhancerAutocompleteShortcutCleanup";
-const SEED_QUEUE_LIFECYCLE_KEY = "__heltoPromptEnhancerSeedQueueLifecycle";
-const SEED_QUEUE_ACTIVE_KEY = "__heltoPromptEnhancerActiveQueuedSeed";
-const SEED_QUEUE_MAX_AGE_MS = 10000;
+const SEED_QUEUE_WRAPPER_KEY = "__heltoPromptEnhancerSeedQueueWrapped";
+const SEED_QUEUE_INSTALL_KEY = "__heltoPromptEnhancerSeedQueueInstall";
+const SEED_QUEUE_INSTALL_ATTEMPT_LIMIT = 20;
 const SYSTEM_PROMPT_PRESET_ACTIONS = [
     { action: "new", label: "New preset", icon: "plus" },
     { action: "duplicate", label: "Duplicate preset", icon: "copy" },
@@ -98,40 +98,51 @@ function setCanvasDirty(node) {
     app.canvas?.setDirty?.(true, true);
 }
 
-function installPromptEnhancerSeedQueueLifecycle(node) {
-    if (!isPromptEnhancerNode(node)) return false;
-    const seedWidget = getWidget(node, "seed");
-    const controlWidget = promptSeedControlWidget(node, seedWidget);
-    const target = controlWidget;
-    if (!seedWidget || !target || target[SEED_QUEUE_LIFECYCLE_KEY]) return Boolean(target);
+function defaultGraph() {
+    return app.rootGraph || app.graph;
+}
 
-    const originalBeforeQueued = target.beforeQueued;
-    const originalAfterQueued = target.afterQueued;
-    target.beforeQueued = function (...args) {
-        if (livePromptSeedControlMode(node) !== "randomize") {
-            delete node[SEED_QUEUE_ACTIVE_KEY];
-            return originalBeforeQueued?.apply(this, args);
+function installPromptEnhancerSeedQueuePatch(source = "install") {
+    if (typeof app.queuePrompt !== "function") {
+        return false;
+    }
+    if (app.queuePrompt[SEED_QUEUE_WRAPPER_KEY]) {
+        return true;
+    }
+
+    const originalQueuePrompt = app.queuePrompt;
+    const wrappedQueuePrompt = async function (...args) {
+        const queuedSeeds = randomizePromptEnhancerSeedsBeforeQueue(defaultGraph());
+        try {
+            return await originalQueuePrompt.apply(this, args);
+        } finally {
+            restoreQueuedPromptEnhancerSeeds(queuedSeeds);
         }
-        const seed = randomFixedPromptSeed();
-        if (!writePromptSeedValue(node, seed)) {
-            return originalBeforeQueued?.apply(this, args);
-        }
-        node[SEED_QUEUE_ACTIVE_KEY] = { seed, at: Date.now() };
-        return undefined;
     };
-    target.afterQueued = function (...args) {
-        const queued = node[SEED_QUEUE_ACTIVE_KEY];
-        delete node[SEED_QUEUE_ACTIVE_KEY];
-        if (!queued || Date.now() - queued.at > SEED_QUEUE_MAX_AGE_MS) {
-            return originalAfterQueued?.apply(this, args);
-        }
-        if (Number(seedWidget?.value) !== Number(queued.seed)) {
-            writePromptSeedValue(node, queued.seed);
-        }
-        return undefined;
-    };
-    Object.defineProperty(target, SEED_QUEUE_LIFECYCLE_KEY, { value: true });
+    Object.defineProperty(wrappedQueuePrompt, SEED_QUEUE_WRAPPER_KEY, {
+        value: true,
+        configurable: true,
+    });
+    app.queuePrompt = wrappedQueuePrompt;
     return true;
+}
+
+function schedulePromptEnhancerSeedQueuePatch(source = "top-level") {
+    if (globalThis[SEED_QUEUE_INSTALL_KEY]) {
+        installPromptEnhancerSeedQueuePatch(`${source}:resync`);
+        return;
+    }
+    globalThis[SEED_QUEUE_INSTALL_KEY] = true;
+
+    let attempts = 0;
+    function attempt() {
+        attempts += 1;
+        installPromptEnhancerSeedQueuePatch(`${source}:${attempts}`);
+        if (attempts < SEED_QUEUE_INSTALL_ATTEMPT_LIMIT) {
+            setTimeout(attempt, 250);
+        }
+    }
+    attempt();
 }
 
 function updatePromptHover(node, nextValue) {
@@ -356,6 +367,17 @@ async function refreshPromptEditorVariables(node, force = false) {
     if (state.variablesLoadId !== loadId) {
         return state.variables;
     }
+    if (
+        readPromptEnhancerSettings(node).privacyMode
+        && serializedValue
+        && serializedValue !== "[]"
+        && !isEncryptedVariables(serializedValue)
+    ) {
+        const recovery = await showAutoPrivacyRecoveryIfIssues(node.graph ?? app.graph);
+        if (recovery?.result?.appliedCount > 0) {
+            variables = await readPromptVariables(node, selectorApi);
+        }
+    }
     state.variables = variables;
     state.variablesWidgetValue = serializedPromptVariablesValue(node);
     return variables;
@@ -376,6 +398,17 @@ async function loadPromptEditorText(node, force = false) {
         return state.promptText;
     }
 
+    const needsRecovery = readPromptEnhancerSettings(node).privacyMode
+        && text
+        && serializedValue === text
+        && !isEncryptedText(serializedValue);
+    if (needsRecovery) {
+        const recovery = await showAutoPrivacyRecoveryIfIssues(node.graph ?? app.graph);
+        if (recovery?.result?.appliedCount > 0) {
+            text = await readPromptText(node, selectorApi);
+        }
+    }
+
     state.promptText = text;
     state.promptWidgetValue = serializedPromptValue(node);
     if (document.activeElement !== state.textarea && state.textarea.value !== text) {
@@ -392,8 +425,7 @@ function persistPromptEditorText(node, text, privacyMode = readPromptEnhancerSet
         state.promptSaveId = (state.promptSaveId ?? 0) + 1;
     }
     const saveId = state?.promptSaveId ?? 0;
-    const persistPromise = writePromptText(node, plain, privacyMode, selectorApi).then(async (serialized) => {
-        if (privacyMode) await settlePromptPrivacyField(node, PROMPT_ENHANCER_SCRIPT_FIELD_ID);
+    const persistPromise = writePromptText(node, plain, privacyMode, selectorApi).then((serialized) => {
         const activeState = getPromptEditorState(node);
         if (!activeState || activeState.promptSaveId === saveId) {
             if (activeState) activeState.promptWidgetValue = serializedPromptValue(node);
@@ -407,13 +439,6 @@ function persistPromptEditorText(node, text, privacyMode = readPromptEnhancerSet
         state.promptPersistPromise = persistPromise;
     }
     return persistPromise;
-}
-
-async function settlePromptPrivacyField(node, fieldId) {
-    const privacy = await requireUtilsPrivacy();
-    const workflow = privacy.workflow("prompt-enhancer-workflow");
-    workflow.markEdited(node, fieldId);
-    await workflow.settle("manual-save");
 }
 
 function installPromptPrivacySerialization(node) {
@@ -797,31 +822,15 @@ async function refreshModels(node) {
 }
 
 async function postProviderAction(path, payload) {
-    const privacy = await requireUtilsPrivacy();
-    const operation = path.endsWith("/download")
-        ? "prompt-provider.model-download"
-        : path.endsWith("/unload")
-            ? "prompt-provider.model-unload"
-            : "prompt-provider.settings-save";
-    const result = await privacy.workflow("prompt-enhancer-workflow").invoke(
-        operation,
-        operation === "prompt-provider.settings-save"
-            ? { ...(payload || {}), expectedRevision: providerSettingsRevision }
-            : (payload || {}),
-    );
-    if (Number.isInteger(result?.revision)) providerSettingsRevision = result.revision;
-    return result;
+    return privacyFetchJson(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload || {}),
+    });
 }
 
-let providerSettingsRevision = 0;
-
 async function fetchProviderSettings() {
-    const privacy = await requireUtilsPrivacy();
-    const result = await privacy.workflow("prompt-enhancer-workflow").invoke(
-        "prompt-provider.settings-load",
-    );
-    if (Number.isInteger(result?.revision)) providerSettingsRevision = result.revision;
-    return result;
+    return privacyFetchJson("/helto_prompt_enhancer/providers/settings");
 }
 
 async function saveProviderSettings(payload) {
@@ -1336,9 +1345,7 @@ async function openVariablesEditor(node) {
         <div class="helto-prompt-enhancer-variable-list" id="helto-pe-variable-list"></div>
     `;
     const modal = createModal("Prompt enhancer variables", content, async () => {
-        const privacyMode = readPromptEnhancerSettings(node).privacyMode;
-        await writePromptVariables(node, variables, privacyMode, selectorApi);
-        if (privacyMode) await settlePromptPrivacyField(node, PROMPT_ENHANCER_VARIABLES_FIELD_ID);
+        await writePromptVariables(node, variables, readPromptEnhancerSettings(node).privacyMode, selectorApi);
         const state = getPromptEditorState(node);
         if (state) {
             state.variables = variables;
@@ -1580,7 +1587,6 @@ function openSettingsModal(node) {
         }
         await persistPromptEditorText(node, promptText, privacyMode);
         await writePromptVariables(node, variables, privacyMode, selectorApi);
-        if (privacyMode) await settlePromptPrivacyField(node, PROMPT_ENHANCER_VARIABLES_FIELD_ID);
         const state = getPromptEditorState(node);
         if (state) {
             state.promptText = promptText;
@@ -1623,7 +1629,7 @@ function ensurePromptEnhancerUi(node) {
     if (!isPromptEnhancerNode(node)) {
         return;
     }
-    installPromptEnhancerSeedQueueLifecycle(node);
+    installPromptEnhancerSeedQueuePatch("ensure-ui");
     hideSerializedSettingsWidgets(node, collapseHiddenWidgetLayout);
     installPromptPrivacySerialization(node);
     ensurePromptEditor(node);
@@ -1679,8 +1685,14 @@ function ensurePromptEnhancerUi(node) {
     refreshModels(node);
 }
 
+schedulePromptEnhancerSeedQueuePatch();
+ensurePrivacyRecoveryRegistered();
+
 app.registerExtension({
     name: "Helto.PromptEnhancer",
+    setup() {
+        schedulePromptEnhancerSeedQueuePatch("setup");
+    },
     async beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData.name !== PROMPT_ENHANCER_NODE_CLASS) {
             return;

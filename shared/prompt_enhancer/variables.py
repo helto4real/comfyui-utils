@@ -5,6 +5,14 @@ import random
 import re
 from typing import Any
 
+try:
+    from ...helto_selector_backend.crypto import decrypt_selection
+except ImportError as exc:
+    if str(exc) != "attempted relative import beyond top-level package":
+        raise
+    from helto_selector_backend.crypto import decrypt_selection
+
+
 VARIABLE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 VARIABLE_TOKEN_RE = re.compile(r"{{\s*([A-Za-z_][A-Za-z0-9_]*)\s*}}")
 
@@ -64,6 +72,18 @@ def substitute_prompt_variables(prompt: str, raw_variables: Any, seed: int) -> s
     return VARIABLE_TOKEN_RE.sub(replacement, prompt or "")
 
 
+def decrypt_prompt_text(raw_prompt: Any) -> str:
+    if raw_prompt is None:
+        return ""
+    prompt = str(raw_prompt)
+    try:
+        decrypted = decrypt_selection(prompt)
+    except ValueError:
+        # An unreadable optional prompt should not fail the whole run.
+        return ""
+    return "" if decrypted == "[]" else decrypted
+
+
 def _decode_variables_payload(raw_variables: Any) -> Any:
     if raw_variables is None or raw_variables == "":
         return []
@@ -73,6 +93,10 @@ def _decode_variables_payload(raw_variables: Any) -> Any:
         return []
 
     payload = raw_variables.strip()
+    try:
+        payload = decrypt_selection(payload)
+    except ValueError:
+        return []
     try:
         return json.loads(payload)
     except (TypeError, json.JSONDecodeError):

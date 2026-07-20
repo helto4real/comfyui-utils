@@ -34,6 +34,7 @@ from .prompts import (
     system_prompt_payload,
 )
 from .variables import (
+    decrypt_prompt_text,
     is_valid_variable_name,
     parse_prompt_variables,
     substitute_prompt_variables,
@@ -69,6 +70,7 @@ __all__ = [
     "list_system_prompt_presets",
     "build_system_prompt",
     "provider_model_supports_images",
+    "decrypt_prompt_text",
     "load_default_system_prompt",
     "load_packaged_system_prompt",
     "load_system_prompt",

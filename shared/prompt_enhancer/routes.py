@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from aiohttp import web
+from helto_privacy import aiohttp_check_privacy_token
 import server
 
 from .local_provider import (
@@ -11,6 +12,7 @@ from .local_provider import (
     provider_catalog,
     unload_local_model,
 )
+from .provider_settings import clear_hf_token, provider_settings_status, save_hf_token
 from .provider import DEFAULT_OLLAMA_TIMEOUT, DEFAULT_OLLAMA_URL, OllamaPromptProvider
 from .prompts import (
     delete_system_prompt_preset,
@@ -29,7 +31,7 @@ ROUTE_PREFIX = "/helto_prompt_enhancer"
 
 def _parse_timeout(value) -> int:
     try:
-        return max(1, int(value))
+        return min(3600, max(1, int(value)))
     except (TypeError, ValueError):
         return DEFAULT_OLLAMA_TIMEOUT
 
@@ -74,6 +76,19 @@ async def _unload_provider_model(data: dict) -> web.Response:
         return web.json_response({"ok": False, "error": str(exc)}, status=400)
     except Exception as exc:  # noqa: BLE001
         return web.json_response({"ok": False, "error": str(exc)}, status=500)
+
+
+async def _request_provider_settings() -> web.Response:
+    return web.json_response(provider_settings_status())
+
+
+async def _save_provider_settings(data: dict) -> web.Response:
+    try:
+        if data.get("clear"):
+            return web.json_response(clear_hf_token())
+        return web.json_response(save_hf_token(data.get("hf_token", "")))
+    except Exception as exc:  # noqa: BLE001
+        return web.json_response({"ok": False, "error": str(exc)}, status=400)
 
 
 async def _request_system_prompt(kind: str | None) -> web.Response:
@@ -141,6 +156,9 @@ async def _delete_system_prompt_preset(data: dict) -> web.Response:
 
 @server.PromptServer.instance.routes.get(f"{ROUTE_PREFIX}/models")
 async def get_models(request):
+    denied = aiohttp_check_privacy_token(request)
+    if denied is not None:
+        return denied
     return await _request_models(
         {
             "url": request.query.get("url", DEFAULT_OLLAMA_URL),
@@ -151,6 +169,9 @@ async def get_models(request):
 
 @server.PromptServer.instance.routes.post(f"{ROUTE_PREFIX}/models")
 async def post_models(request):
+    denied = aiohttp_check_privacy_token(request)
+    if denied is not None:
+        return denied
     try:
         data = await request.json()
     except Exception:
@@ -160,6 +181,9 @@ async def post_models(request):
 
 @server.PromptServer.instance.routes.get(f"{ROUTE_PREFIX}/providers/models")
 async def get_provider_models(request):
+    denied = aiohttp_check_privacy_token(request)
+    if denied is not None:
+        return denied
     return await _request_provider_models(
         {
             "url": request.query.get("url", DEFAULT_OLLAMA_URL),
@@ -170,11 +194,58 @@ async def get_provider_models(request):
 
 @server.PromptServer.instance.routes.post(f"{ROUTE_PREFIX}/providers/models")
 async def post_provider_models(request):
+    denied = aiohttp_check_privacy_token(request)
+    if denied is not None:
+        return denied
     try:
         data = await request.json()
     except Exception:
         data = {}
     return await _request_provider_models(data if isinstance(data, dict) else {})
+
+
+@server.PromptServer.instance.routes.post(f"{ROUTE_PREFIX}/providers/download")
+async def post_provider_download(request):
+    denied = aiohttp_check_privacy_token(request)
+    if denied is not None:
+        return denied
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    return await _download_provider_model(data if isinstance(data, dict) else {})
+
+
+@server.PromptServer.instance.routes.post(f"{ROUTE_PREFIX}/providers/unload")
+async def post_provider_unload(request):
+    denied = aiohttp_check_privacy_token(request)
+    if denied is not None:
+        return denied
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    return await _unload_provider_model(data if isinstance(data, dict) else {})
+
+
+@server.PromptServer.instance.routes.get(f"{ROUTE_PREFIX}/providers/settings")
+async def get_provider_settings(request):
+    denied = aiohttp_check_privacy_token(request)
+    if denied is not None:
+        return denied
+    return await _request_provider_settings()
+
+
+@server.PromptServer.instance.routes.post(f"{ROUTE_PREFIX}/providers/settings")
+async def post_provider_settings(request):
+    denied = aiohttp_check_privacy_token(request)
+    if denied is not None:
+        return denied
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    return await _save_provider_settings(data if isinstance(data, dict) else {})
 
 
 @server.PromptServer.instance.routes.get(f"{ROUTE_PREFIX}/system_prompt")

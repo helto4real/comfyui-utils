@@ -1,6 +1,6 @@
 import { app } from "/scripts/app.js";
 import { api } from "/scripts/api.js";
-import { resolveUtilsPrivateMediaRecord } from "./managed_privacy.js";
+import { ensurePrivacyTokenCookieSoon } from "./privacy_common.js";
 
 const NODE_CLASS = "HeltoImageComparer";
 const DISPLAY_NAME = "Image Comparer";
@@ -109,7 +109,13 @@ function isHideModeEnabled(node) {
     return Boolean(node.properties?.[PROPERTY_NAME]);
 }
 
-function publicImageRecordToUrl(record) {
+function imageRecordToUrl(record) {
+    if (record?.private && record?.token) {
+        ensurePrivacyTokenCookieSoon();
+        const params = new URLSearchParams({ token: record.token });
+        return api.apiURL(`/helto_utils/private_media?${params.toString()}${app.getRandParam?.() ?? ""}`);
+    }
+
     if (!record?.filename || !record?.type) {
         return null;
     }
@@ -123,10 +129,8 @@ function publicImageRecordToUrl(record) {
     return api.apiURL(`/view?${params.toString()}${app.getPreviewFormatParam?.() ?? ""}${app.getRandParam?.() ?? ""}`);
 }
 
-async function createPreviewImage(node, record) {
-    const url = record?.private
-        ? await resolveUtilsPrivateMediaRecord(record, (path) => api.apiURL(path))
-        : publicImageRecordToUrl(record);
+function createPreviewImage(node, record) {
+    const url = imageRecordToUrl(record);
 
     if (!url) {
         return null;
@@ -286,18 +290,10 @@ class ImageComparerPreviewWidget {
         this.bounds = null;
     }
 
-    async setImages(originalRecord, newRecord) {
-        try {
-            [this.originalImage, this.newImage] = await Promise.all([
-                createPreviewImage(this.node, originalRecord),
-                createPreviewImage(this.node, newRecord),
-            ]);
-            setCanvasDirty(this.node);
-        } catch (err) {
-            this.originalImage = null;
-            this.newImage = null;
-            console.warn("Failed to resolve protected comparer preview:", err);
-        }
+    setImages(originalRecord, newRecord) {
+        this.originalImage = createPreviewImage(this.node, originalRecord);
+        this.newImage = createPreviewImage(this.node, newRecord);
+        setCanvasDirty(this.node);
     }
 
     hasImages() {
@@ -486,9 +482,7 @@ function setupImageComparer(node) {
         const result = originalOnExecuted?.call(this, output, ...args);
         const originalRecord = output?.a_images?.[0] ?? output?.images?.[0] ?? null;
         const newRecord = output?.b_images?.[0] ?? output?.images?.[1] ?? null;
-        this[PREVIEW_WIDGET]?.setImages(originalRecord, newRecord)?.catch((err) => {
-            console.warn("Failed to update protected comparer preview:", err);
-        });
+        this[PREVIEW_WIDGET]?.setImages(originalRecord, newRecord);
         setCanvasDirty(this);
         return result;
     };

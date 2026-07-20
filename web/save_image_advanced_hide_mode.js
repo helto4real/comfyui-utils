@@ -8,6 +8,8 @@ import {
     storeOutputForPreviewKeys,
 } from "./hide_mode_helpers.js";
 import {
+    SAVE_IMAGE_RELEASE_ROUTE,
+    SAVE_VIDEO_RELEASE_ROUTE,
     bindPauseReleaseToken,
     buildPauseResumePrompt,
     hidePauseReleaseTokenWidget,
@@ -16,11 +18,8 @@ import {
     restoreSerializedWidgetValues,
     sanitizeSerializedWidgetValues,
 } from "./pause_control_helpers.js";
+import { ensurePrivacyTokenCookieSoon, privacyFetch } from "./privacy_common.js";
 import { collapseHiddenWidgetLayout } from "./ui.js";
-import {
-    requireUtilsPrivacy,
-    resolveUtilsPrivateMediaRecord,
-} from "./managed_privacy.js";
 
 const NODE_CLASSES = new Map([
     ["HeltoSaveImageAdvanced", "Save Image Advanced"],
@@ -155,20 +154,24 @@ function setCanvasDirty(node) {
     app.canvas?.setDirty?.(true, true);
 }
 
-async function privatePreviewUrls(output) {
+function privateRecordToUrl(record) {
+    if (!record?.private || !record?.token) {
+        return null;
+    }
+    ensurePrivacyTokenCookieSoon();
+    const params = new URLSearchParams({ token: record.token });
+    return api.apiURL(`/helto_utils/private_media?${params.toString()}${app.getRandParam?.() ?? ""}`);
+}
+
+function privatePreviewUrls(output) {
     if (!Array.isArray(output?.images)) {
         return [];
     }
-    const urls = await Promise.all(output.images.map((record) => (
-        record?.private
-            ? resolveUtilsPrivateMediaRecord(record, (path) => api.apiURL(path))
-            : null
-    )));
-    return urls.filter(Boolean);
+    return output.images.map(privateRecordToUrl).filter(Boolean);
 }
 
-async function syncPrivatePreviewUrls(node, output) {
-    const urls = await privatePreviewUrls(output);
+function syncPrivatePreviewUrls(node, output) {
+    const urls = privatePreviewUrls(output);
     app.nodePreviewImages ??= {};
 
     if (urls.length) {
@@ -195,17 +198,17 @@ function getStoredNodeOutput(node) {
     return null;
 }
 
-async function applyPrivateImagePreviews(node, records) {
+function applyPrivateImagePreviews(node, records) {
     if (!Array.isArray(records) || records.length === 0) {
         return false;
     }
 
     const images = [];
     for (const record of records) {
-        if (!record?.private) {
+        const url = privateRecordToUrl(record);
+        if (!url) {
             continue;
         }
-        const url = await resolveUtilsPrivateMediaRecord(record, (path) => api.apiURL(path));
         const image = new Image();
         image.onload = () => setCanvasDirty(node);
         image.src = url;
@@ -416,16 +419,25 @@ function ensurePauseControlWidget(node) {
 
 async function postPauseRelease(node, action = "release", releaseToken = "") {
     const state = pauseControlState(node);
-    const operationId = getNodeClass(node) === VIDEO_NODE_CLASS
-        ? "save-video.release"
-        : "save-image.release";
-    const privacy = await requireUtilsPrivacy();
-    return privacy.workflow("private-media-source").invoke(operationId, {
+    const route = getNodeClass(node) === VIDEO_NODE_CLASS ? SAVE_VIDEO_RELEASE_ROUTE : SAVE_IMAGE_RELEASE_ROUTE;
+    const body = JSON.stringify({
         node_id: String(node.id),
         revision: state.revision,
         action,
         release_token: releaseToken,
     });
+    const fetcher = api.fetchApi ? (path, options) => api.fetchApi(path, options) : fetch;
+    const response = await privacyFetch(route, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+        fetcher,
+    });
+    const payload = await response.json();
+    if (!response.ok || payload?.ok === false) {
+        throw new Error(payload?.error || "Failed to release stored media.");
+    }
+    return payload;
 }
 
 async function queuePauseResumePrompt(node) {
@@ -1653,7 +1665,7 @@ function scheduleHideModeSync(node) {
     setTimeout(() => syncHideOutputImages(node, { force: true }), 1000);
 }
 
-async function refreshRestoredVueOutput(node, { force = false } = {}) {
+function refreshRestoredVueOutput(node, { force = false } = {}) {
     if (!isSaveVideoAdvancedNode(node) || (!force && node[RESTORED_OUTPUT_REFRESHED])) {
         return;
     }
@@ -1669,7 +1681,7 @@ async function refreshRestoredVueOutput(node, { force = false } = {}) {
     }
 
     applyDomPreviewVisibility(node, false);
-    await syncPrivatePreviewUrls(node, output);
+    syncPrivatePreviewUrls(node, output);
     ensureVideoPreviewMediaType(node);
     const refreshedOutput = {
         ...output,
@@ -1695,9 +1707,7 @@ function scheduleRestoredVueOutputRefresh(node, options = {}) {
 
     node[RESTORE_REFRESH_SCHEDULED] = true;
     const run = () => {
-        refreshRestoredVueOutput(node, options).catch((err) => {
-            console.warn("Failed to restore protected preview:", err);
-        });
+        refreshRestoredVueOutput(node, options);
     };
 
     requestAnimationFrame(run);
@@ -1754,11 +1764,9 @@ function setupImageHideMode(node) {
     node.onExecuted = function (output, ...args) {
         const result = originalOnExecuted?.call(this, output, ...args);
         updatePauseControlState(this, pauseControlFromOutput(output) ?? {});
-        applyPrivateImagePreviews(this, output?.helto_private_images)
-            .then((applied) => {
-                if (applied) syncImageHideOutputImages(this);
-            })
-            .catch((err) => console.warn("Failed to resolve protected image preview:", err));
+        if (applyPrivateImagePreviews(this, output?.helto_private_images)) {
+            syncImageHideOutputImages(this);
+        }
         return result;
     };
 
@@ -1853,9 +1861,7 @@ function setupVideoHideMode(node) {
     const originalOnExecuted = node.onExecuted;
     node.onExecuted = function (output, ...args) {
         storeOutputForPreviewKeys(app, this, output);
-        syncPrivatePreviewUrls(this, output).catch((err) => {
-            console.warn("Failed to resolve protected video preview:", err);
-        });
+        syncPrivatePreviewUrls(this, output);
         if (getNodeClass(this) === VIDEO_NODE_CLASS) {
             updatePauseControlState(this, pauseControlFromOutput(output) ?? {});
         }

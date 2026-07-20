@@ -17,6 +17,7 @@ except Exception:
 
 from .video_config import resolve_video_path
 from .video_io import preview_result
+from . import video_routes  # noqa: F401
 
 
 _SILENT_SAMPLE_RATE = 44100
@@ -225,9 +226,7 @@ class HeltoLoadVideo(io.ComfyNode):
             helto_progress.report("Video source unavailable", phase="probe", level="warning", detail=str(exc))
             return io.NodeOutput(_empty_images(), _empty_audio(), 0.0, 64, 64, 0.0)
         try:
-            preview = ui.PreviewVideo(
-                [] if privacy_mode else [preview_result(source_path, privacy_mode=False)]
-            )
+            preview = ui.PreviewVideo([preview_result(source_path, privacy_mode=privacy_mode)])
 
             start_time = max(_as_float(start_time), 0.0)
             requested_duration = max(_as_float(duration), 0.0)

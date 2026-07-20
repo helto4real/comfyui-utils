@@ -5,6 +5,7 @@ import gc
 import importlib.util
 import io
 import os
+import re
 import threading
 import traceback
 from collections.abc import Callable
@@ -16,6 +17,15 @@ from urllib.parse import unquote, urlparse
 from PIL import Image
 
 from .progress import PromptEnhancerProgress
+from .provider_settings import (
+    clear_hf_token,
+    configured_hf_token,
+    hf_auth_token,
+    load_provider_settings,
+    provider_settings_status,
+    save_hf_token,
+    settings_path,
+)
 from .provider import (
     DEFAULT_OLLAMA_KEEP_ALIVE,
     effective_generation_token_budget,
@@ -39,26 +49,21 @@ LLAMA_CPP_DEPS = ("llama_cpp", "huggingface_hub")
 GEMMA_SAFETENSORS_DEPS = ("transformers", "huggingface_hub", "accelerate")
 
 GEMMA4_E4B_FP8_URL = (
-    "https://huggingface.co/Comfy-Org/gemma-4/blob/main/"
+    "https://huggingface.co/Comfy-Org/gemma-4/blob/c8b198a1279c02c9cf8aaa08171db4e2b0d15af9/"
     "text_encoders/gemma4_e4b_it_fp8_scaled.safetensors"
 )
 GEMMA4_E4B_UNCENSORED_Q8_GGUF_URL = (
-    "https://huggingface.co/HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive/blob/main/"
+    "https://huggingface.co/HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive/blob/"
+    "45b6a334b4bcd1d7f37179df58b3b1d66a184e5d/"
     "Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-Q8_K_P.gguf"
 )
 GEMMA4_E4B_UNCENSORED_MMPROJ_URL = (
-    "https://huggingface.co/HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive/blob/main/"
+    "https://huggingface.co/HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive/blob/"
+    "45b6a334b4bcd1d7f37179df58b3b1d66a184e5d/"
     "mmproj-Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-f16.gguf"
 )
 
 LOCAL_GENERATION_TOKENS = 180
-
-
-class _LegacyAuthToken:
-    pass
-
-
-_LEGACY_AUTH_TOKEN = _LegacyAuthToken()
 
 
 @dataclass(frozen=True)
@@ -74,7 +79,7 @@ class LocalModelSpec:
     generator_supported: bool = True
     # Hugging Face revision to fetch. Prefer pinning to an immutable commit SHA
     # so a repo cannot swap in new code/weights under you between downloads.
-    revision: str = "main"
+    revision: str = ""
 
 
 @dataclass(frozen=True)
@@ -98,6 +103,7 @@ MODEL_REGISTRY: dict[str, LocalModelSpec] = {
         "VLM",
         QWEN_DEPS,
         supports_images=True,
+        revision="0c351dd01ed87e9c1b53cbc748cba10e6187ff3b",
     ),
     "qwen3_vl_4b_fast": LocalModelSpec(
         "qwen3_vl_4b_fast",
@@ -107,6 +113,7 @@ MODEL_REGISTRY: dict[str, LocalModelSpec] = {
         "VLM",
         QWEN_DEPS,
         supports_images=True,
+        revision="ebb281ec70b05090aa6165b016eac8ec08e71b17",
     ),
     "qwen3_vl_4b_unredacted": LocalModelSpec(
         "qwen3_vl_4b_unredacted",
@@ -116,6 +123,7 @@ MODEL_REGISTRY: dict[str, LocalModelSpec] = {
         "VLM",
         QWEN_DEPS,
         supports_images=True,
+        revision="d2685a843353fcb74062a6ce8839db08ba60a4e7",
     ),
     "qwen3_vl_8b_nsfw_caption": LocalModelSpec(
         "qwen3_vl_8b_nsfw_caption",
@@ -125,6 +133,7 @@ MODEL_REGISTRY: dict[str, LocalModelSpec] = {
         "VLM",
         QWEN_DEPS,
         supports_images=True,
+        revision="62cf836d2370e7f884e570fb4fd45d47bb594ea6",
     ),
     "florence2_fast_caption": LocalModelSpec(
         "florence2_fast_caption",
@@ -134,6 +143,7 @@ MODEL_REGISTRY: dict[str, LocalModelSpec] = {
         "LLM",
         FLORENCE_DEPS,
         supports_images=True,
+        revision="59b6e4bf75d0f3e8a6b1a14211f6a50fcdd48d63",
     ),
     "gemma4_e4b_uncensored_gguf_q8": LocalModelSpec(
         "gemma4_e4b_uncensored_gguf_q8",
@@ -316,12 +326,7 @@ def provider_catalog(ollama_models: list[str] | None = None, ollama_error: str =
     }
 
 
-def ensure_model_downloaded(
-    spec: LocalModelSpec,
-    progress: PromptEnhancerProgress | None = None,
-    *,
-    auth_token: str | None | _LegacyAuthToken = _LEGACY_AUTH_TOKEN,
-) -> Path | None:
+def ensure_model_downloaded(spec: LocalModelSpec, progress: PromptEnhancerProgress | None = None) -> Path | None:
     _check_interrupted(progress)
     path = model_path_for(spec)
     if path is None:
@@ -339,14 +344,15 @@ def ensure_model_downloaded(
         from huggingface_hub import hf_hub_download, snapshot_download
     except Exception as exc:  # noqa: BLE001
         raise LocalProviderError("Local model downloads require optional package: huggingface_hub") from exc
-    if auth_token is _LEGACY_AUTH_TOKEN:
-        raise RuntimeError("Managed provider authorization is required.")
-    download_token = auth_token
 
     if spec.file_urls:
         files = list(zip(model_files_for(spec), model_file_paths_for(spec), strict=True))
         for position, (model_file, target_path) in enumerate(files, start=1):
             _check_interrupted(progress)
+            if not re.fullmatch(r"[0-9a-f]{40}", model_file.revision):
+                raise LocalProviderError(
+                    f"Model file '{model_file.filename}' has no immutable Hugging Face revision configured."
+                )
             if target_path.exists():
                 if progress is not None:
                     progress.phase_fraction("download", position / len(files))
@@ -360,7 +366,7 @@ def ensure_model_downloaded(
                 revision=model_file.revision,
                 local_dir=str(local_dir),
                 local_dir_use_symlinks=False,
-                token=download_token,
+                token=hf_auth_token(),
             )
             if not target_path.exists():
                 raise LocalProviderError(f"Downloaded '{model_file.url}' but expected file was not found at {target_path}")
@@ -368,6 +374,11 @@ def ensure_model_downloaded(
                 progress.phase_fraction("download", position / len(files))
             _check_interrupted(progress)
         return path
+
+    if not re.fullmatch(r"[0-9a-f]{40}", spec.revision):
+        raise LocalProviderError(
+            f"Model '{spec.alias}' has no immutable Hugging Face revision configured."
+        )
 
     path.parent.mkdir(parents=True, exist_ok=True)
     if progress is not None:
@@ -378,7 +389,7 @@ def ensure_model_downloaded(
         revision=spec.revision,
         local_dir=str(path),
         local_dir_use_symlinks=False,
-        token=download_token,
+        token=hf_auth_token(),
     )
     _check_interrupted(progress)
     if progress is not None:
@@ -386,15 +397,11 @@ def ensure_model_downloaded(
     return path
 
 
-def download_local_model(
-    alias: str | None,
-    *,
-    auth_token: str | None | _LegacyAuthToken = _LEGACY_AUTH_TOKEN,
-) -> dict[str, Any]:
+def download_local_model(alias: str | None) -> dict[str, Any]:
     spec = resolve_local_model(alias)
     if not spec.generator_supported:
         raise LocalProviderError(f"Model '{spec.alias}' is not a standalone prompt-generating model.")
-    ensure_model_downloaded(spec, auth_token=auth_token)
+    ensure_model_downloaded(spec)
     return {"ok": True, "model": spec.alias, "models": local_model_statuses()}
 
 
@@ -524,22 +531,6 @@ def fallback_enhance_prompt(prompt: str, prompt_type: str = "image") -> str:
 
 class LocalPromptProvider:
     def generate(self, request: Any, progress: PromptEnhancerProgress | None = None) -> str:
-        return self._generate(request, progress, _LEGACY_AUTH_TOKEN)
-
-    def generate_with_auth(
-        self,
-        request: Any,
-        auth_token: str | None,
-        progress: PromptEnhancerProgress | None = None,
-    ) -> str:
-        return self._generate(request, progress, auth_token)
-
-    def _generate(
-        self,
-        request: Any,
-        progress: PromptEnhancerProgress | None,
-        auth_token: str | None | _LegacyAuthToken,
-    ) -> str:
         spec = resolve_local_model(getattr(request, "model_id", "") or getattr(request, "model", ""))
         _check_interrupted(progress)
         if not spec.generator_supported:
@@ -558,21 +549,16 @@ class LocalPromptProvider:
             return result
 
         with _model_operation_lock(spec.alias):
-            return self._generate_locked(spec, request, progress, auth_token)
+            return self._generate_locked(spec, request, progress)
 
     def _generate_locked(
         self,
         spec: LocalModelSpec,
         request: Any,
         progress: PromptEnhancerProgress | None,
-        auth_token: str | None | _LegacyAuthToken = _LEGACY_AUTH_TOKEN,
     ) -> str:
         try:
-            path = ensure_model_downloaded(
-                spec,
-                progress,
-                auth_token=auth_token,
-            )
+            path = ensure_model_downloaded(spec, progress)
             if path is None:
                 if progress is not None:
                     progress.phase_done("load")
@@ -720,7 +706,7 @@ def _load_qwen_model(spec: LocalModelSpec, path: Path) -> dict[str, Any]:
         ).eval()
         # Qwen3-VL is natively supported by transformers, so we do not need to
         # execute arbitrary repo code to load its processor.
-        processor = AutoProcessor.from_pretrained(str(path))
+        processor = AutoProcessor.from_pretrained(str(path), local_files_only=True)
         return {"model": model, "processor": processor, "torch": torch}
 
     return _load_cached_model(spec, load)
@@ -776,10 +762,19 @@ def _load_florence_model(spec: LocalModelSpec, path: Path) -> dict[str, Any]:
 
         # Florence-2 ships custom modeling code, so trust_remote_code is required
         # here; the repo is pinned via LocalModelSpec.revision to bound that trust.
-        model = AutoModelForCausalLM.from_pretrained(str(path), trust_remote_code=True, torch_dtype="auto").eval()
+        model = AutoModelForCausalLM.from_pretrained(
+            str(path),
+            trust_remote_code=True,
+            local_files_only=True,
+            torch_dtype="auto",
+        ).eval()
         if torch.cuda.is_available():
             model = model.to("cuda")
-        processor = AutoProcessor.from_pretrained(str(path), trust_remote_code=True)
+        processor = AutoProcessor.from_pretrained(
+            str(path),
+            trust_remote_code=True,
+            local_files_only=True,
+        )
         return {"model": model, "processor": processor, "torch": torch}
 
     return _load_cached_model(spec, load)

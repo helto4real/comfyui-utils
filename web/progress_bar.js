@@ -1,21 +1,18 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import {
-    installPrivacyConnectionSerializationGate,
-} from "/helto_privacy/ui/privacy_snapshot.js";
 
 import {
     applyProgressEvent,
     createProgressState,
     formatProgressText,
     progressSnapshot,
+    rememberPromptData,
 } from "./progress_bar_helpers.js";
 
 const STYLE_LINK_ID = "helto-utils-styles";
 const PROGRESS_STYLE_ID = "helto-progress-bar-styles";
 const ROOT_ID = "helto-progress-bar";
-
-installPrivacyConnectionSerializationGate(app).coalesce();
+const CAPTURE_KEY = "__heltoProgressQueueCapture";
 
 function ensureSharedStylesheet() {
     if (document.getElementById(STYLE_LINK_ID)) return;
@@ -173,6 +170,10 @@ function injectStyles() {
     document.head.appendChild(style);
 }
 
+function promptDataFromArgs(args) {
+    return args.find((arg) => arg && typeof arg === "object" && (arg.output || arg.prompt)) || null;
+}
+
 class HeltoProgressBar {
     constructor() {
         this.state = createProgressState();
@@ -187,6 +188,8 @@ class HeltoProgressBar {
         injectStyles();
         this.mount();
         this.installEventHandlers();
+        this.installQueuePromptCapture(app, "queuePrompt");
+        this.installQueuePromptCapture(api, "queuePrompt");
         this.render();
     }
 
@@ -240,6 +243,29 @@ class HeltoProgressBar {
                 this.applyEvent(eventName, detail);
             });
         }
+    }
+
+    installQueuePromptCapture(target, methodName) {
+        if (!target || typeof target[methodName] !== "function" || target[methodName][CAPTURE_KEY]) {
+            return;
+        }
+
+        const manager = this;
+        const original = target[methodName];
+        async function wrappedQueuePrompt(...args) {
+            const promptData = promptDataFromArgs(args);
+            const response = await original.apply(this, args);
+            if (response?.prompt_id && promptData) {
+                manager.state = rememberPromptData(manager.state, response.prompt_id, promptData);
+                manager.render();
+            }
+            return response;
+        }
+        Object.defineProperty(wrappedQueuePrompt, CAPTURE_KEY, {
+            value: true,
+            configurable: true,
+        });
+        target[methodName] = wrappedQueuePrompt;
     }
 
     applyEvent(eventName, detail) {

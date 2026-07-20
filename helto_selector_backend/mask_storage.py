@@ -9,6 +9,12 @@ from typing import Any
 from PIL import Image, ImageOps
 
 from .constants import CACHE_DIR, ensure_runtime_dirs
+from .crypto import decrypt_bytes, encrypt_bytes
+
+try:
+    from ..shared.privacy import SELECTOR_MASK_PURPOSE
+except ImportError:
+    from shared.privacy import SELECTOR_MASK_PURPOSE
 
 MASK_CACHE_DIR = os.path.join(CACHE_DIR, "masks")
 
@@ -75,7 +81,10 @@ def save_mask_bytes(
     plain_path, encrypted_path = mask_cache_paths(image_path, mask_cache_dir)
 
     if privacy_mode:
-        raise RuntimeError("Private masks require managed artifacts.")
+        with open(encrypted_path, "wb") as f:
+            f.write(encrypt_bytes(png_bytes, purpose=SELECTOR_MASK_PURPOSE))
+        if os.path.exists(plain_path):
+            os.remove(plain_path)
     else:
         with open(plain_path, "wb") as f:
             f.write(png_bytes)
@@ -108,6 +117,10 @@ def load_mask_bytes(
         with open(plain_path, "rb") as f:
             return f.read()
 
+    if os.path.exists(encrypted_path):
+        with open(encrypted_path, "rb") as f:
+            return decrypt_bytes(f.read(), purpose=SELECTOR_MASK_PURPOSE)
+
     return None
 
 
@@ -127,8 +140,6 @@ def migrate_mask_privacy(
     privacy_mode: bool,
     mask_cache_dir: str = MASK_CACHE_DIR,
 ) -> int:
-    if privacy_mode:
-        raise RuntimeError("Private mask migration requires managed artifacts.")
     migrated = 0
     for image_path in image_paths:
         mask_bytes = load_mask_bytes(image_path, mask_cache_dir)

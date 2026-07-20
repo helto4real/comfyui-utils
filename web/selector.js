@@ -33,12 +33,21 @@ import {
 } from "./ui.js";
 import { openBboxEditor, openMaskEditor } from "./mask_editor.js";
 import { closeHeltoMediaPreview, openHeltoMediaPreview } from "./media_preview.js";
-import { requireUtilsPrivacy } from "./managed_privacy.js";
 import {
-    SELECTOR_BBOXES_FIELD_ID,
-    SELECTOR_MASKS_FIELD_ID,
-    SELECTOR_SELECTED_FIELD_ID,
-} from "./selector_privacy_adapter.js";
+    encryptedOrReusePrivacyValue,
+    forgetPrivacyEnvelope,
+    isPrivacyEnvelope,
+    rememberPrivacyEnvelope,
+} from "./privacy_envelope.js";
+import {
+    confirmUnreadablePrivacyReset,
+    isPrivacyKeyUnavailableError,
+    isUnreadablePrivacyValueError,
+} from "./privacy_common.js";
+import {
+    ensurePrivacyRecoveryRegistered,
+    showAutoPrivacyRecoveryIfIssues,
+} from "./privacy_recovery.js";
 
 // Load Stylesheet dynamically using modern ES modules URL resolving
 if (!document.getElementById("helto-utils-styles")) {
@@ -50,11 +59,130 @@ if (!document.getElementById("helto-utils-styles")) {
 }
 
 const HELTO_SELECTOR_NODE_CLASS = "HeltoImageSelector";
+const GRAPH_TO_PROMPT_PATCHED = "__heltoImageSelectorGraphToPromptPatched";
+const SELECTOR_SELECTED_IMAGES_FIELD = "selected_images";
+const SELECTOR_EDITED_MASKS_FIELD = "edited_masks";
+const SELECTOR_EDITED_BBOXES_FIELD = "edited_bboxes";
+
+function getSelectorNodes(graph) {
+    const nodes = graph?.computeExecutionOrder?.(false) || graph?._nodes || [];
+    return nodes.filter((node) => node?.comfyClass === HELTO_SELECTOR_NODE_CLASS);
+}
+
+async function requireRecoveredSelectorField(node, fieldName, defaultValue) {
+    const widget = node?.widgets?.find((item) => item?.name === fieldName);
+    const value = widget?.value;
+    if (
+        !node?.properties?.privacyMode
+        || !value
+        || String(value) === String(defaultValue)
+        || isPrivacyEnvelope(value)
+    ) {
+        return;
+    }
+    await showAutoPrivacyRecoveryIfIssues(node.graph ?? app.graph);
+    const recoveredValue = widget?.value;
+    if (recoveredValue && String(recoveredValue) !== String(defaultValue) && !isPrivacyEnvelope(recoveredValue)) {
+        throw new Error(`PRIVACY_RECOVERY_REQUIRED: ${fieldName} contains unrecovered plaintext or legacy privacy data.`);
+    }
+}
+
+async function serializeSelectedImagesForPrompt(node) {
+    if (node.properties?.privacyMode) {
+        await requireRecoveredSelectorField(node, SELECTOR_SELECTED_IMAGES_FIELD, "[]");
+    }
+    const selectedPaths = Array.isArray(node.selectedPaths) ? node.selectedPaths : [];
+    const plainString = JSON.stringify(selectedPaths);
+
+    if (node.properties?.privacyMode) {
+        return encryptedOrReusePrivacyValue(node, SELECTOR_SELECTED_IMAGES_FIELD, plainString, {
+            privacyMode: true,
+            selectorApi,
+            defaultValue: plainString,
+            canonicalValue: selectedPaths,
+        });
+    }
+
+    forgetPrivacyEnvelope(node, SELECTOR_SELECTED_IMAGES_FIELD);
+    return plainString;
+}
+
+async function serializeEditedMasksForPrompt(node) {
+    if (node.properties?.privacyMode) {
+        await requireRecoveredSelectorField(node, SELECTOR_EDITED_MASKS_FIELD, "{}");
+    }
+    const editedMasks = node.editedMasks && typeof node.editedMasks === "object" ? node.editedMasks : {};
+    const plainString = JSON.stringify(editedMasks);
+
+    if (node.properties?.privacyMode) {
+        return encryptedOrReusePrivacyValue(node, SELECTOR_EDITED_MASKS_FIELD, plainString, {
+            privacyMode: true,
+            selectorApi,
+            defaultValue: plainString,
+            canonicalValue: editedMasks,
+        });
+    }
+
+    forgetPrivacyEnvelope(node, SELECTOR_EDITED_MASKS_FIELD);
+    return plainString;
+}
+
+async function serializeEditedBboxesForPrompt(node) {
+    if (node.properties?.privacyMode) {
+        await requireRecoveredSelectorField(node, SELECTOR_EDITED_BBOXES_FIELD, "{}");
+    }
+    const editedBboxes = node.editedBboxes && typeof node.editedBboxes === "object" ? node.editedBboxes : {};
+    const plainString = JSON.stringify(editedBboxes);
+
+    if (node.properties?.privacyMode) {
+        return encryptedOrReusePrivacyValue(node, SELECTOR_EDITED_BBOXES_FIELD, plainString, {
+            privacyMode: true,
+            selectorApi,
+            defaultValue: plainString,
+            canonicalValue: editedBboxes,
+        });
+    }
+
+    forgetPrivacyEnvelope(node, SELECTOR_EDITED_BBOXES_FIELD);
+    return plainString;
+}
+
+function installGraphToPromptPatch() {
+    if (app[GRAPH_TO_PROMPT_PATCHED] || typeof app.graphToPrompt !== "function") {
+        return;
+    }
+
+    const originalGraphToPrompt = app.graphToPrompt;
+    app.graphToPrompt = async function(...args) {
+        const result = await originalGraphToPrompt.apply(this, args);
+        const graph = args[0] || app.graph;
+
+        for (const node of getSelectorNodes(graph)) {
+            const outputNode = result?.output?.[String(node.id)];
+            if (!outputNode) continue;
+
+            outputNode.inputs ??= {};
+            outputNode.inputs.selected_images = await serializeSelectedImagesForPrompt(node);
+            outputNode.inputs.resize_mode = node.properties?.resizeMode || "zoom to fit";
+            outputNode.inputs.edited_masks = await serializeEditedMasksForPrompt(node);
+            outputNode.inputs.edited_bboxes = await serializeEditedBboxesForPrompt(node);
+            outputNode.inputs.batching_mode = !!node.properties?.batchingMode;
+        }
+
+        return result;
+    };
+
+    app[GRAPH_TO_PROMPT_PATCHED] = true;
+}
+
+installGraphToPromptPatch();
+ensurePrivacyRecoveryRegistered();
 
 app.registerExtension({
     name: "HeltoImageSelectorExtension",
     
     async nodeCreated(node) {
+        installGraphToPromptPatch();
         if (node.comfyClass !== HELTO_SELECTOR_NODE_CLASS) return;
         
         // --- 1. State Initialization ---
@@ -346,23 +474,32 @@ app.registerExtension({
         let selectionSerializationPromise = null;
         let maskSerializationPromise = null;
         let bboxSerializationPromise = null;
-        let legacyMaskMigrationPromise = null;
 
         async function serializeHiddenJsonWidget(widget, plainValue, defaultValue, fieldName) {
             if (!widget) return defaultValue;
-            if (node.properties.privacyMode !== false) {
-                const privacy = await requireUtilsPrivacy();
-                const workflow = privacy.workflow("selector-workflow");
-                const fieldIds = {
-                    [SELECTOR_SELECTED_IMAGES_FIELD]: SELECTOR_SELECTED_FIELD_ID,
-                    [SELECTOR_EDITED_MASKS_FIELD]: SELECTOR_MASKS_FIELD_ID,
-                    [SELECTOR_EDITED_BBOXES_FIELD]: SELECTOR_BBOXES_FIELD_ID,
-                };
-                workflow.markEdited(node, fieldIds[fieldName]);
-                await workflow.settle("manual-save");
-                return widget.value || defaultValue;
+            let canonicalValue = plainValue;
+            let plainString = JSON.stringify(canonicalValue);
+
+            if (node.properties.privacyMode) {
+                await requireRecoveredSelectorField(node, fieldName, defaultValue);
+                if (fieldName === SELECTOR_SELECTED_IMAGES_FIELD) {
+                    canonicalValue = Array.isArray(node.selectedPaths) ? node.selectedPaths : [];
+                } else if (fieldName === SELECTOR_EDITED_MASKS_FIELD) {
+                    canonicalValue = node.editedMasks && typeof node.editedMasks === "object" ? node.editedMasks : {};
+                } else if (fieldName === SELECTOR_EDITED_BBOXES_FIELD) {
+                    canonicalValue = node.editedBboxes && typeof node.editedBboxes === "object" ? node.editedBboxes : {};
+                }
+                plainString = JSON.stringify(canonicalValue);
+                widget.value = await encryptedOrReusePrivacyValue(node, fieldName, plainString, {
+                    privacyMode: true,
+                    selectorApi,
+                    defaultValue: plainString,
+                    canonicalValue,
+                });
+            } else {
+                forgetPrivacyEnvelope(node, fieldName);
+                widget.value = plainString;
             }
-            widget.value = JSON.stringify(plainValue);
             return widget.value || defaultValue;
         }
 
@@ -417,9 +554,6 @@ app.registerExtension({
         };
 
         editedMasksWidget.serializeValue = async () => {
-            if (legacyMaskMigrationPromise) {
-                await legacyMaskMigrationPromise;
-            }
             if (maskSerializationPromise) {
                 await maskSerializationPromise;
             }
@@ -434,9 +568,39 @@ app.registerExtension({
         };
 
         async function parseSerializedJson(value, fallback, fieldName) {
-            const serialized = value;
-            if (node.properties?.privacyMode !== false) return fallback;
+            let serialized = value;
+            if (
+                node.properties?.privacyMode
+                && serialized
+                && String(serialized) !== JSON.stringify(fallback)
+                && !isPrivacyEnvelope(serialized)
+            ) {
+                await showAutoPrivacyRecoveryIfIssues(node.graph ?? app.graph);
+                const refreshedWidget = node.widgets ? node.widgets.find(w => w.name === fieldName) : null;
+                serialized = refreshedWidget?.value ?? serialized;
+            }
             if (!serialized) return fallback;
+            if (isPrivacyEnvelope(serialized)) {
+                try {
+                    const res = await selectorApi.decrypt(serialized);
+                    const parsed = JSON.parse(res.data);
+                    rememberPrivacyEnvelope(node, fieldName, parsed, serialized);
+                    return parsed;
+                } catch (e) {
+                    if (await isUnreadablePrivacyValueError(e)) {
+                        if (await confirmUnreadablePrivacyReset()) {
+                            const widget = node.widgets?.find?.((item) => item?.name === fieldName);
+                            if (widget) widget.value = JSON.stringify(fallback);
+                            forgetPrivacyEnvelope(node, fieldName);
+                            if (await isPrivacyKeyUnavailableError(e)) node.properties.privacyMode = false;
+                            node.setDirtyCanvas?.(true, true);
+                            node.graph?.setDirtyCanvas?.(true, true);
+                        }
+                    }
+                    console.error("Decryption API failed:", e);
+                    return fallback;
+                }
+            }
             try {
                 return JSON.parse(serialized);
             } catch (e) {
@@ -462,36 +626,6 @@ app.registerExtension({
 
             renderGrid();
             refreshSelectedPreviewPopover();
-        };
-
-        node.migrateLegacyMasks = function() {
-            if (legacyMaskMigrationPromise) return legacyMaskMigrationPromise;
-            const legacyMasks = Object.fromEntries(
-                Object.entries(node.editedMasks || {}).filter(([, reference]) => (
-                    reference
-                    && typeof reference === "object"
-                    && !Array.isArray(reference)
-                    && Object.keys(reference).length === 1
-                    && typeof reference.key === "string"
-                )),
-            );
-            if (!Object.keys(legacyMasks).length) return Promise.resolve(false);
-            const migration = (async () => {
-                const result = await selectorApi.migrateMasks(legacyMasks);
-                if (!result?.masks || typeof result.masks !== "object" || Array.isArray(result.masks)) {
-                    throw new Error("PRIVACY_SELECTOR_MASK_MIGRATION_FAILED");
-                }
-                node.editedMasks = { ...node.editedMasks, ...result.masks };
-                await updateMaskWidgetValue();
-                renderGrid();
-                refreshSelectedPreviewPopover();
-                return true;
-            })();
-            const trackedMigration = migration.finally(() => {
-                if (legacyMaskMigrationPromise === trackedMigration) legacyMaskMigrationPromise = null;
-            });
-            legacyMaskMigrationPromise = trackedMigration;
-            return legacyMaskMigrationPromise;
         };
 
         node.restoreEditedBboxes = async function() {
@@ -610,18 +744,18 @@ app.registerExtension({
             sortImagesInPlace(node.allImages, node.properties.sortBy);
         }
         
-        async function showPreviewPopup(img) {
+        function showPreviewPopup(img) {
             openHeltoMediaPreview({
                 kind: "image",
-                url: await selectorApi.viewImageUrl(img.path, img),
+                url: selectorApi.viewImageUrl(img.path, img),
                 title: img.name,
                 label: img.name,
             });
         }
 
-        async function saveOriginalImage(img) {
+        function saveOriginalImage(img) {
             const link = document.createElement("a");
-            link.href = await selectorApi.viewImageUrl(img.path, img);
+            link.href = selectorApi.viewImageUrl(img.path, img);
             link.download = img.name || "image";
             document.body.appendChild(link);
             link.click();
@@ -629,22 +763,18 @@ app.registerExtension({
         }
 
         async function openMaskEditorForImage(img) {
-            const [imageUrl, maskUrl] = await Promise.all([
-                selectorApi.viewImageUrl(img.path, img),
-                selectorApi.maskUrl(img.path, node.editedMasks?.[img.path]),
-            ]);
             await openMaskEditor({
                 document,
                 window,
                 img,
-                imageUrl,
-                maskUrl,
+                imageUrl: selectorApi.viewImageUrl(img.path, img),
+                maskUrl: selectorApi.maskUrl(img.path),
                 privacyMode: node.properties.privacyMode,
                 hideMode: node.properties.hideMode,
                 hasEditedMask: Boolean(node.editedMasks?.[img.path]),
                 containPointerEvents,
                 saveMask: (path, maskData, privacyMode) => selectorApi.saveMask(path, maskData, privacyMode),
-                deleteMask: (path) => selectorApi.deleteMask(path, node.editedMasks?.[path]),
+                deleteMask: (path) => selectorApi.deleteMask(path),
                 onSaved: async (savedImg, ref, result) => {
                     node.editedMasks = applyEditedMaskSaveResult(node.editedMasks, savedImg.path, ref, result);
                     await updateMaskWidgetValue();
@@ -655,12 +785,11 @@ app.registerExtension({
         }
 
         async function openBboxEditorForImage(img) {
-            const imageUrl = await selectorApi.viewImageUrl(img.path, img);
             await openBboxEditor({
                 document,
                 window,
                 img,
-                imageUrl,
+                imageUrl: selectorApi.viewImageUrl(img.path, img),
                 bboxes: node.editedBboxes?.[img.path] || [],
                 hideMode: node.properties.hideMode,
                 containPointerEvents,
@@ -832,9 +961,7 @@ app.registerExtension({
 
                 const thumb = document.createElement("img");
                 thumb.className = `helto-selected-preview-thumb ${aspectClass}`;
-                selectorApi.thumbnailUrl(img.path, isPrivacy, img)
-                    .then((url) => { thumb.src = url; })
-                    .catch((err) => console.warn("Failed to resolve selector thumbnail:", err));
+                thumb.src = selectorApi.thumbnailUrl(img.path, isPrivacy, img);
                 thumb.alt = img.name;
                 thumbWrap.appendChild(thumb);
 
@@ -959,12 +1086,7 @@ app.registerExtension({
                 
                 // Thumb url targeting our backend endpoint
                 const isPrivacy = node.properties.privacyMode;
-                selectorApi.thumbnailUrl(img.path, isPrivacy, img)
-                    .then((url) => {
-                        thumb.dataset.src = url;
-                        thumb.src = url;
-                    })
-                    .catch((err) => console.warn("Failed to resolve selector thumbnail:", err));
+                thumb.dataset.src = selectorApi.thumbnailUrl(img.path, isPrivacy, img);
                 
                 const checkmark = document.createElement("div");
                 checkmark.className = "helto-item-checkmark";
@@ -1615,8 +1737,8 @@ app.registerExtension({
                 if (privacyChanged && newPrivacyMode) {
                     await clearThumbnailCache();
                 }
-                if (privacyChanged && newPrivacyMode) {
-                    await node.migrateLegacyMasks();
+                if (privacyChanged) {
+                    await selectorApi.migrateMasks(Object.keys(node.editedMasks || {}), newPrivacyMode);
                 }
                 
                 node.properties.hideMode = newHideMode;
@@ -1693,7 +1815,6 @@ app.registerExtension({
             node.scanFolders().then(async () => {
                 await node.restoreSelection();
                 await node.restoreEditedMasks();
-                await node.migrateLegacyMasks();
                 await node.restoreEditedBboxes();
                 if (node.onResize) node.onResize();
             });
@@ -1705,6 +1826,7 @@ app.registerExtension({
     },
     
     loadedGraphNode(node) {
+        installGraphToPromptPatch();
         if (node.comfyClass === HELTO_SELECTOR_NODE_CLASS) {
             if (node.normalizeHeltoSelectorSize) node.normalizeHeltoSelectorSize();
             if (node.syncUIWithProperties) node.syncUIWithProperties();

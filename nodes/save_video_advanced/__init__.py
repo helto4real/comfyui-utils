@@ -14,8 +14,11 @@ from pathlib import Path
 from string import Template
 from typing import Any
 
+from aiohttp import web
 import folder_paths
+from helto_privacy import aiohttp_check_privacy_token
 import numpy as np
+import server
 import torch
 from comfy.cli_args import args as comfy_args
 from comfy.utils import ProgressBar
@@ -25,13 +28,21 @@ from PIL import Image, ExifTags
 from PIL.PngImagePlugin import PngInfo
 
 from ...shared import progress_api as helto_progress
-from ...shared.managed_privacy import utils_media_artifacts
 from ...shared.pause_release import (
     cancel_pause_release,
     consume_pause_release,
+    dispatch_pause_release,
     request_pause_release,
 )
-from ...shared.temp_cache import public_temp_cache_dir
+from ...shared.privacy import (
+    SAVE_VIDEO_REPLAY_PURPOSE,
+    content_type_for_path,
+    decrypt_bytes,
+    encrypt_bytes,
+    private_media_record,
+    write_encrypted_temp_file,
+)
+from ...shared.temp_cache import private_temp_cache_dir, public_temp_cache_dir
 
 
 _COUNTER_RE_TEMPLATE = r"^{prefix}_(?P<counter>\d+)(?:-audio)?\.[^.]+$"
@@ -341,46 +352,6 @@ def _find_ffmpeg() -> str | None:
     return shutil.which("ffmpeg")
 
 
-def _anonymous_file_path(stream) -> str:
-    """Return a process-local fd path without creating a named data file."""
-
-    if stream is None or not hasattr(stream, "fileno"):
-        raise RuntimeError("Anonymous media output is unavailable.")
-    path = f"/proc/{os.getpid()}/fd/{stream.fileno()}"
-    if not os.path.exists(path):
-        raise RuntimeError("Anonymous media output is unavailable.")
-    return path
-
-
-def _ffmpeg_muxer(extension: object) -> str:
-    muxer = {
-        "avi": "avi",
-        "gif": "gif",
-        "mkv": "matroska",
-        "mov": "mov",
-        "mp4": "mp4",
-        "webm": "webm",
-    }.get(str(extension).lower())
-    if muxer is None:
-        raise ValueError("Private Save Video format is not supported.")
-    return muxer
-
-
-def _media_type_for_extension(extension: object) -> str:
-    media_type = {
-        "avi": "video/x-msvideo",
-        "gif": "image/gif",
-        "mkv": "video/x-matroska",
-        "mov": "video/quicktime",
-        "mp4": "video/mp4",
-        "webm": "video/webm",
-        "webp": "image/webp",
-    }.get(str(extension).lower())
-    if media_type is None:
-        raise ValueError("Private Save Video format is not supported.")
-    return media_type
-
-
 class SaveVideoAdvanced(io.ComfyNode):
     state = {
         "previews": {},
@@ -455,7 +426,7 @@ class SaveVideoAdvanced(io.ComfyNode):
         return float("NaN")
 
     @classmethod
-    async def execute(
+    def execute(
         cls,
         images=None,
         audio=None,
@@ -474,7 +445,6 @@ class SaveVideoAdvanced(io.ComfyNode):
         pause_mode: bool = False,
         privacy_mode: bool = True,
         release_token: str = "",
-        unique_id: str | None = None,
         **kwargs,
     ) -> io.NodeOutput:
         node_id = cls._node_id()
@@ -482,16 +452,7 @@ class SaveVideoAdvanced(io.ComfyNode):
         release = cls._consume_release(node_id, release_token)
 
         if release is not None:
-            current = cls.state["media"].get(node_id) or {}
-            stored = (
-                await utils_media_artifacts().consume_replay(
-                    node_id,
-                    int(current.get("revision", 0)),
-                    privacy_mode=current.get("privacy_mode", True),
-                )
-                if current.get("managed")
-                else cls._load_replay_bundle(node_id)
-            )
+            stored = cls._load_replay_bundle(node_id)
             if stored is not None:
                 cls.state["media"][node_id]["paused"] = False
                 control = cls._pause_control_payload(node_id, mode="released", released=True)
@@ -562,7 +523,7 @@ class SaveVideoAdvanced(io.ComfyNode):
 
         try:
             helto_progress.update("Saving video output", phase="save_video", percent=30, node_id=node_id)
-            output_files = [] if privacy_mode and not save_output else cls._save_video(
+            output_files = cls._save_video(
                 frames=frames,
                 audio=audio,
                 save_dir=save_dir,
@@ -574,56 +535,24 @@ class SaveVideoAdvanced(io.ComfyNode):
                 save_output=save_output,
                 format_kwargs=kwargs,
             )
+            final_path = output_files[-1]
             helto_progress.update("Creating video preview", phase="preview", percent=75, node_id=node_id)
             if privacy_mode:
-                record = await cls._publish_managed_private_preview(
-                    utils_media_artifacts(),
-                    owner_key=str(unique_id or node_id),
-                    frames=frames,
-                    audio=audio,
-                    filename_prefix=filename_prefix,
-                    counter=counter,
-                    frame_rate=float(frame_rate),
-                    loop_count=int(loop_count),
-                    format=format,
-                    format_kwargs=kwargs,
-                )
-                preview = ui.PreviewVideo([record.to_record()])
+                preview = ui.PreviewVideo([cls._private_preview_record(final_path)])
             else:
-                final_path = output_files[-1]
                 preview = ui.PreviewVideo([cls._preview_result(final_path)])
 
             returned_files = output_files if save_output or not privacy_mode else []
             filenames = (save_output, returned_files)
             helto_progress.update("Storing replay bundle", phase="store", percent=88, node_id=node_id)
-            if privacy_mode:
-                previous = cls.state["media"].get(node_id) or {}
-                revision = int(previous.get("revision", 0)) + 1
-                await utils_media_artifacts().store_replay(
-                    node_id,
-                    revision,
-                    {
-                        "images": cls._to_cpu_value(decoded_images),
-                        "audio": cls._to_cpu_value(audio),
-                        "filenames": filenames,
-                    },
-                    privacy_mode=True,
-                )
-                cls.state["media"][node_id] = {
-                    "managed": True,
-                    "privacy_mode": True,
-                    "revision": revision,
-                    "paused": bool(pause_mode),
-                }
-            else:
-                revision = cls._store_replay_bundle(
-                    node_id,
-                    images=decoded_images,
-                    audio=audio,
-                    filenames=filenames,
-                    paused=bool(pause_mode),
-                    privacy_mode=False,
-                )
+            revision = cls._store_replay_bundle(
+                node_id,
+                images=decoded_images,
+                audio=audio,
+                filenames=filenames,
+                paused=bool(pause_mode),
+                privacy_mode=bool(privacy_mode),
+            )
             control = cls._pause_control_payload(
                 node_id,
                 mode="paused" if pause_mode else "ready",
@@ -706,7 +635,9 @@ class SaveVideoAdvanced(io.ComfyNode):
         buffer = BytesIO()
         torch.save(payload, buffer)
         if encrypted:
-            raise RuntimeError("Private replay requires managed artifacts.")
+            output_path = private_temp_cache_dir("HeltoSaveVideoAdvanced", "replay") / f"{uuid.uuid4().hex}.pt.enc"
+            output_path.write_bytes(encrypt_bytes(buffer.getvalue(), purpose=SAVE_VIDEO_REPLAY_PURPOSE))
+            return output_path
 
         output_dir = public_temp_cache_dir("HeltoSaveVideoAdvanced", "replay")
         output_path = output_dir / f"{uuid.uuid4().hex}.pt"
@@ -726,7 +657,7 @@ class SaveVideoAdvanced(io.ComfyNode):
         try:
             data = path.read_bytes()
             if stored.get("encrypted"):
-                return None
+                data = decrypt_bytes(data, purpose=SAVE_VIDEO_REPLAY_PURPOSE)
 
             buffer = BytesIO(data)
             return torch.load(buffer, map_location="cpu", weights_only=True)
@@ -751,8 +682,7 @@ class SaveVideoAdvanced(io.ComfyNode):
             node_id,
             revision,
             media_label="video",
-            is_available=lambda stored: bool(stored.get("managed"))
-            or Path(stored.get("path", "")).is_file(),
+            is_available=lambda stored: Path(stored.get("path", "")).is_file(),
         )
 
     @classmethod
@@ -774,13 +704,7 @@ class SaveVideoAdvanced(io.ComfyNode):
         revision: int | None = None,
     ) -> dict:
         stored = cls.state["media"].get(node_id)
-        has_media = bool(
-            stored
-            and (
-                stored.get("managed") is True
-                or Path(stored.get("path", "")).is_file()
-            )
-        )
+        has_media = bool(stored and Path(stored.get("path", "")).is_file())
         if stored is not None:
             revision = int(stored.get("revision", 0)) if revision is None else revision
             paused = bool(stored.get("paused", False)) if paused is None else paused
@@ -842,9 +766,7 @@ class SaveVideoAdvanced(io.ComfyNode):
         format: str,
         save_output: bool,
         format_kwargs: dict[str, Any],
-        *,
-        private_memory: bool = False,
-    ) -> list[str] | bytes:
+    ) -> list[str]:
         if "/" not in format:
             raise ValueError(f"Save Video Advanced expected a type/name format, got: {format}")
 
@@ -861,9 +783,8 @@ class SaveVideoAdvanced(io.ComfyNode):
                 loop_count,
                 format_ext,
                 format_kwargs,
-                private_memory=private_memory,
             )
-            return output_path if private_memory else [output_path]
+            return [output_path]
 
         if format_type != "video":
             raise ValueError(f"Save Video Advanced does not support format type: {format_type}")
@@ -880,99 +801,7 @@ class SaveVideoAdvanced(io.ComfyNode):
             format_ext,
             save_output,
             format_kwargs,
-            private_memory=private_memory,
         )
-
-    @classmethod
-    def _encode_private_preview_bytes(
-        cls,
-        *,
-        frames: list[torch.Tensor],
-        audio,
-        filename_prefix: str,
-        counter: int,
-        frame_rate: float,
-        loop_count: int,
-        format: str,
-        format_kwargs: dict[str, Any],
-    ) -> bytes:
-        """Encode a private preview without a named plaintext output path."""
-
-        encoded = cls._save_video(
-            frames=frames,
-            audio=audio,
-            save_dir="",
-            filename_prefix=filename_prefix,
-            counter=counter,
-            frame_rate=frame_rate,
-            loop_count=loop_count,
-            format=format,
-            save_output=False,
-            format_kwargs=format_kwargs,
-            private_memory=True,
-        )
-        if not isinstance(encoded, bytes):
-            raise RuntimeError("Private Save Video encoding did not return bytes.")
-        return encoded
-
-    @classmethod
-    async def _publish_managed_private_preview(
-        cls,
-        managed_artifacts,
-        *,
-        owner_key: str,
-        frames: list[torch.Tensor],
-        audio,
-        filename_prefix: str,
-        counter: int,
-        frame_rate: float,
-        loop_count: int,
-        format: str,
-        format_kwargs: dict[str, Any],
-        privacy_mode: object = True,
-        mode_facts: object = None,
-        execution: object = None,
-    ):
-        media_type = cls._private_preview_media_type(
-            frames,
-            format,
-            format_kwargs,
-        )
-        return await managed_artifacts.publish_save_video_preview(
-            lambda: cls._encode_private_preview_bytes(
-                frames=frames,
-                audio=audio,
-                filename_prefix=filename_prefix,
-                counter=counter,
-                frame_rate=frame_rate,
-                loop_count=loop_count,
-                format=format,
-                format_kwargs=format_kwargs,
-            ),
-            owner_key=owner_key,
-            media_type=media_type,
-            privacy_mode=privacy_mode,
-            mode_facts=mode_facts,
-            execution=execution,
-        )
-
-    @staticmethod
-    def _private_preview_media_type(
-        frames: list[torch.Tensor],
-        format: str,
-        format_kwargs: dict[str, Any],
-    ) -> str:
-        if "/" not in format:
-            raise ValueError("Private Save Video format is invalid.")
-        format_type, format_name = format.split("/", 1)
-        if format_type == "image":
-            return _media_type_for_extension(format_name)
-        if format_type != "video":
-            raise ValueError("Private Save Video format is invalid.")
-        params = dict(format_kwargs)
-        params["has_alpha"] = bool(frames and frames[0].shape[-1] == 4)
-        video_format = _apply_format_widgets(format_name, params)
-        return _media_type_for_extension(video_format.get("extension"))
 
     @classmethod
     def _save_animated_image(
@@ -985,9 +814,7 @@ class SaveVideoAdvanced(io.ComfyNode):
         loop_count: int,
         format_ext: str,
         format_kwargs: dict[str, Any],
-        *,
-        private_memory: bool = False,
-    ) -> str | bytes:
+    ) -> str:
         if format_ext not in ("gif", "webp"):
             raise ValueError(f"Save Video Advanced image format is not supported: image/{format_ext}")
 
@@ -1010,14 +837,7 @@ class SaveVideoAdvanced(io.ComfyNode):
                 total=total,
                 node_id=node_id,
             )
-        output = (
-            BytesIO()
-            if private_memory
-            else os.path.join(
-                save_dir,
-                f"{filename_prefix}_{counter:05}.{format_ext}",
-            )
-        )
+        output_path = os.path.join(save_dir, f"{filename_prefix}_{counter:05}.{format_ext}")
         kwargs: dict[str, Any] = {
             "save_all": True,
             "append_images": pil_frames[1:],
@@ -1039,9 +859,9 @@ class SaveVideoAdvanced(io.ComfyNode):
             kwargs["pnginfo"] = metadata
 
         helto_progress.update(f"Writing {format_ext.upper()} file", phase="encode_animation", value=total, total=total, node_id=node_id)
-        pil_frames[0].save(output, format=format_ext.upper(), **kwargs)
+        pil_frames[0].save(output_path, format=format_ext.upper(), **kwargs)
         helto_progress.done(f"Encoded {format_ext.upper()} file", phase="encode_animation", value=total, total=total, node_id=node_id)
-        return output.getvalue() if isinstance(output, BytesIO) else output
+        return output_path
 
     @classmethod
     def _save_ffmpeg_video(
@@ -1056,9 +876,7 @@ class SaveVideoAdvanced(io.ComfyNode):
         format_ext: str,
         save_output: bool,
         format_kwargs: dict[str, Any],
-        *,
-        private_memory: bool = False,
-    ) -> list[str] | bytes:
+    ) -> list[str]:
         node_id = cls._node_id()
         helto_progress.start("Configuring ffmpeg video", phase="encode_video", percent=0, node_id=node_id)
         ffmpeg = _find_ffmpeg()
@@ -1103,16 +921,7 @@ class SaveVideoAdvanced(io.ComfyNode):
         helto_progress.done("Converted video frames", phase="convert_frames", value=frame_total, total=frame_total, node_id=node_id)
 
         extension = video_format["extension"]
-        anonymous_video = tempfile.TemporaryFile() if private_memory else None
-        video_path = (
-            _anonymous_file_path(anonymous_video)
-            if anonymous_video is not None
-            else os.path.join(
-                save_dir,
-                f"{filename_prefix}_{counter:05}.{extension}",
-            )
-        )
-        pass_fds = (() if anonymous_video is None else (anonymous_video.fileno(),))
+        video_path = os.path.join(save_dir, f"{filename_prefix}_{counter:05}.{extension}")
         command = [
             ffmpeg,
             "-v",
@@ -1137,18 +946,7 @@ class SaveVideoAdvanced(io.ComfyNode):
             "-",
         ]
 
-        anonymous_metadata = None
-        if private_memory:
-            anonymous_metadata = cls._write_ffmpeg_metadata_stream(video_format)
-            metadata_path = (
-                _anonymous_file_path(anonymous_metadata)
-                if anonymous_metadata is not None
-                else None
-            )
-            if anonymous_metadata is not None:
-                pass_fds = (*pass_fds, anonymous_metadata.fileno())
-        else:
-            metadata_path = cls._write_ffmpeg_metadata_file(video_format, save_dir)
+        metadata_path = cls._write_ffmpeg_metadata_file(video_format, save_dir)
         if metadata_path is not None:
             command += ["-f", "ffmetadata", "-i", metadata_path, "-map_metadata", "1"]
 
@@ -1166,30 +964,19 @@ class SaveVideoAdvanced(io.ComfyNode):
         if metadata_path is not None:
             command += ["-movflags", "use_metadata_tags"]
         _merge_filter_args(command)
-        if private_memory:
-            command = [argument for argument in command if argument != "-n"]
-            command += ["-y", "-f", _ffmpeg_muxer(extension), video_path]
-        else:
-            command.append(video_path)
+        command.append(video_path)
 
         env = os.environ.copy()
         env.update(video_format.get("environment", {}))
         pbar = ProgressBar(len(frame_arrays))
         frame_total = len(frame_arrays)
         helto_progress.start("Writing frames to ffmpeg", phase="write_frames", value=0, total=frame_total, node_id=node_id)
-        main_complete = False
         try:
             # A pipe can deadlock if ffmpeg fills stderr while Python is still
             # feeding raw frames. A temporary file drains stderr continuously
             # without keeping an unbounded diagnostic buffer in memory.
             with tempfile.TemporaryFile() as stderr_file:
-                process = subprocess.Popen(
-                    command,
-                    stdin=subprocess.PIPE,
-                    stderr=stderr_file,
-                    env=env,
-                    pass_fds=pass_fds,
-                )
+                process = subprocess.Popen(command, stdin=subprocess.PIPE, stderr=stderr_file, env=env)
                 assert process.stdin is not None
                 try:
                     for index, frame_array in enumerate(frame_arrays, start=1):
@@ -1212,43 +999,20 @@ class SaveVideoAdvanced(io.ComfyNode):
                 return_code = process.wait()
                 stderr_file.seek(0)
                 stderr = stderr_file.read()
-                main_complete = True
         finally:
-            if anonymous_metadata is not None:
-                anonymous_metadata.close()
-            elif metadata_path is not None:
+            if metadata_path is not None:
                 try:
                     os.unlink(metadata_path)
                 except FileNotFoundError:
                     pass
-            if not main_complete and anonymous_video is not None:
-                anonymous_video.close()
 
         if return_code != 0:
-            if anonymous_video is not None:
-                anonymous_video.close()
             raise RuntimeError("Save Video Advanced ffmpeg failed:\n" + stderr.decode("utf-8", "replace"))
         helto_progress.done("Wrote frames to ffmpeg", phase="write_frames", value=frame_total, total=frame_total, node_id=node_id)
         if stderr:
             print(stderr.decode("utf-8", "replace"), end="")
 
         helto_progress.update("Finalizing video file", phase="encode_video", percent=95, node_id=node_id)
-        if anonymous_video is not None:
-            try:
-                encoded = cls._private_video_bytes_with_audio(
-                    audio=audio,
-                    video=anonymous_video,
-                    extension=extension,
-                    frame_rate=frame_rate,
-                    frame_count=len(frames),
-                    video_format=video_format,
-                    env=env,
-                )
-            finally:
-                anonymous_video.close()
-            helto_progress.done("Encoded video in memory", phase="encode_video", percent=100, node_id=node_id)
-            return encoded
-
         cls._replace_with_audio_mux_if_needed(
             audio=audio,
             video_path=video_path,
@@ -1289,101 +1053,6 @@ class SaveVideoAdvanced(io.ComfyNode):
         return padded, (width + pad_width, height + pad_height)
 
     @classmethod
-    def _private_video_bytes_with_audio(
-        cls,
-        *,
-        audio,
-        video,
-        extension: str,
-        frame_rate: float,
-        frame_count: int,
-        video_format: dict[str, Any],
-        env: dict[str, str],
-    ) -> bytes:
-        video.flush()
-        video.seek(0)
-        if audio is None or "waveform" not in audio:
-            return video.read()
-
-        audio_data, sample_rate, channels, audio_pass, apad = cls._audio_mux_inputs(
-            audio,
-            frame_rate,
-            frame_count,
-            video_format,
-        )
-
-        with tempfile.TemporaryFile() as output:
-            command = [
-                _find_ffmpeg() or "ffmpeg",
-                "-v",
-                "error",
-                "-i",
-                _anonymous_file_path(video),
-                "-ar",
-                str(sample_rate),
-                "-ac",
-                str(channels),
-                "-f",
-                "f32le",
-                "-i",
-                "-",
-                "-c:v",
-                "copy",
-                *audio_pass,
-                *apad,
-                "-shortest",
-                "-y",
-                "-f",
-                _ffmpeg_muxer(extension),
-                _anonymous_file_path(output),
-            ]
-            _merge_filter_args(command, "-af")
-            result = subprocess.run(
-                command,
-                input=audio_data,
-                env=env,
-                capture_output=True,
-                check=False,
-                pass_fds=(video.fileno(), output.fileno()),
-            )
-            if result.returncode != 0:
-                raise RuntimeError(
-                    "Save Video Advanced audio mux failed:\n"
-                    + result.stderr.decode("utf-8", "replace")
-                )
-            if result.stderr:
-                print(result.stderr.decode("utf-8", "replace"), end="")
-            output.flush()
-            output.seek(0)
-            return output.read()
-
-    @staticmethod
-    def _audio_mux_inputs(
-        audio,
-        frame_rate: float,
-        frame_count: int,
-        video_format: dict[str, Any],
-    ) -> tuple[bytes, int, int, list[str], list[str]]:
-        waveform = audio["waveform"]
-        if waveform.ndim == 3:
-            waveform = waveform[0]
-        channels = waveform.shape[0]
-        sample_rate = int(audio["sample_rate"])
-        audio_data = (
-            waveform.transpose(0, 1)
-            .contiguous()
-            .cpu()
-            .numpy()
-            .astype(np.float32)
-            .tobytes()
-        )
-        audio_pass = list(video_format.get("audio_pass", ["-c:a", "libopus"]))
-        apad = []
-        if str(video_format.get("trim_to_audio", "False")) == "False":
-            apad = ["-af", f"apad=whole_dur={frame_count / frame_rate + 1}"]
-        return audio_data, sample_rate, channels, audio_pass, apad
-
-    @classmethod
     def _replace_with_audio_mux_if_needed(
         cls,
         audio,
@@ -1406,13 +1075,17 @@ class SaveVideoAdvanced(io.ComfyNode):
             return
 
         helto_progress.start("Muxing audio", phase="mux_audio", percent=0, node_id=node_id)
-        audio_data, sample_rate, channels, audio_pass, apad = cls._audio_mux_inputs(
-            audio,
-            frame_rate,
-            frame_count,
-            video_format,
-        )
+        waveform = audio["waveform"]
+        if waveform.ndim == 3:
+            waveform = waveform[0]
+        channels = waveform.shape[0]
+        sample_rate = audio["sample_rate"]
+        audio_data = waveform.transpose(0, 1).contiguous().cpu().numpy().astype(np.float32).tobytes()
         output_path = os.path.join(save_dir, f"{filename_prefix}_{counter:05}.audio_mux.{uuid.uuid4().hex}.{extension}")
+        audio_pass = video_format.get("audio_pass", ["-c:a", "libopus"])
+        apad = []
+        if str(video_format.get("trim_to_audio", "False")) == "False":
+            apad = ["-af", f"apad=whole_dur={frame_count / frame_rate + 1}"]
 
         command = [
             ffmpeg,
@@ -1469,8 +1142,8 @@ class SaveVideoAdvanced(io.ComfyNode):
 
     @classmethod
     def _write_ffmpeg_metadata_file(cls, video_format: dict[str, Any], save_dir: str) -> str | None:
-        content = cls._ffmpeg_metadata_content(video_format)
-        if content is None:
+        metadata = cls._ffmpeg_metadata(video_format)
+        if not metadata:
             return None
 
         with tempfile.NamedTemporaryFile(
@@ -1481,34 +1154,10 @@ class SaveVideoAdvanced(io.ComfyNode):
             dir=save_dir,
             delete=False,
         ) as stream:
-            stream.write(content)
+            stream.write(";FFMETADATA1\n")
+            for key, value in metadata.items():
+                stream.write(f"{cls._ffmetadata_escape(str(key))}={cls._ffmetadata_escape(value)}\n")
             return stream.name
-
-    @classmethod
-    def _write_ffmpeg_metadata_stream(cls, video_format: dict[str, Any]):
-        content = cls._ffmpeg_metadata_content(video_format)
-        if content is None:
-            return None
-        stream = tempfile.TemporaryFile(mode="w+b")
-        stream.write(content.encode("utf-8"))
-        stream.flush()
-        stream.seek(0)
-        return stream
-
-    @classmethod
-    def _ffmpeg_metadata_content(
-        cls,
-        video_format: dict[str, Any],
-    ) -> str | None:
-        metadata = cls._ffmpeg_metadata(video_format)
-        if not metadata:
-            return None
-        lines = [";FFMETADATA1"]
-        lines.extend(
-            f"{cls._ffmetadata_escape(str(key))}={cls._ffmetadata_escape(value)}"
-            for key, value in metadata.items()
-        )
-        return "\n".join(lines) + "\n"
 
     @classmethod
     def _png_metadata(cls) -> PngInfo | None:
@@ -1539,6 +1188,17 @@ class SaveVideoAdvanced(io.ComfyNode):
                 preview_path = os.path.join(preview_dir, f"{stem}_{uuid.uuid4().hex}{suffix}")
             shutil.copy2(path, preview_path)
         return ui.SavedResult(os.path.basename(preview_path), "helto_save_video_advanced", io.FolderType.temp)
+
+    @classmethod
+    def _private_preview_record(cls, path: str) -> dict[str, Any]:
+        encrypted_path = write_encrypted_temp_file(path, "save_video_advanced")
+        preview_filename = f"video_{_safe_node_id(cls._node_id())}_{uuid.uuid4().hex}{Path(path).suffix or '.bin'}"
+        return private_media_record(
+            encrypted_path,
+            content_type=content_type_for_path(path),
+            encrypted=True,
+            filename=preview_filename,
+        )
 
     @classmethod
     def _node_id(cls) -> str:
@@ -1595,3 +1255,16 @@ class SaveVideoAdvanced(io.ComfyNode):
             if match:
                 counters.append(int(match.group("counter")))
         return max(counters, default=0) + 1
+
+
+@server.PromptServer.instance.routes.post("/helto_save_video_advanced/release")
+async def release_save_video_advanced(request):
+    try:
+        denied = aiohttp_check_privacy_token(request)
+        if denied is not None:
+            return denied
+        data = await request.json()
+        result, status = dispatch_pause_release(SaveVideoAdvanced, data)
+        return web.json_response(result, status=status)
+    except Exception as exc:
+        return web.json_response({"ok": False, "error": str(exc)}, status=400)

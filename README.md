@@ -13,11 +13,6 @@ cd /path/to/ComfyUI/custom_nodes
 git clone git@github.com:helto4real/comfyui-utils.git
 ```
 
-ComfyUI Manager installs the dependencies declared by the pack. For a manual
-clone, install `requirements.txt` with the Python interpreter used by ComfyUI.
-Both `requirements.txt` and `pyproject.toml` pin the same exact
-`helto-privacy` release; the pack has no local-path dependency or fallback.
-
 The pack registers through ComfyUI's V3 `comfy_entrypoint()` extension API and exposes its frontend assets from `./web`. If ComfyUI is already running, restart it after installing or updating the node pack so the Python nodes and JavaScript widgets are reloaded.
 
 `Save Video Advanced` needs `ffmpeg` for video container outputs. It first tries `imageio-ffmpeg`, then falls back to `ffmpeg` on `PATH`.
@@ -92,11 +87,11 @@ Bundled Helto nodes that emit detailed phase updates include Prompt Enhancer, Mu
 
 `QManager` is a left-sidebar queue manager for queued workflow runs. New queued workflows are added to the Running tab, move to History when they finish, and then automatically allow the next pending workflow to start.
 
-Queue state is persisted in `config/queue_manager_state.sqlite3`. The queue singleton is always private and the stored SQLite payload is encrypted at rest, including queue and history metadata. When ComfyUI restarts, the queue stays paused and does not auto-resume; use the resume control when you are ready to continue.
+Queue state is persisted in `config/queue_manager_state.sqlite3`. Privacy mode is enabled by default and encrypts the stored SQLite payload at rest, including queue and history metadata. When ComfyUI restarts, the queue stays paused and does not auto-resume; use the resume control when you are ready to continue.
 
 Rows stay compact and show the workflow title, status, time, and icon actions on one line. Current and history runs can load their saved workflow. Active runs can be aborted from the queue row and move to History with the `Aborted` status. If ComfyUI stops tracking an active run after a crash, QManager moves that stale run to History as an error and continues with the next pending run when the queue is not paused. History runs can also be rerun, deleted individually, or cleared all at once. The History tab includes a same-row search box and workflow-name dropdown for filtering completed runs.
 
-The latest output preview button supports image and video outputs. Hovering the icon shows a small thumbnail, and clicking opens the shared media preview window. Public outputs use regular ComfyUI `/view` records; private outputs use opaque `helto-privacy` artifact references and short-lived leases.
+The latest output preview button supports image and video outputs. Hovering the icon shows a small thumbnail, and clicking opens the shared media preview window. Preview URLs support both regular ComfyUI `/view` image/video records and encrypted private-media records produced by this node pack's privacy-aware save and preview nodes.
 
 ## Parameter Helpers
 
@@ -287,7 +282,7 @@ Inputs:
 | `new` | Image | optional | Candidate image batch. Works as before when no mask is connected. |
 | `original_mask` | Mask | optional | When connected with `original`, masked areas are previewed as black. When connected without `original`, the mask is previewed directly. |
 | `new_mask` | Mask | optional | When connected with `new`, masked areas are previewed as black. When connected without `new`, the mask is previewed directly. |
-| `privacy_mode` | Boolean | `True` | When true, preview images are published as managed private artifacts. |
+| `privacy_mode` | Boolean | `True` | When true, preview images are written through the encrypted private-media path. |
 
 Outputs: none. The node saves preview images and returns UI data for the frontend widget.
 
@@ -308,7 +303,7 @@ Inputs:
 | `audio_1` | Audio | optional | Audio source for the first preview. |
 | `audio_2` | Audio | optional | Audio source for the second preview. |
 | `frame_rate` | Float | `24.0` | Used when image batches are encoded into preview videos. |
-| `privacy_mode` | Boolean | `True` | When true, preview MP4 data is published as a managed private artifact. |
+| `privacy_mode` | Boolean | `True` | When true, preview MP4 data is written through the encrypted private-media path. |
 
 Outputs: none. The node writes MP4 previews and returns UI data for the frontend widget.
 
@@ -338,7 +333,7 @@ Inputs:
 | `select_every_nth` | Int | `1` | Keeps every nth frame. |
 | `resize_mode` | Combo | `original` | `original`, `resize`, `pad`, or `crop`. |
 | `custom_width` / `custom_height` | Int | `0` | Target size for resize/pad/crop; `0` uses the source dimension. |
-| `privacy_mode` | Boolean | `True` | When true, the selected video preview is served through an authorized source lease. |
+| `privacy_mode` | Boolean | `True` | When true, the selected video preview is served through the private-media path. |
 
 Outputs: `images`, `audio`, `fps`, `width`, `height`, `duration`.
 
@@ -370,10 +365,7 @@ When no valid image is selected, the node returns a 512x512 black placeholder. `
 
 `Helto Privacy Show Any` is an output node for inspecting arbitrary values. It accepts an `*` input, converts safe values to text, displays the result in a read-only node panel, exposes a copy button, and outputs the same text as a string.
 
-Plain display text is not serialized into the workflow. The bound shared
-workflow handle stores only an opaque protected envelope in the hidden
-`encrypted_text_state` widget, and authorized display uses the declared shared
-protected operation.
+Plain display text is not serialized into the workflow. The frontend stores the last displayed value only in the hidden `encrypted_text_state` widget as a Helto privacy JSON envelope using the same shared privacy encryption route as the multi-image selector.
 
 Scalar values, strings, bytes that decode as UTF-8, lists, tuples, sets, and dictionaries convert directly to text or JSON. Tensor-like and array-like values are summarized by shape, dtype, and device unless they are tiny. Runtime-heavy objects such as models, CLIP, VAE, samplers, and other opaque Python instances are reported as unsupported because their internal state is not meaningful or safe to stringify.
 
@@ -396,7 +388,7 @@ Inputs:
 | `use_date_folder` | Boolean | `False` | Appends a `YYYY-MM-DD` folder. |
 | `subfolder` | String | empty | Relative subfolder appended after the optional date folder. |
 | `filename_prefix` | String | `img` | Prefix for numbered files. |
-| `privacy_mode` | Boolean | `True` | When true, preview images are published as managed private artifacts. |
+| `privacy_mode` | Boolean | `True` | When true, preview images are written through the encrypted private-media path. |
 
 Outputs: `images`, `width`, `height`.
 
@@ -428,30 +420,13 @@ Inputs:
 | `format` | Combo | `video/h264-mp4` when available | Includes `image/gif`, `image/webp`, and discovered/fallback video presets. |
 | `pingpong` | Boolean | `False` | Appends reversed middle frames for a ping-pong loop. |
 | `save_output` | Boolean | `True` | When false, writes to ComfyUI temp instead of the selected output folder. |
-| `privacy_mode` | Boolean | `True` | When true, previews use managed private artifacts, including preview-only runs with `save_output=False`. |
+| `privacy_mode` | Boolean | `True` | When true, previews are served through the encrypted private-media path, including preview-only runs with `save_output=False`. |
 
 Outputs: `images`, `audio`, and `filenames` as `VHS_FILENAMES`.
 
 The `filenames` output is a tuple of `(save_output, output_files)`, matching VideoHelperSuite-style filename consumers. Video outputs return one final path; when audio is muxed, it replaces the silent intermediate at the normal numbered filename.
 
 Formats come from VideoHelperSuite-compatible JSON presets when they are available, with built-in fallbacks for `video/h264-mp4`, `video/webm`, and `video/ffmpeg-gif`. The frontend extension shows extra format-specific widgets after the `format` selector.
-
-## Shared privacy runtime
-
-All privacy-bearing features are registered as one attested
-`helto.comfyui-utils` profile. The pack fails to load when `helto-privacy` is
-missing, when the signed suite is inactive, when the profile fingerprint does
-not match, or when any server/browser adapter slot is absent. Node privacy
-inputs default to enabled; only an explicit `false` selects public mode for
-nodes that expose that control. Queue persistence remains private.
-
-Workflow fields use shared snapshots and fresh execution references. Selector
-masks, thumbnails, media previews, and replay spills use managed artifacts;
-source media is exposed only through allowed-root leases. Prompt-provider and
-Queue Manager state use revisioned managed singletons. Historical Utils
-workflow generations, mask formats, provider settings, and queue containers
-remain read-only migration inputs and are rewritten to the current format on
-authorized use. No legacy writer or local privacy route remains.
 
 ## Troubleshooting
 
@@ -461,7 +436,7 @@ authorized use. No legacy writer or local privacy route remains.
 | `subfolder must be relative` or `subfolder cannot contain path traversal` | Keep `subfolder` relative and do not use `..`. |
 | `ffmpeg is required for Save Video Advanced video outputs.` | Install `imageio-ffmpeg` in the ComfyUI environment or make `ffmpeg` available on `PATH`. |
 | Latent input fails in `Save Video Advanced` | Connect a VAE when the `images` input receives latents. |
-| `Save Video Advanced private preview is not available downstream` | With `save_output=False` and `privacy_mode=True`, the leased UI preview is available, but `filenames` is intentionally empty because no readable video file is saved. |
+| `Save Video Advanced private preview is not available downstream` | With `save_output=False` and `privacy_mode=True`, the encrypted UI preview is available, but `filenames` is intentionally empty because no readable video file is saved. |
 | `Ingen modell hittades!` from `Model Auto Router` | Connect or unmute at least one of `model_a` or `model_b`. |
 | Expected video format is missing | Install or check VideoHelperSuite-compatible `video_formats` JSON presets. Built-in fallback formats are still available. |
 | Comparer or selector preview is hidden | Toggle `hide mode` off, or hover the node preview area to reveal it. |
@@ -473,9 +448,8 @@ This README is based on the current node schemas and behavior in this repository
 
 - Pack registration and web directory: `__init__.py`
 - Node implementations: `nodes/**/__init__.py` and `helto_selector_backend/node.py`
-- Selector managed workflow/artifacts and product services: `helto_selector_backend/managed_workflow.py`, `helto_selector_backend/managed_artifacts.py`, `helto_selector_backend/services.py`, and `helto_selector_backend/image_processing.py`
-- Complete profile and typed routes: `shared/managed_privacy.py`, `shared/managed_privacy_routes.py`, and `web/managed_privacy.js`
-- Queue manager singleton model and frontend: `shared/queue_manager_managed.py` and `web/queue_manager.js`
+- Selector backend routes and services: `helto_selector_backend/routes.py`, `helto_selector_backend/services.py`, and `helto_selector_backend/image_processing.py`
+- Queue manager routes, SQLite persistence, and frontend: `shared/queue_manager_routes.py`, `shared/queue_manager_store.py`, and `web/queue_manager.js`
 - Shared frontend media preview utility: `web/media_preview.js`
 - Shared video dimensions and frame calculations: `shared/video_params.py`
 - Frontend selector, preview, load, and save widgets: `web/*.js`

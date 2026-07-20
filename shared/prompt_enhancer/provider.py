@@ -47,7 +47,6 @@ KNOWN_OLLAMA_VISION_MODEL_MARKERS = (
 )
 
 PROMPT_TYPES = ("image", "video", "multi scene video")
-_LEGACY_PROVIDER_AUTH = object()
 IMAGE_SYSTEM_PROMPT = load_packaged_system_prompt("image")
 VISUAL_CONTEXT_SYSTEM_PROMPT = (
     "You are a concise visual context analyzer for a prompt enhancement node. "
@@ -176,6 +175,10 @@ def normalize_ollama_url(url: str | None) -> str:
     # server-side requests at file://, gopher://, etc. (SSRF) via the url field.
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         raise RuntimeError("Ollama URL must be an http(s) address.")
+    if parsed.username is not None or parsed.password is not None:
+        raise RuntimeError("Ollama URL must not contain embedded credentials.")
+    if parsed.query or parsed.fragment:
+        raise RuntimeError("Ollama URL must not contain a query string or fragment.")
     return normalized
 
 
@@ -447,33 +450,12 @@ class OllamaPromptProvider:
 
 class PromptProviderRegistry:
     def generate(self, request: PromptEnhancerRequest, progress: PromptEnhancerProgress | None = None) -> str:
-        return self._generate(request, progress, _LEGACY_PROVIDER_AUTH)
-
-    def _generate(
-        self,
-        request: PromptEnhancerRequest,
-        progress: PromptEnhancerProgress | None,
-        auth_token: str | None | object,
-    ) -> str:
         provider = (request.provider or PROVIDER_OLLAMA).strip() or PROVIDER_OLLAMA
         if provider == PROVIDER_OLLAMA:
             return OllamaPromptProvider().generate(request, progress)
         from .local_provider import LocalPromptProvider
 
-        local = LocalPromptProvider()
-        if auth_token is _LEGACY_PROVIDER_AUTH:
-            return local.generate(request, progress)
-        return local.generate_with_auth(request, auth_token, progress)
-
-    def generate_with_auth(
-        self,
-        request: PromptEnhancerRequest,
-        auth_token: str | None,
-        progress: PromptEnhancerProgress | None = None,
-    ) -> str:
-        """Generate with an explicitly scoped local-provider credential."""
-
-        return self._generate(request, progress, auth_token)
+        return LocalPromptProvider().generate(request, progress)
 
     def generate_visual_context(
         self,
@@ -481,11 +463,3 @@ class PromptProviderRegistry:
         progress: PromptEnhancerProgress | None = None,
     ) -> str:
         return self.generate(request, progress)
-
-    def generate_visual_context_with_auth(
-        self,
-        request: PromptEnhancerRequest,
-        auth_token: str | None,
-        progress: PromptEnhancerProgress | None = None,
-    ) -> str:
-        return self.generate_with_auth(request, auth_token, progress)

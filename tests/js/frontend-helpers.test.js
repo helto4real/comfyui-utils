@@ -83,6 +83,7 @@ import {
     acceptPromptAutocompleteSuggestion,
     addPromptVariable,
     autocompleteStateForPrompt,
+    decryptPromptText,
     dismissPromptAutocompleteUntilInput,
     emptyAutocompleteState,
     insertVariableSuggestion,
@@ -90,6 +91,8 @@ import {
     fetchSystemPrompt,
     fetchSystemPromptPresets,
     hideSerializedSettingsWidgets,
+    isEncryptedText,
+    isEncryptedVariables,
     keepFixedPromptSeed,
     isPromptAutocompleteVisible,
     shouldSuppressPromptAutocompleteRefresh,
@@ -144,16 +147,32 @@ import {
 import {
     PRIVACY_SHOW_ANY_STATE_WIDGET,
     PRIVACY_SHOW_ANY_STATE_PROPERTY,
+    collectPrivacyShowAnyNodes,
+    decryptTextState,
+    decryptTextStateForOwner,
+    encryptedPrivacyShowAnyState,
+    encryptTextState,
+    encryptTextStateForOwner,
+    extractPrivacyShowAnyEncryptedText,
+    flushPrivacyShowAnyEncryption,
     hidePrivacyShowAnyStateWidget,
-    preservePrivacyShowAnySerializedProperties,
-    protectedPrivacyShowAnyState,
+    isEncryptedText as isPrivacyEncryptedText,
     privacyShowAnyDisplayState,
-    privacyShowAnyProtectionPromise,
-    serializedProtectedPropertyValue,
-    serializedProtectedWidgetValue,
-    setProtectedPrivacyShowAnyState,
-    setPrivacyShowAnyProtectionPromise,
+    sanitizePrivacyShowAnySerializedProperties,
+    serializedEncryptedPropertyValue,
+    serializedEncryptedWidgetValue,
+    setEncryptedPrivacyShowAnyState,
 } from "../../web/privacy_show_any_helpers.js";
+import {
+    __setPrivacyModuleForTests,
+} from "../../web/privacy_common.js";
+import {
+    canonicalPrivacyValue,
+    encryptedOrReusePrivacyValue,
+    isPrivacyEnvelope,
+    rememberPrivacyEnvelope,
+    stablePrivacyJsonStringify,
+} from "../../web/privacy_envelope.js";
 
 function appWithSettings(settings) {
     return {
@@ -194,6 +213,27 @@ function privacyEnvelopeText(text, keyId = "test-key") {
         schema: "helto.comfyui-utils",
         version: 1,
     });
+}
+
+function privacyEnvelopePlaintext(encrypted) {
+    const payload = JSON.parse(String(encrypted || "{}"));
+    return Buffer.from(String(payload.ciphertext || ""), "base64").toString("utf8");
+}
+
+function countingPrivacyApi() {
+    let encryptCount = 0;
+    return {
+        get encryptCount() {
+            return encryptCount;
+        },
+        async encrypt(text) {
+            encryptCount += 1;
+            return { encrypted: privacyEnvelopeText(text, `test-key-${encryptCount}`) };
+        },
+        async decrypt(encrypted) {
+            return { data: privacyEnvelopePlaintext(encrypted) };
+        },
+    };
 }
 
 function fakeDomElement(document, tagName = "div") {
@@ -239,13 +279,136 @@ function fakeDomDocument() {
     return document;
 }
 
-test("selector image versions remain deterministic while URLs are managed asynchronously", () => {
+test("privacy envelope helper reuses unchanged private values and canonicalizes objects", async () => {
+    const selectorApi = countingPrivacyApi();
+    const owner = {};
+
+    assert.equal(stablePrivacyJsonStringify({ b: 2, a: 1 }), "{\"a\":1,\"b\":2}");
+    assert.equal(canonicalPrivacyValue("plain"), "plain");
+
+    const first = await encryptedOrReusePrivacyValue(owner, "state", "{\"b\":2,\"a\":1}", {
+        selectorApi,
+        canonicalValue: { b: 2, a: 1 },
+    });
+    const second = await encryptedOrReusePrivacyValue(owner, "state", "{\"a\":1,\"b\":2}", {
+        selectorApi,
+        canonicalValue: { a: 1, b: 2 },
+    });
+
+    assert.equal(isPrivacyEnvelope(first), true);
+    assert.equal(second, first);
+    assert.equal(selectorApi.encryptCount, 1);
+
+    const changed = await encryptedOrReusePrivacyValue(owner, "state", "{\"a\":1,\"b\":3}", {
+        selectorApi,
+        canonicalValue: { a: 1, b: 3 },
+    });
+
+    assert.notEqual(changed, first);
+    assert.equal(selectorApi.encryptCount, 2);
+});
+
+test("privacy envelope helper leaves public and already encrypted values unchanged", async () => {
+    const selectorApi = countingPrivacyApi();
+    const owner = {};
+
+    const publicValue = await encryptedOrReusePrivacyValue(owner, "field", "public text", {
+        privacyMode: false,
+        selectorApi,
+    });
+    const encrypted = privacyEnvelopeText("loaded");
+    const alreadyEncrypted = await encryptedOrReusePrivacyValue(owner, "field", encrypted, {
+        privacyMode: true,
+        selectorApi,
+    });
+
+    assert.equal(publicValue, "public text");
+    assert.equal(alreadyEncrypted, encrypted);
+    assert.equal(selectorApi.encryptCount, 0);
+});
+
+test("privacy envelope helper reuses envelopes remembered from restore", async () => {
+    const selectorApi = countingPrivacyApi();
+    const owner = {};
+    const loaded = privacyEnvelopeText("loaded");
+
+    rememberPrivacyEnvelope(owner, "field", { z: 1, a: 2 }, loaded);
+
+    const serialized = await encryptedOrReusePrivacyValue(owner, "field", "{\"a\":2,\"z\":1}", {
+        selectorApi,
+        canonicalValue: { a: 2, z: 1 },
+    });
+
+    assert.equal(serialized, loaded);
+    assert.equal(selectorApi.encryptCount, 0);
+});
+
+test("privacy envelope helper fails closed when encryption is unavailable or invalid", async () => {
+    await assert.rejects(
+        () => encryptedOrReusePrivacyValue({}, "field", "private text", {
+            selectorApi: {},
+            defaultValue: "private text",
+        }),
+        /PRIVACY_ENCRYPTION_UNAVAILABLE/,
+    );
+
+    await assert.rejects(
+        () => encryptedOrReusePrivacyValue({}, "field", "private text", {
+            selectorApi: { encrypt: async () => ({ encrypted: "private text" }) },
+            defaultValue: "private text",
+        }),
+        /PRIVACY_ENCRYPTION_FAILED/,
+    );
+});
+
+test("selector image urls include metadata versions without client-authority folder lists", () => {
     const image = { date_modified: 1712345678.123, size_bytes: 4096 };
     assert.equal(selectorImageVersionToken(image), "m1712345678.123-s4096");
-    assert.equal(selectorImageVersionToken({}), "");
-    assert.equal(selectorApi.thumbnailUrl.constructor.name, "AsyncFunction");
-    assert.equal(selectorApi.viewImageUrl.constructor.name, "AsyncFunction");
-    assert.equal(selectorApi.maskUrl.constructor.name, "AsyncFunction");
+
+    const thumbUrl = new URL(selectorApi.thumbnailUrl("/tmp/a b.png", true, image), "http://localhost");
+    assert.equal(thumbUrl.pathname, "/helto_selector/thumbnail");
+    assert.equal(thumbUrl.searchParams.get("path"), "/tmp/a b.png");
+    assert.equal(thumbUrl.searchParams.get("privacy"), "true");
+    assert.equal(thumbUrl.searchParams.get("v"), "m1712345678.123-s4096");
+
+    const viewUrl = new URL(selectorApi.viewImageUrl("/tmp/a b.png", image), "http://localhost");
+    assert.equal(viewUrl.pathname, "/helto_selector/view_image");
+    assert.equal(viewUrl.searchParams.get("path"), "/tmp/a b.png");
+    assert.equal(viewUrl.searchParams.get("v"), "m1712345678.123-s4096");
+
+    const legacyThumbUrl = new URL(selectorApi.thumbnailUrl("/tmp/a.png", false), "http://localhost");
+    assert.equal(legacyThumbUrl.searchParams.get("path"), "/tmp/a.png");
+    assert.equal(legacyThumbUrl.searchParams.get("privacy"), "false");
+    assert.equal(legacyThumbUrl.searchParams.has("v"), false);
+    assert.equal(
+        new URL(selectorApi.thumbnailUrl("/tmp/a.png", "false"), "http://localhost").searchParams.get("privacy"),
+        "false",
+    );
+
+    const legacyViewUrl = new URL(selectorApi.viewImageUrl("/tmp/a.png"), "http://localhost");
+    assert.equal(legacyViewUrl.searchParams.get("path"), "/tmp/a.png");
+    assert.equal(legacyViewUrl.searchParams.has("v"), false);
+
+    const configuredThumbUrl = new URL(
+        selectorApi.thumbnailUrl("/external/a.png", true, { ...image, folder: "/external" }),
+        "http://localhost",
+    );
+    assert.equal(configuredThumbUrl.searchParams.has("folders"), false);
+
+    const configuredViewUrl = new URL(
+        selectorApi.viewImageUrl("/external/a.png", { ...image, folder: "/fallback" }),
+        "http://localhost",
+    );
+    assert.equal(configuredViewUrl.searchParams.has("folders"), false);
+
+    const inferredViewUrl = new URL(
+        selectorApi.viewImageUrl("/external/a.png", { ...image, folder: "/fallback" }),
+        "http://localhost",
+    );
+    assert.equal(inferredViewUrl.searchParams.has("folders"), false);
+
+    const configuredMaskUrl = new URL(selectorApi.maskUrl("/external/a.png"), "http://localhost");
+    assert.equal(configuredMaskUrl.searchParams.has("folders"), false);
 });
 
 test("selector empty state renders folder paths as text nodes", () => {
@@ -2261,59 +2424,169 @@ test("prompt enhancer variable helpers parse update and serialize configs", () =
     assert.deepEqual(updated[1], { name: "lighting", mode: "random", values: ["soft"], fixed_index: 0 });
 });
 
-test("prompt enhancer private variable config leaves the protected widget untouched", async () => {
+test("prompt enhancer variable config encrypts only when privacy mode is enabled", async () => {
+    const selectorApi = countingPrivacyApi();
     const node = {
         widgets: [
-            { name: "variables", value: "synthetic-protected-value" },
+            { name: "variables", value: "[]" },
         ],
     };
     const variables = [{ name: "style", mode: "fixed", values: ["cinematic"], fixed_index: 0 }];
 
-    const protectedValue = await writePromptVariables(node, variables, true, {});
-    assert.equal(protectedValue, "synthetic-protected-value");
-    assert.equal(node.widgets[0].value, "synthetic-protected-value");
+    const encrypted = await writePromptVariables(node, variables, true, selectorApi);
+    const repeated = await writePromptVariables(node, [{ fixed_index: 0, values: ["cinematic"], mode: "fixed", name: "style" }], true, selectorApi);
 
-    const plain = await writePromptVariables(node, variables, false, {});
+    assert.equal(isEncryptedVariables(encrypted), true);
+    assert.equal(repeated, encrypted);
+    assert.equal(selectorApi.encryptCount, 1);
+    assert.deepEqual(await readPromptVariables(node, selectorApi), variables);
 
+    const changed = await writePromptVariables(node, [{ name: "style", mode: "fixed", values: ["documentary"], fixed_index: 0 }], true, selectorApi);
+    assert.notEqual(changed, encrypted);
+    assert.equal(selectorApi.encryptCount, 2);
+
+    const plain = await writePromptVariables(node, variables, false, selectorApi);
+
+    assert.equal(isEncryptedVariables(plain), false);
     assert.deepEqual(JSON.parse(plain), variables);
 });
 
-test("prompt enhancer private prompt config leaves protection to the shared coordinator", async () => {
+test("prompt enhancer prompt config encrypts only when privacy mode is enabled", async () => {
+    let resolveEncryption;
+    const selectorApi = {
+        async encrypt(text) {
+            if (text === "pending secret") {
+                await new Promise((resolve) => {
+                    resolveEncryption = resolve;
+                });
+            }
+            return { encrypted: privacyEnvelopeText(text) };
+        },
+        async decrypt(encrypted) {
+            return { data: privacyEnvelopePlaintext(encrypted) };
+        },
+    };
     const node = {
         widgets: [
-            { name: "script", value: "synthetic-protected-value" },
+            { name: "script", value: "" },
         ],
     };
     const secret = "secret phrase for workflow search";
 
-    const protectedValue = await writePromptText(node, secret, true, {});
-    assert.equal(protectedValue, "synthetic-protected-value");
-    assert.equal(node.widgets[0].value, "synthetic-protected-value");
-    const plain = await writePromptText(node, secret, false, {});
+    const encrypted = await writePromptText(node, secret, true, selectorApi);
+
+    assert.equal(isEncryptedText(encrypted), true);
+    assert.equal(node.widgets[0].value.includes(secret), false);
+    assert.equal(JSON.stringify([node.widgets[0].value]).includes(secret), false);
+    assert.equal(await readPromptText(node, selectorApi), secret);
+    assert.equal(await decryptPromptText("__HELTO_ENC__:bad", { decrypt: async () => ({ data: "[]" }) }), "");
+
+    const plain = await writePromptText(node, secret, false, selectorApi);
 
     assert.equal(plain, secret);
     assert.equal(node.widgets[0].value, secret);
+
+    node.widgets[0].value = "pending secret";
+    const pending = writePromptText(node, "pending secret", true, selectorApi);
+
+    assert.equal(node.widgets[0].value, "");
+    for (let attempt = 0; attempt < 20 && typeof resolveEncryption !== "function"; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    assert.equal(typeof resolveEncryption, "function");
+    resolveEncryption();
+    assert.equal(isEncryptedText(await pending), true);
 });
 
-test("prompt enhancer preserves marker-like public prompt text", async () => {
-    const literal = '__HELTO_ENC__:{"ciphertext":"public prose"}';
+test("prompt enhancer preserves unreadable encrypted fields when reset is declined", async () => {
+    const missingKey = new Error("PRIVACY_KEY_MISSING: old key is unavailable");
+    const scriptEnvelope = privacyEnvelopeText("old-script");
+    const variablesEnvelope = privacyEnvelopeText("old-variables");
     const node = {
         widgets: [
-            { name: "script", value: literal },
-            { name: "privacy_mode", value: false },
+            { name: "script", value: scriptEnvelope },
+            { name: "variables", value: variablesEnvelope },
+            { name: "privacy_mode", value: true },
+        ],
+    };
+    __setPrivacyModuleForTests({
+        isUnreadablePrivacyValueError: () => true,
+        isPrivacyKeyUnavailableError: () => true,
+        confirmUnreadablePrivacyReset: async () => false,
+    });
+    const failingApi = { decrypt: async () => { throw missingKey; } };
+    try {
+        assert.equal(await readPromptText(node, failingApi), "");
+        assert.deepEqual(await readPromptVariables(node, failingApi), []);
+        assert.equal(node.widgets.find((widget) => widget.name === "script").value, scriptEnvelope);
+        assert.equal(node.widgets.find((widget) => widget.name === "variables").value, variablesEnvelope);
+        assert.equal(node.widgets.find((widget) => widget.name === "privacy_mode").value, true);
+    } finally {
+        __setPrivacyModuleForTests(null);
+    }
+});
+
+test("prompt enhancer resets unreadable encrypted fields only when confirmed", async () => {
+    const missingKey = new Error("PRIVACY_KEY_MISSING: old key is unavailable");
+    const node = {
+        widgets: [
+            { name: "script", value: privacyEnvelopeText("old-script") },
+            { name: "variables", value: privacyEnvelopeText("old-variables") },
+            { name: "privacy_mode", value: true },
+        ],
+    };
+    __setPrivacyModuleForTests({
+        isUnreadablePrivacyValueError: () => true,
+        isPrivacyKeyUnavailableError: () => true,
+        confirmUnreadablePrivacyReset: async () => true,
+    });
+    const failingApi = { decrypt: async () => { throw missingKey; } };
+    try {
+        assert.equal(await readPromptText(node, failingApi), "");
+        assert.deepEqual(await readPromptVariables(node, failingApi), []);
+        assert.equal(node.widgets.find((widget) => widget.name === "script").value, "");
+        assert.equal(node.widgets.find((widget) => widget.name === "variables").value, "[]");
+        assert.equal(node.widgets.find((widget) => widget.name === "privacy_mode").value, false);
+    } finally {
+        __setPrivacyModuleForTests(null);
+    }
+});
+
+test("selector and privacy show any require confirmation before clearing unreadable envelopes", () => {
+    const selectorSource = readFileSync(new URL("../../web/selector.js", import.meta.url), "utf8");
+    const showAnySource = readFileSync(new URL("../../web/privacy_show_any.js", import.meta.url), "utf8");
+
+    assert.match(selectorSource, /if \(await confirmUnreadablePrivacyReset\(\)\) \{[\s\S]*widget\.value = JSON\.stringify\(fallback\)/);
+    assert.match(showAnySource, /if \(await confirmUnreadablePrivacyReset\(\)\) \{[\s\S]*setEncryptedPrivacyShowAnyState\(node, stateWidget, ""\)/);
+    assert.match(showAnySource, /const preservedEncrypted = setEncryptedPrivacyShowAnyState\(this, stateWidget, encrypted\)/);
+    assert.match(showAnySource, /return preservedEncrypted;/);
+});
+
+test("prompt enhancer prompt config reuses restored envelopes until text changes", async () => {
+    const selectorApi = countingPrivacyApi();
+    const node = {
+        widgets: [
+            { name: "script", value: "" },
         ],
     };
 
-    assert.equal(await readPromptText(node, {}), literal);
-});
+    const first = await writePromptText(node, "stable prompt", true, selectorApi);
+    const repeated = await writePromptText(node, "stable prompt", true, selectorApi);
 
-test("prompt enhancer reads private editor runtime without exposing the protected widget", async () => {
-    const node = {
-        widgets: [{ name: "script", value: "synthetic-protected-value" }],
-        __heltoPromptEnhancerPromptEditor: { promptText: "runtime prompt" },
-    };
-    assert.equal(await readPromptText(node, {}), "runtime prompt");
-    assert.equal(node.widgets[0].value, "synthetic-protected-value");
+    assert.equal(repeated, first);
+    assert.equal(selectorApi.encryptCount, 1);
+
+    const changed = await writePromptText(node, "edited prompt", true, selectorApi);
+
+    assert.notEqual(changed, first);
+    assert.equal(selectorApi.encryptCount, 2);
+
+    node.widgets[0].value = first;
+    assert.equal(await readPromptText(node, selectorApi), "stable prompt");
+    const restored = await writePromptText(node, "stable prompt", true, selectorApi);
+
+    assert.equal(restored, first);
+    assert.equal(selectorApi.encryptCount, 2);
 });
 
 test("prompt enhancer detects serialized variable widget changes for autocomplete refresh", () => {
@@ -2533,7 +2806,9 @@ test("prompt enhancer autocomplete accept closes or continues to immediate follo
     assert.equal(accepted.autocomplete.active, false);
 });
 
-test("privacy show any hides its shared protected-state widget", () => {
+test("privacy show any extracts only encrypted output and hides encrypted state widget", () => {
+    const encrypted = privacyEnvelopeText("secret text");
+    const output = { helto_privacy_show_any: [{ encrypted }] };
     const node = {
         widgets: [
             { name: PRIVACY_SHOW_ANY_STATE_WIDGET, value: privacyEnvelopeText("abc") },
@@ -2544,77 +2819,148 @@ test("privacy show any hides its shared protected-state widget", () => {
 
     const widget = hidePrivacyShowAnyStateWidget(node, (item) => collapsed.push(item.name));
 
+    assert.equal(extractPrivacyShowAnyEncryptedText(output), encrypted);
+    assert.equal(extractPrivacyShowAnyEncryptedText({ helto_privacy_show_any: [{ text: "secret text" }] }), "");
     assert.equal(widget.hidden, true);
     assert.equal(widget.type, "hidden");
     assert.deepEqual(collapsed, [PRIVACY_SHOW_ANY_STATE_WIDGET]);
 });
 
-test("privacy show any preserves opaque shared protected values without inspecting shape", () => {
-    const protectedValue = privacyEnvelopeText("private");
+test("privacy show any serializes only encrypted text state", async () => {
+    const selectorApi = {
+        async encrypt(text) {
+            return { encrypted: privacyEnvelopeText(text) };
+        },
+        async decrypt(encrypted) {
+            return { data: privacyEnvelopePlaintext(encrypted) };
+        },
+    };
 
-    assert.equal(serializedProtectedWidgetValue({ value: protectedValue }), protectedValue);
-    assert.equal(serializedProtectedWidgetValue({ value: "opaque-shared-value" }), "opaque-shared-value");
-    assert.equal(serializedProtectedWidgetValue({ value: { protected: true } }), "");
+    const encrypted = await encryptTextState("private", selectorApi);
+
+    assert.equal(isPrivacyEncryptedText(encrypted), true);
+    assert.equal(await decryptTextState(encrypted, selectorApi), "private");
+    assert.equal(serializedEncryptedWidgetValue({ value: encrypted }), encrypted);
+    assert.equal(serializedEncryptedWidgetValue({ value: "private" }), "");
+    assert.equal(await encryptTextState("private", { encrypt: async () => ({ encrypted: "private" }) }), "");
 });
 
-test("privacy show any execution protection promise is awaitable by serialization", async () => {
+test("privacy show any owner-aware state reuses envelopes until text changes", async () => {
+    const selectorApi = countingPrivacyApi();
     const node = {};
-    let settle;
-    const pending = new Promise((resolve) => {
-        settle = resolve;
-    });
 
-    const assigned = setPrivacyShowAnyProtectionPromise(node, pending);
-    assert.equal(privacyShowAnyProtectionPromise(node), assigned);
-    settle("opaque-shared-value");
-    assert.equal(await privacyShowAnyProtectionPromise(node), "opaque-shared-value");
+    const first = await encryptTextStateForOwner(node, "private", selectorApi);
+    const repeated = await encryptTextStateForOwner(node, "private", selectorApi);
+
+    assert.equal(repeated, first);
+    assert.equal(selectorApi.encryptCount, 1);
+
+    const changed = await encryptTextStateForOwner(node, "edited", selectorApi);
+
+    assert.notEqual(changed, first);
+    assert.equal(selectorApi.encryptCount, 2);
+
+    assert.equal(await decryptTextStateForOwner(node, first, selectorApi), "private");
+    const restored = await encryptTextStateForOwner(node, "private", selectorApi);
+
+    assert.equal(restored, first);
+    assert.equal(selectorApi.encryptCount, 2);
 });
 
-test("privacy show any mirrors the shared protected state exactly", () => {
+test("privacy show any writes encrypted state to widget and property only", () => {
     const node = { properties: {} };
     const widget = { name: PRIVACY_SHOW_ANY_STATE_WIDGET, value: "" };
     const encrypted = privacyEnvelopeText("abc");
 
-    assert.equal(setProtectedPrivacyShowAnyState(node, widget, encrypted), encrypted);
+    assert.equal(setEncryptedPrivacyShowAnyState(node, widget, encrypted), encrypted);
     assert.equal(widget.value, encrypted);
     assert.equal(node.properties[PRIVACY_SHOW_ANY_STATE_PROPERTY], encrypted);
-    assert.equal(serializedProtectedPropertyValue(node), encrypted);
+    assert.equal(serializedEncryptedPropertyValue(node), encrypted);
 
-    assert.equal(setProtectedPrivacyShowAnyState(node, widget, "opaque-shared-value"), "opaque-shared-value");
-    assert.equal(widget.value, "opaque-shared-value");
-    assert.equal(node.properties[PRIVACY_SHOW_ANY_STATE_PROPERTY], "opaque-shared-value");
+    assert.equal(setEncryptedPrivacyShowAnyState(node, widget, "plain text"), "");
+    assert.equal(widget.value, "");
+    assert.equal(PRIVACY_SHOW_ANY_STATE_PROPERTY in node.properties, false);
 });
 
-test("privacy show any restore state prefers protected widget then protected property", () => {
+test("privacy show any restore state prefers encrypted widget then encrypted property", () => {
     const node = {
         properties: { [PRIVACY_SHOW_ANY_STATE_PROPERTY]: privacyEnvelopeText("property") },
         widgets: [{ name: PRIVACY_SHOW_ANY_STATE_WIDGET, value: privacyEnvelopeText("widget") }],
     };
 
-    assert.equal(protectedPrivacyShowAnyState(node), privacyEnvelopeText("widget"));
+    assert.equal(encryptedPrivacyShowAnyState(node), privacyEnvelopeText("widget"));
     node.widgets[0].value = "";
-    assert.equal(protectedPrivacyShowAnyState(node), privacyEnvelopeText("property"));
-    delete node.properties[PRIVACY_SHOW_ANY_STATE_PROPERTY];
-    assert.equal(protectedPrivacyShowAnyState(node), "");
+    assert.equal(encryptedPrivacyShowAnyState(node), privacyEnvelopeText("property"));
+    node.properties[PRIVACY_SHOW_ANY_STATE_PROPERTY] = "plain text";
+    assert.equal(encryptedPrivacyShowAnyState(node), "");
 });
 
-test("privacy show any serialized properties preserve only the supplied shared state", () => {
+test("privacy show any serialized properties keep only encrypted state", () => {
     const info = {
         properties: { [PRIVACY_SHOW_ANY_STATE_PROPERTY]: "plain text", other: "kept" },
     };
     const encrypted = privacyEnvelopeText("abc");
 
-    assert.equal(preservePrivacyShowAnySerializedProperties(info, encrypted), encrypted);
+    assert.equal(sanitizePrivacyShowAnySerializedProperties(info, encrypted), encrypted);
     assert.deepEqual(info.properties, {
         [PRIVACY_SHOW_ANY_STATE_PROPERTY]: encrypted,
         other: "kept",
     });
 
-    assert.equal(preservePrivacyShowAnySerializedProperties(info, "opaque-shared-value"), "opaque-shared-value");
-    assert.deepEqual(info.properties, {
-        [PRIVACY_SHOW_ANY_STATE_PROPERTY]: "opaque-shared-value",
-        other: "kept",
+    assert.equal(sanitizePrivacyShowAnySerializedProperties(info, "plain text"), "");
+    assert.deepEqual(info.properties, { other: "kept" });
+});
+
+test("privacy show any collects nodes from graph, inner nodes, and subgraphs", () => {
+    const rootPrivacyNode = { comfyClass: "HeltoPrivacyShowAny" };
+    const innerPrivacyNode = { type: "HeltoPrivacyShowAny" };
+    const subgraphPrivacyNode = { comfyClass: "HeltoPrivacyShowAny" };
+    const containerNode = {
+        comfyClass: "Container",
+        getInnerNodes() {
+            return [innerPrivacyNode, rootPrivacyNode];
+        },
+    };
+    const graph = {
+        computeExecutionOrder() {
+            return [rootPrivacyNode, containerNode, { comfyClass: "Other" }];
+        },
+        subgraphs: new Map([
+            ["subgraph", { _nodes: [subgraphPrivacyNode, innerPrivacyNode] }],
+        ]),
+    };
+
+    assert.deepEqual(
+        collectPrivacyShowAnyNodes(graph),
+        [rootPrivacyNode, innerPrivacyNode, subgraphPrivacyNode],
+    );
+});
+
+test("privacy show any waits for pending encryption and fails closed on rejection", async () => {
+    const pendingKey = "__pendingEncryption";
+    const events = [];
+    const encryptedNode = {
+        comfyClass: "HeltoPrivacyShowAny",
+        [pendingKey]: new Promise((resolve) => setTimeout(() => {
+            events.push("encrypted");
+            resolve(privacyEnvelopeText("ok"));
+        }, 0)),
+    };
+    const failedNode = {
+        comfyClass: "HeltoPrivacyShowAny",
+        [pendingKey]: Promise.reject(new Error("offline")),
+        stateWidget: { value: "plain text" },
+    };
+    const graph = { _nodes: [encryptedNode, failedNode] };
+
+    const nodes = await flushPrivacyShowAnyEncryption(graph, pendingKey, (node) => {
+        node.stateWidget.value = "";
+        events.push("failed");
     });
+
+    assert.deepEqual(nodes, [encryptedNode, failedNode]);
+    assert.deepEqual(events.sort(), ["encrypted", "failed"]);
+    assert.equal(failedNode.stateWidget.value, "");
 });
 
 test("privacy show any display reveals only when hover state is active", () => {

@@ -7,11 +7,8 @@ import types
 import unittest
 from pathlib import Path
 
-import pytest
-
 
 ROOT = Path(__file__).resolve().parents[1]
-pytestmark = pytest.mark.usefixtures("coordinated_suite_test_boundary")
 
 
 def load_video_modules(tmp_path: Path, input_dir: Path):
@@ -99,3 +96,50 @@ class LoadVideoBrowserTests(unittest.TestCase):
             self.assertEqual([item["filename"] for item in recursive], ["nested/child.webm", "root.mp4"])
             self.assertEqual([item["filename"] for item in shallow], ["root.mp4"])
             self.assertTrue(all("mtime" in item and "size" in item for item in recursive))
+
+    def test_thumbnail_cache_privacy_mode_writes_only_encrypted_variant(self):
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as temp_dir:
+            tmp_path = Path(temp_dir)
+            input_dir = tmp_path / "input"
+            input_dir.mkdir()
+            video_path = input_dir / "clip.mp4"
+            video_path.write_bytes(b"not a real video for this unit test")
+            _config, video_io = load_video_modules(tmp_path, input_dir)
+            old_env = {
+                "HELTO_PRIVACY_KEYSTORE": os.environ.get("HELTO_PRIVACY_KEYSTORE"),
+                "HELTO_PRIVACY_SESSION_DIR": os.environ.get("HELTO_PRIVACY_SESSION_DIR"),
+            }
+            os.environ["HELTO_PRIVACY_KEYSTORE"] = str(tmp_path / "privacy_keystore.json")
+            os.environ["HELTO_PRIVACY_SESSION_DIR"] = str(tmp_path / "privacy_session")
+            from helto_privacy import initialize_keystore
+
+            initialize_keystore("correct horse battery staple")
+            video_io.generate_thumbnail_bytes = lambda _path, max_size=360: b"webp-bytes"
+            try:
+                data = video_io.thumbnail_bytes(video_path, privacy_mode=True)
+                plain_cache = video_io.thumbnail_path(video_path)
+                encrypted_cache = video_io.encrypted_thumbnail_path(video_path)
+
+                self.assertEqual(data, b"webp-bytes")
+                self.assertEqual(
+                    encrypted_cache.parent,
+                    tmp_path / "temp" / "helto_cache" / "HeltoLoadVideo" / "thumbnails",
+                )
+                self.assertFalse(plain_cache.exists())
+                self.assertTrue(encrypted_cache.exists())
+                self.assertEqual(
+                    video_io.decrypt_bytes(encrypted_cache.read_bytes(), purpose=video_io.LOAD_VIDEO_CACHE_PURPOSE),
+                    b"webp-bytes",
+                )
+            finally:
+                for key, value in old_env.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+
+
+if __name__ == "__main__":
+    unittest.main()

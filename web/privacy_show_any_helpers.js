@@ -1,7 +1,16 @@
+import {
+    ENCRYPTED_PREFIX,
+    encryptedOrReusePrivacyValue,
+    forgetPrivacyEnvelope,
+    isPrivacyEnvelope,
+    rememberPrivacyEnvelope,
+} from "./privacy_envelope.js";
+
 export const PRIVACY_SHOW_ANY_NODE_CLASS = "HeltoPrivacyShowAny";
 export const PRIVACY_SHOW_ANY_STATE_WIDGET = "encrypted_text_state";
 export const PRIVACY_SHOW_ANY_STATE_PROPERTY = "helto_privacy_show_any_encrypted_text_state";
-const PRIVACY_SHOW_ANY_PROTECTION_PROMISE = "__heltoPrivacyShowAnyProtectionPromise";
+export const PRIVACY_SHOW_ANY_UI_KEY = "helto_privacy_show_any";
+export { ENCRYPTED_PREFIX };
 export const PRIVACY_SHOW_ANY_LAYOUT = Object.freeze({
     minWidth: 360,
     minNodeHeight: 300,
@@ -11,16 +20,14 @@ export function getWidget(node, name) {
     return node?.widgets?.find((widget) => widget?.name === name) ?? null;
 }
 
-export function setPrivacyShowAnyProtectionPromise(node, promise) {
-    if (!node || !promise || typeof promise.then !== "function") {
-        throw new TypeError("Privacy Show Any protection promise is invalid.");
-    }
-    node[PRIVACY_SHOW_ANY_PROTECTION_PROMISE] = Promise.resolve(promise);
-    return node[PRIVACY_SHOW_ANY_PROTECTION_PROMISE];
+export function isEncryptedText(value) {
+    return isPrivacyEnvelope(value);
 }
 
-export function privacyShowAnyProtectionPromise(node) {
-    return node?.[PRIVACY_SHOW_ANY_PROTECTION_PROMISE] ?? null;
+export function extractPrivacyShowAnyEncryptedText(output) {
+    const records = output?.[PRIVACY_SHOW_ANY_UI_KEY];
+    const first = Array.isArray(records) ? records[0] : records;
+    return isEncryptedText(first?.encrypted) ? first.encrypted : "";
 }
 
 export function hidePrivacyShowAnyStateWidget(node, collapseWidgetLayout) {
@@ -32,24 +39,60 @@ export function hidePrivacyShowAnyStateWidget(node, collapseWidgetLayout) {
     return widget;
 }
 
-export function serializedProtectedWidgetValue(widget) {
-    return serializedProtectedValue(widget?.value);
+export async function encryptTextState(text, selectorApi) {
+    const plain = String(text ?? "");
+    if (!plain) return "";
+    const result = await selectorApi.encrypt(plain);
+    return isEncryptedText(result?.encrypted) ? result.encrypted : "";
 }
 
-export function serializedProtectedValue(value) {
-    return typeof value === "string" ? value : "";
+export async function encryptTextStateForOwner(node, text, selectorApi) {
+    const plain = String(text ?? "");
+    if (!plain) {
+        forgetPrivacyEnvelope(node, PRIVACY_SHOW_ANY_STATE_WIDGET);
+        return "";
+    }
+    return encryptedOrReusePrivacyValue(node, PRIVACY_SHOW_ANY_STATE_WIDGET, plain, {
+        privacyMode: true,
+        selectorApi,
+        defaultValue: "",
+        canonicalValue: plain,
+        encryptEmpty: false,
+    });
 }
 
-export function serializedProtectedPropertyValue(node) {
-    return serializedProtectedValue(node?.properties?.[PRIVACY_SHOW_ANY_STATE_PROPERTY]);
+export async function decryptTextState(encrypted, selectorApi) {
+    if (!isEncryptedText(encrypted)) return "";
+    const result = await selectorApi.decrypt(encrypted);
+    return typeof result?.data === "string" ? result.data : "";
 }
 
-export function protectedPrivacyShowAnyState(node, stateWidget = getWidget(node, PRIVACY_SHOW_ANY_STATE_WIDGET)) {
-    return serializedProtectedWidgetValue(stateWidget) || serializedProtectedPropertyValue(node);
+export async function decryptTextStateForOwner(node, encrypted, selectorApi) {
+    const plain = await decryptTextState(encrypted, selectorApi);
+    if (isEncryptedText(encrypted)) {
+        rememberPrivacyEnvelope(node, PRIVACY_SHOW_ANY_STATE_WIDGET, plain, encrypted);
+    }
+    return plain;
 }
 
-export function setProtectedPrivacyShowAnyState(node, stateWidget, protectedValue) {
-    const safe = serializedProtectedValue(protectedValue);
+export function serializedEncryptedWidgetValue(widget) {
+    return serializedEncryptedValue(widget?.value);
+}
+
+export function serializedEncryptedValue(value) {
+    return isEncryptedText(value) ? value : "";
+}
+
+export function serializedEncryptedPropertyValue(node) {
+    return serializedEncryptedValue(node?.properties?.[PRIVACY_SHOW_ANY_STATE_PROPERTY]);
+}
+
+export function encryptedPrivacyShowAnyState(node, stateWidget = getWidget(node, PRIVACY_SHOW_ANY_STATE_WIDGET)) {
+    return serializedEncryptedWidgetValue(stateWidget) || serializedEncryptedPropertyValue(node);
+}
+
+export function setEncryptedPrivacyShowAnyState(node, stateWidget, encrypted) {
+    const safe = serializedEncryptedValue(encrypted);
     if (stateWidget) {
         stateWidget.value = safe;
     }
@@ -64,9 +107,9 @@ export function setProtectedPrivacyShowAnyState(node, stateWidget, protectedValu
     return safe;
 }
 
-export function preservePrivacyShowAnySerializedProperties(info, protectedValue) {
+export function sanitizePrivacyShowAnySerializedProperties(info, encrypted) {
     if (!info) return "";
-    const safe = serializedProtectedValue(protectedValue);
+    const safe = serializedEncryptedValue(encrypted);
     info.properties ??= {};
     if (safe) {
         info.properties[PRIVACY_SHOW_ANY_STATE_PROPERTY] = safe;
@@ -78,6 +121,65 @@ export function preservePrivacyShowAnySerializedProperties(info, protectedValue)
 
 export function isPrivacyShowAnyNode(node) {
     return node?.comfyClass === PRIVACY_SHOW_ANY_NODE_CLASS || node?.type === PRIVACY_SHOW_ANY_NODE_CLASS;
+}
+
+function iterableValues(value) {
+    if (!value) return [];
+    if (value instanceof Map) return value.values();
+    if (typeof value[Symbol.iterator] === "function") return value;
+    if (typeof value === "object") return Object.values(value);
+    return [];
+}
+
+export function collectPrivacyShowAnyNodes(graph) {
+    const found = [];
+    const seen = new Set();
+
+    const visitNode = (node) => {
+        if (!node || seen.has(node)) return;
+        seen.add(node);
+        if (isPrivacyShowAnyNode(node)) {
+            found.push(node);
+        }
+        const innerNodes = typeof node.getInnerNodes === "function" ? node.getInnerNodes(new Map()) : [];
+        for (const innerNode of iterableValues(innerNodes)) {
+            visitNode(innerNode);
+        }
+        const subgraphNodes = node.subgraph?._nodes ?? node.subgraph?.nodes ?? [];
+        for (const subgraphNode of iterableValues(subgraphNodes)) {
+            visitNode(subgraphNode);
+        }
+    };
+
+    const graphNodes = typeof graph?.computeExecutionOrder === "function"
+        ? graph.computeExecutionOrder(false)
+        : graph?._nodes ?? graph?.nodes ?? [];
+    for (const node of iterableValues(graphNodes)) {
+        visitNode(node);
+    }
+
+    for (const subgraph of iterableValues(graph?.subgraphs)) {
+        const nodes = subgraph?._nodes ?? subgraph?.nodes ?? [];
+        for (const node of iterableValues(nodes)) {
+            visitNode(node);
+        }
+    }
+
+    return found;
+}
+
+export async function flushPrivacyShowAnyEncryption(graph, pendingPromiseKey, onRejected = null) {
+    const nodes = collectPrivacyShowAnyNodes(graph);
+    await Promise.all(nodes.map(async (node) => {
+        const promise = pendingPromiseKey ? node?.[pendingPromiseKey] : null;
+        if (!promise) return;
+        try {
+            await promise;
+        } catch (err) {
+            onRejected?.(node, err);
+        }
+    }));
+    return nodes;
 }
 
 export function privacyShowAnyDisplayState(text, revealed, emptyPlaceholder = "Run the node to display text.") {
